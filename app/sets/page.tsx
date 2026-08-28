@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -92,7 +92,7 @@ function getCategoryLabel(category: SetCategory) {
   return category;
 }
 
-export default function BrowseSetsPage() {
+function BrowseSetsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -440,5 +440,27 @@ export default function BrowseSetsPage() {
         )}
       </section>
     </main>
+  );
+}
+
+function SetsPageFallback() {
+  return (
+    <main className="min-h-screen bg-black text-white">
+      <div className="mx-auto flex min-h-screen max-w-7xl items-center justify-center px-5">
+        <div className="rounded-2xl border border-zinc-800 bg-zinc-950 px-8 py-6 text-center">
+          <p className="text-sm font-bold text-zinc-500">
+            Loading MintRadar Set Explorer...
+          </p>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+export default function BrowseSetsPage() {
+  return (
+    <Suspense fallback={<SetsPageFallback />}>
+      <BrowseSetsContent />
+    </Suspense>
   );
 }

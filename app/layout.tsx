@@ -1,23 +1,5 @@
-import type { Metadata } from "next";
 import Link from "next/link";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
-export const metadata: Metadata = {
-  title: "MintRadar",
-  description:
-    "Search collectible cards, vendors, inventory, and live pricing with MintRadar.",
-};
 
 export default function RootLayout({
   children,
@@ -25,10 +7,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
+    <html lang="en" className="h-full antialiased">
       <body className="min-h-full bg-black text-white">
         <div className="fixed right-3 top-3 z-[100] flex items-center gap-2 sm:right-6 sm:top-6">
           <Link
