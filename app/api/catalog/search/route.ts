@@ -82,6 +82,62 @@ const STOP_WORDS = new Set([
   "cards",
 ]);
 
+const TCGDEX_REVALIDATE_SECONDS = 3600;
+const TCGDEX_TIMEOUT_MS = 10000;
+const TCGDEX_RETRY_DELAY_MS = 750;
+
+async function fetchTCGdex(
+  url: string
+): Promise<Response> {
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      TCGDEX_TIMEOUT_MS
+    );
+
+    try {
+      const response = await fetch(url, {
+        next: {
+          revalidate: TCGDEX_REVALIDATE_SECONDS,
+        },
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "MintRadar/0.1",
+        },
+      });
+
+      clearTimeout(timeout);
+      return response;
+    } catch (error) {
+      clearTimeout(timeout);
+      lastError = error;
+
+      console.warn(
+        `TCGdex request attempt ${attempt} failed:`,
+        url,
+        error
+      );
+
+      if (attempt < 2) {
+        await new Promise<void>((resolve) =>
+          setTimeout(
+            resolve,
+            TCGDEX_RETRY_DELAY_MS
+          )
+        );
+      }
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("TCGdex request failed.");
+}
+
 export async function GET(
   request: NextRequest
 ) {
@@ -807,13 +863,7 @@ async function searchCardsByName(
   );
 
   const response =
-    await fetch(
-      `https://api.tcgdex.net/v2/en/cards?${params.toString()}`,
-      {
-        cache:
-          "no-store",
-      }
-    );
+    await fetchTCGdex(`https://api.tcgdex.net/v2/en/cards?${params.toString()}`);
 
   if (
     !response.ok
@@ -864,13 +914,7 @@ async function searchSetsByName(
   );
 
   const response =
-    await fetch(
-      `https://api.tcgdex.net/v2/en/sets?${params.toString()}`,
-      {
-        cache:
-          "no-store",
-      }
-    );
+    await fetchTCGdex(`https://api.tcgdex.net/v2/en/sets?${params.toString()}`);
 
   if (
     !response.ok
@@ -909,15 +953,9 @@ async function loadCardsFromSet(
   }
 
   const response =
-    await fetch(
-      `https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(
+    await fetchTCGdex(`https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(
         set.id
-      )}`,
-      {
-        cache:
-          "no-store",
-      }
-    );
+      )}`);
 
   if (
     !response.ok
@@ -1010,15 +1048,9 @@ async function loadCardDetail(
 
   try {
     const detailResponse =
-      await fetch(
-        `https://api.tcgdex.net/v2/en/cards/${encodeURIComponent(
+      await fetchTCGdex(`https://api.tcgdex.net/v2/en/cards/${encodeURIComponent(
           card.id
-        )}`,
-        {
-          cache:
-            "no-store",
-        }
-      );
+        )}`);
 
     if (
       !detailResponse.ok
