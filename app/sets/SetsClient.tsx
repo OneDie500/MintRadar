@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 
 type SetCategory =
   | "Pokemon"
@@ -92,19 +92,17 @@ function getCategoryLabel(category: SetCategory) {
   return category;
 }
 
-export default function SetsClient() {
+export default function SetsClient({
+  initialCategorySlug,
+}: {
+  initialCategorySlug?: string;
+}) {
   const router = useRouter();
-  const searchParams = useSearchParams();
-
-  const categoryFromUrl =
-    searchParams.get("category");
 
   const activeCategory: SetCategory =
     CATEGORIES.find(
       (category) =>
-        categorySlug(
-          category.value
-        ) === categoryFromUrl
+        categorySlug(category.value) === initialCategorySlug
     )?.value || "Pokemon";
 
   const [sets, setSets] = useState<SetOption[]>([]);
