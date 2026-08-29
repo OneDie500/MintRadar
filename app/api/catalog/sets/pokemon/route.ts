@@ -9,16 +9,48 @@ type TCGdexSet = {
   };
 };
 
+const HEADERS = {
+  Accept: "application/json",
+  "User-Agent": "MintRadar/0.1",
+};
+
+async function fetchTcgdexSets() {
+  const url = "https://api.tcgdex.net/v2/en/sets";
+  const attempts = 2;
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fetch(url, {
+        headers: HEADERS,
+        next: {
+          revalidate: 3600,
+        },
+      });
+    } catch (error) {
+      lastError = error;
+
+      console.warn(
+        `TCGdex sets attempt ${attempt}/${attempts} failed:`,
+        error
+      );
+
+      if (attempt < attempts) {
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, 750)
+        );
+      }
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("TCGdex sets request failed after retry.");
+}
+
 export async function GET() {
   try {
-    const params = new URLSearchParams();
-    params.set("pagination:page", "1");
-    params.set("pagination:itemsPerPage", "500");
-
-    const response = await fetch(
-      `https://api.tcgdex.net/v2/en/sets?${params.toString()}`,
-      { cache: "no-store" }
-    );
+    const response = await fetchTcgdexSets();
 
     if (!response.ok) {
       throw new Error(
@@ -27,23 +59,27 @@ export async function GET() {
     }
 
     const data = await response.json();
-    const rawSets = Array.isArray(data) ? data : [];
+    const rawSets: TCGdexSet[] = Array.isArray(data)
+      ? data
+      : [];
 
     const results = rawSets
-      .filter((set: TCGdexSet) => set.id && set.name)
-      .map((set: TCGdexSet) => ({
-        id: set.id,
-        name: set.name,
-        category: "Pokemon",
-        code: set.id,
+      .filter(
+        (set) =>
+          typeof set.id === "string" &&
+          typeof set.name === "string"
+      )
+      .map((set) => ({
+        id: set.id!,
+        name: set.name!,
+        category: "Pokemon" as const,
+        code: set.id!,
         cardCount:
           set.cardCount?.total ??
           set.cardCount?.official ??
           null,
       }))
-      .sort((a, b) =>
-        String(a.name).localeCompare(String(b.name))
-      );
+      .sort((a, b) => a.name.localeCompare(b.name));
 
     return NextResponse.json({
       count: results.length,
@@ -54,7 +90,10 @@ export async function GET() {
 
     return NextResponse.json(
       {
-        error: "Pokémon set catalog is unavailable.",
+        error:
+          error instanceof Error
+            ? error.message
+            : "Pokémon set catalog is unavailable.",
         results: [],
       },
       { status: 500 }

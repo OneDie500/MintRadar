@@ -154,15 +154,11 @@ type TCGdexSetDetail = {
 async function loadPokemonSet(
   setId: string
 ) {
-  const response =
-    await fetch(
-      `https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(
-        setId
-      )}`,
-      {
-        cache: "no-store",
-      }
-    );
+  const url = `https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(
+    setId
+  )}`;
+
+  const response = await fetchTcgdexWithRetry(url);
 
   if (!response.ok) {
     throw new Error(
@@ -857,6 +853,41 @@ async function loadMtgSet(
     },
     results,
   };
+}
+
+// =============================================
+// TCGDEX FETCH RESILIENCE
+// =============================================
+
+async function fetchTcgdexWithRetry(url: string) {
+  const attempts = 2;
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fetch(url, {
+        headers: HEADERS,
+        next: {
+          revalidate: 3600,
+        },
+      });
+    } catch (error) {
+      lastError = error;
+
+      console.warn(
+        `TCGdex request attempt ${attempt}/${attempts} failed:`,
+        error
+      );
+
+      if (attempt < attempts) {
+        await delay(750);
+      }
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("TCGdex request failed after retry.");
 }
 
 // =============================================
