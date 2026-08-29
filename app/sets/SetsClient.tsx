@@ -19,6 +19,8 @@ type SetOption = {
   cardCount?: number | null;
   releasedAt?: string | null;
   setType?: string | null;
+  logoUrl?: string | null;
+  symbolUrl?: string | null;
 };
 
 type CategoryConfig = {
@@ -90,6 +92,103 @@ function getCategoryLabel(category: SetCategory) {
   if (category === "Pokemon") return "Pokémon";
   if (category === "Magic: The Gathering") return "MTG";
   return category;
+}
+
+
+function SetArtwork({
+  set,
+}: {
+  set: SetOption;
+}) {
+  const candidates = [
+    set.logoUrl,
+    set.symbolUrl,
+  ].filter(
+    (value): value is string =>
+      typeof value === "string" &&
+      value.length > 0
+  );
+
+  const [candidateIndex, setCandidateIndex] =
+    useState(0);
+
+  const src = candidates[candidateIndex];
+  const isSymbolFallback =
+    candidateIndex > 0 &&
+    src === set.symbolUrl;
+
+  const usePokemonPlaceholder =
+    !src && set.category === "Pokemon";
+
+  if (!src && !usePokemonPlaceholder) {
+    return (
+      <div
+        className="mb-5 h-24 rounded-xl border border-zinc-900 bg-black/50"
+        aria-hidden="true"
+      />
+    );
+  }
+
+  const artworkSrc =
+    src || "/catalog-logos/pokemon.png";
+
+  const isPlaceholder =
+    usePokemonPlaceholder;
+
+  return (
+    <div
+      className={`mb-5 flex h-24 items-center justify-center rounded-xl border border-zinc-900 bg-black/50 ${
+        isSymbolFallback
+          ? "px-7 py-4"
+          : isPlaceholder
+            ? "px-8 py-5"
+            : "px-5 py-3"
+      }`}
+    >
+      <div
+        className={`relative ${
+          isSymbolFallback
+            ? "h-14 w-14"
+            : isPlaceholder
+              ? "h-full w-[150px] max-w-full"
+              : "h-full w-full"
+        }`}
+      >
+        <Image
+          src={artworkSrc}
+          alt={
+            isPlaceholder
+              ? "Pokémon Trading Card Game"
+              : isSymbolFallback
+                ? `${set.name} set symbol`
+                : `${set.name} set logo`
+          }
+          fill
+          sizes={
+            isSymbolFallback
+              ? "56px"
+              : isPlaceholder
+                ? "150px"
+                : "(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 25vw"
+          }
+          className={`object-contain transition duration-200 ${
+            isSymbolFallback
+              ? "opacity-90 group-hover:scale-110 group-hover:opacity-100"
+              : isPlaceholder
+                ? "opacity-45 grayscale group-hover:opacity-65 group-hover:scale-[1.03]"
+                : "group-hover:scale-[1.03]"
+          }`}
+          onError={() => {
+            if (!isPlaceholder) {
+              setCandidateIndex(
+                (current) => current + 1
+              );
+            }
+          }}
+        />
+      </div>
+    </div>
+  );
 }
 
 export default function SetsClient({
@@ -373,6 +472,8 @@ export default function SetsClient({
                 )}?name=${encodeURIComponent(set.name)}`}
                 className="group rounded-2xl border border-zinc-900 bg-zinc-950 p-5 transition hover:-translate-y-1 hover:border-emerald-400/60"
               >
+                <SetArtwork set={set} />
+
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
                     <span className="inline-flex rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-emerald-300">

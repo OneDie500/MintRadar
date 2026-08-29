@@ -2,6 +2,7 @@ import {
   NextRequest,
   NextResponse,
 } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 
 type NormalizedCard = {
   external_id: string;
@@ -29,6 +30,27 @@ const HEADERS = {
   Accept: "application/json",
   "User-Agent": "MintRadar/0.1",
 };
+
+
+function catalogClient() {
+  const url =
+    process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key =
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!url || !key) {
+    throw new Error(
+      "Supabase catalog environment variables are missing."
+    );
+  }
+
+  return createClient(url, key, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+}
 
 export async function GET(
   request: NextRequest,
@@ -129,105 +151,158 @@ export async function GET(
 }
 
 // =============================================
-// POKÉMON / TCGDEX
+// POKÉMON / SUPABASE CATALOG CACHE
 // =============================================
 
-type TCGdexCardBrief = {
-  id?: string;
-  localId?: string;
-  name?: string;
-  image?: string;
+type CachedPokemonSet = {
+  external_id: string;
+  name: string;
+  card_count: number | null;
+  symbol_url: string | null;
 };
 
-type TCGdexSetDetail = {
-  id?: string;
-  name?: string;
-  logo?: string;
-  symbol?: string;
-  cardCount?: {
-    total?: number;
-    official?: number;
-  };
-  cards?: TCGdexCardBrief[];
+type CachedPokemonCard = {
+  external_id: string;
+  data_source: string;
+  name: string | null;
+  set_name: string | null;
+  card_number: string | null;
+  image_url: string | null;
+  category: string | null;
+  rarity: string | null;
+  edition: string | null;
+  finish: string | null;
 };
 
 async function loadPokemonSet(
   setId: string
 ) {
-  const url = `https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(
-    setId
-  )}`;
+  const supabase =
+    catalogClient();
 
-  const response = await fetchTcgdexWithRetry(url);
+  const {
+    data: setData,
+    error: setError,
+  } =
+    await supabase
+      .from("catalog_sets")
+      .select(
+        "external_id,name,card_count,symbol_url"
+      )
+      .eq(
+        "data_source",
+        "tcgdex"
+      )
+      .eq(
+        "category",
+        "Pokemon"
+      )
+      .eq(
+        "external_id",
+        setId
+      )
+      .maybeSingle();
 
-  if (!response.ok) {
+  if (setError) {
     throw new Error(
-      `TCGdex set request failed (${response.status}).`
+      `Pokémon set lookup failed: ${setError.message}`
     );
   }
 
-  const set:
-    TCGdexSetDetail =
-      await response.json();
+  if (!setData) {
+    throw new Error(
+      `Pokémon set ${setId} has not been synced into MintRadar yet.`
+    );
+  }
+
+  const set =
+    setData as CachedPokemonSet;
+
+  const {
+    data: cardData,
+    error: cardError,
+  } =
+    await supabase
+      .from("cards")
+      .select(
+        "external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish"
+      )
+      .eq(
+        "data_source",
+        "tcgdex"
+      )
+      .eq(
+        "category",
+        "Pokemon"
+      )
+      .like(
+        "external_id",
+        `${setId}-%`
+      )
+      .order(
+        "card_number",
+        {
+          ascending: true,
+        }
+      );
+
+  if (cardError) {
+    throw new Error(
+      `Pokémon card lookup failed: ${cardError.message}`
+    );
+  }
 
   const cards =
-    Array.isArray(set.cards)
-      ? set.cards
-      : [];
+    (cardData ||
+      []) as CachedPokemonCard[];
 
   const results:
     NormalizedCard[] =
-      cards
-        .filter(
-          (card) =>
-            Boolean(card.id)
-        )
-        .map((card) => ({
+      cards.map(
+        (card) => ({
           external_id:
-            card.id || "",
+            card.external_id,
           data_source:
             "tcgdex",
           name:
-            card.name ||
-            null,
+            card.name,
           set_name:
-            set.name ||
-            null,
+            card.set_name ||
+            set.name,
           set_id:
-            set.id ||
-            setId,
+            set.external_id,
           card_number:
-            card.localId ||
-            null,
+            card.card_number,
           image_url:
-            card.image
-              ? `${card.image}/high.webp`
-              : null,
+            card.image_url,
           category:
             "Pokemon",
-          rarity: null,
-          edition: null,
-          finish: null,
-          illustrator: null,
-        }));
+          rarity:
+            card.rarity,
+          edition:
+            card.edition,
+          finish:
+            card.finish,
+          illustrator:
+            null,
+        })
+      );
 
   return {
     set: {
       id:
-        set.id ||
-        setId,
+        set.external_id,
       name:
-        set.name ||
-        setId,
+        set.name,
       category:
         "Pokemon",
+      code:
+        set.external_id,
       cardCount:
-        set.cardCount?.total ??
+        set.card_count ??
         results.length,
       symbolUrl:
-        set.symbol
-          ? `${set.symbol}.webp`
-          : null,
+        set.symbol_url,
     },
     results,
   };
@@ -853,41 +928,6 @@ async function loadMtgSet(
     },
     results,
   };
-}
-
-// =============================================
-// TCGDEX FETCH RESILIENCE
-// =============================================
-
-async function fetchTcgdexWithRetry(url: string) {
-  const attempts = 2;
-  let lastError: unknown = null;
-
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      return await fetch(url, {
-        headers: HEADERS,
-        next: {
-          revalidate: 3600,
-        },
-      });
-    } catch (error) {
-      lastError = error;
-
-      console.warn(
-        `TCGdex request attempt ${attempt}/${attempts} failed:`,
-        error
-      );
-
-      if (attempt < attempts) {
-        await delay(750);
-      }
-    }
-  }
-
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("TCGdex request failed after retry.");
 }
 
 // =============================================

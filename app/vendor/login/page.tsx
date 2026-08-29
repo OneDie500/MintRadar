@@ -31,7 +31,7 @@ export default function VendorLogin() {
     setLoading(true);
 
     try {
-      // LOG USER IN
+      // 1) LOG USER IN
       const { data, error: loginError } =
         await supabase.auth.signInWithPassword({
           email: email.trim(),
@@ -58,71 +58,118 @@ export default function VendorLogin() {
         return;
       }
 
-      // CHECK FOR EXISTING VENDOR PROFILE
-      const { data: existingVendor, error: vendorLookupError } =
-        await supabase
-          .from("vendors")
-          .select("id")
-          .eq("user_id", user.id)
-          .maybeSingle();
+      // 2) PROVISION OR REPAIR THIS USER'S VENDOR ACCOUNT
+      //
+      // create_vendor_account() is SECURITY DEFINER and uses auth.uid()
+      // internally, so the browser never decides which user owns the vendor.
+      const metadata = user.user_metadata || {};
 
-      if (vendorLookupError) {
-        console.error("Vendor lookup error:", {
-          message: vendorLookupError.message,
-          details: vendorLookupError.details,
-          hint: vendorLookupError.hint,
-          code: vendorLookupError.code,
-        });
+      const businessName =
+        typeof metadata.business_name === "string" &&
+        metadata.business_name.trim()
+          ? metadata.business_name.trim()
+          : "New MintRadar Vendor";
+
+      const instagram =
+        typeof metadata.instagram === "string" &&
+        metadata.instagram.trim()
+          ? metadata.instagram.trim()
+          : null;
+
+      const bio =
+        typeof metadata.bio === "string" &&
+        metadata.bio.trim()
+          ? metadata.bio.trim()
+          : null;
+
+      const {
+        data: vendorId,
+        error: provisionError,
+      } = await supabase.rpc(
+        "create_vendor_account",
+        {
+          p_business_name: businessName,
+          p_instagram: instagram,
+          p_bio: bio,
+        }
+      );
+
+      if (provisionError) {
+        console.error(
+          "Vendor provisioning error:",
+          {
+            message: provisionError.message,
+            details: provisionError.details,
+            hint: provisionError.hint,
+            code: provisionError.code,
+          }
+        );
 
         setErrorMessage(
-          "You logged in, but MintRadar could not load your vendor profile."
+          "You logged in, but MintRadar could not finish setting up your vendor account."
         );
 
         return;
       }
 
-      // CREATE PROFILE IF THIS USER DOES NOT HAVE ONE
-      if (!existingVendor) {
-        const metadata = user.user_metadata || {};
-
-        const { error: createVendorError } = await supabase
-          .from("vendors")
-          .insert({
-            user_id: user.id,
-            business_name:
-              metadata.business_name || "New MintRadar Vendor",
-            instagram:
-              metadata.instagram || null,
-            bio:
-              metadata.bio || null,
-            status: "pending",
-          });
-
-        if (createVendorError) {
-          console.error("Vendor profile creation error:", {
-            message: createVendorError.message,
-            details: createVendorError.details,
-            hint: createVendorError.hint,
-            code: createVendorError.code,
-          });
-
-          setErrorMessage(
-            "You logged in, but MintRadar could not create your vendor profile."
-          );
-
-          return;
-        }
+      if (!vendorId) {
+        setErrorMessage(
+          "You logged in, but MintRadar could not verify your vendor account."
+        );
+        return;
       }
 
-      // EVERYTHING GOOD
-      router.push("/vendor");
+      // 3) VERIFY THE MEMBERSHIP EXISTS
+      //
+      // This makes onboarding failures obvious instead of sending a user
+      // into the dashboard with a half-created vendor account.
+      const {
+        data: membership,
+        error: membershipError,
+      } = await supabase
+        .from("vendor_members")
+        .select("vendor_id, user_id, role")
+        .eq("vendor_id", vendorId)
+        .eq("user_id", user.id)
+        .maybeSingle();
 
+      if (membershipError) {
+        console.error(
+          "Vendor membership verification error:",
+          {
+            message: membershipError.message,
+            details: membershipError.details,
+            hint: membershipError.hint,
+            code: membershipError.code,
+          }
+        );
+
+        setErrorMessage(
+          "Your vendor account was created, but MintRadar could not verify your permissions."
+        );
+
+        return;
+      }
+
+      if (!membership) {
+        setErrorMessage(
+          "Your vendor account was created, but your vendor permissions are incomplete."
+        );
+        return;
+      }
+
+      // 4) EVERYTHING GOOD
+      router.push("/vendor");
+      router.refresh();
     } catch (error: any) {
-      console.error("Unexpected vendor login error:", {
-        message: error?.message,
-        name: error?.name,
-        stack: error?.stack,
-      });
+      console.error(
+        "Unexpected vendor login error:",
+        {
+          message: error?.message,
+          name: error?.name,
+          stack: error?.stack,
+        }
+      );
 
       setErrorMessage(
         error?.message ||
@@ -136,7 +183,6 @@ export default function VendorLogin() {
   return (
     <main className="min-h-screen bg-black text-white flex items-center justify-center px-5 py-12">
       <div className="w-full max-w-md">
-
         <div className="text-center mb-8">
           <p className="text-emerald-400 text-xs uppercase tracking-[0.25em] font-bold mb-3">
             MintRadar Vendor Portal
@@ -156,7 +202,6 @@ export default function VendorLogin() {
           className="bg-zinc-950 border border-zinc-900 rounded-3xl p-6 sm:p-8"
         >
           <div className="space-y-5">
-
             <div>
               <label className="block text-sm font-bold mb-2">
                 Email
@@ -200,7 +245,9 @@ export default function VendorLogin() {
               disabled={loading}
               className="w-full bg-emerald-400 hover:bg-emerald-300 disabled:bg-zinc-700 disabled:text-zinc-400 text-black font-black rounded-xl px-5 py-4 transition"
             >
-              {loading ? "Logging In..." : "Log In"}
+              {loading
+                ? "Logging In..."
+                : "Log In"}
             </button>
           </div>
         </form>

@@ -1,85 +1,78 @@
 import { NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 
-type TCGdexSet = {
-  id?: string;
-  name?: string;
-  cardCount?: {
-    total?: number;
-    official?: number;
-  };
+type CatalogSetRow = {
+  external_id: string;
+  name: string;
+  category: string;
+  code: string | null;
+  card_count: number | null;
+  released_at: string | null;
+  set_type: string | null;
+  logo_url: string | null;
+  symbol_url: string | null;
 };
 
-const HEADERS = {
-  Accept: "application/json",
-  "User-Agent": "MintRadar/0.1",
-};
+function getSupabaseClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey =
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-async function fetchTcgdexSets() {
-  const url = "https://api.tcgdex.net/v2/en/sets";
-  const attempts = 2;
-  let lastError: unknown = null;
-
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      return await fetch(url, {
-        headers: HEADERS,
-        next: {
-          revalidate: 3600,
-        },
-      });
-    } catch (error) {
-      lastError = error;
-
-      console.warn(
-        `TCGdex sets attempt ${attempt}/${attempts} failed:`,
-        error
-      );
-
-      if (attempt < attempts) {
-        await new Promise<void>((resolve) =>
-          setTimeout(resolve, 750)
-        );
-      }
-    }
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error(
+      "Supabase environment variables are not configured."
+    );
   }
 
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("TCGdex sets request failed after retry.");
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
 }
 
 export async function GET() {
   try {
-    const response = await fetchTcgdexSets();
+    const supabase = getSupabaseClient();
 
-    if (!response.ok) {
-      throw new Error(
-        `TCGdex sets failed (${response.status})`
-      );
+    const { data, error } = await supabase
+      .from("catalog_sets")
+      .select(
+        `
+          external_id,
+          name,
+          category,
+          code,
+          card_count,
+          released_at,
+          set_type,
+          logo_url,
+          symbol_url
+        `
+      )
+      .eq("data_source", "tcgdex")
+      .eq("category", "Pokemon")
+      .order("released_at", { ascending: false, nullsFirst: false })
+      .order("name", { ascending: true });
+
+    if (error) {
+      throw new Error(error.message);
     }
 
-    const data = await response.json();
-    const rawSets: TCGdexSet[] = Array.isArray(data)
-      ? data
-      : [];
+    const rows = (data ?? []) as CatalogSetRow[];
 
-    const results = rawSets
-      .filter(
-        (set) =>
-          typeof set.id === "string" &&
-          typeof set.name === "string"
-      )
-      .map((set) => ({
-        id: set.id!,
-        name: set.name!,
-        category: "Pokemon" as const,
-        code: set.id!,
-        cardCount:
-          set.cardCount?.total ??
-          set.cardCount?.official ??
-          null,
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    const results = rows.map((set) => ({
+      id: set.external_id,
+      name: set.name,
+      category: "Pokemon" as const,
+      code: set.code ?? set.external_id,
+      cardCount: set.card_count,
+      releasedAt: set.released_at,
+      setType: set.set_type,
+      logoUrl: set.logo_url,
+      symbolUrl: set.symbol_url,
+    }));
 
     return NextResponse.json({
       count: results.length,

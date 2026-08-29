@@ -85,6 +85,18 @@ export default function VendorDashboardPage() {
   const [qrError, setQrError] =
     useState("");
 
+  const [tradeAnalyzerOpen, setTradeAnalyzerOpen] =
+    useState(false);
+
+  const [tradeMode, setTradeMode] =
+    useState<"buy" | "trade">("buy");
+
+  const [tradeMarketValue, setTradeMarketValue] =
+    useState("");
+
+  const [tradePercentage, setTradePercentage] =
+    useState("70");
+
   // -----------------------------------------
   // LOAD CURRENT VENDOR
   // -----------------------------------------
@@ -629,6 +641,35 @@ export default function VendorDashboardPage() {
   }
 
   // -----------------------------------------
+  // TRADE ANALYZER
+  // -----------------------------------------
+
+  const analyzerMarketValue =
+    Math.max(0, Number(tradeMarketValue) || 0);
+
+  const analyzerPercentage =
+    Math.min(
+      100,
+      Math.max(0, Number(tradePercentage) || 0)
+    );
+
+  const analyzerOffer =
+    analyzerMarketValue *
+    (analyzerPercentage / 100);
+
+  const analyzerMargin =
+    Math.max(
+      0,
+      analyzerMarketValue - analyzerOffer
+    );
+
+  function resetTradeAnalyzer() {
+    setTradeMode("buy");
+    setTradeMarketValue("");
+    setTradePercentage("70");
+  }
+
+  // -----------------------------------------
   // LOADING
   // -----------------------------------------
 
@@ -754,12 +795,22 @@ export default function VendorDashboardPage() {
             </div>
           </div>
 
-          <Link
-            href="/vendor/add"
-            className="bg-emerald-400 hover:bg-emerald-300 text-black font-black px-6 py-4 rounded-xl text-center transition"
-          >
-            + Add Item
-          </Link>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <button
+              type="button"
+              onClick={() => setTradeAnalyzerOpen(true)}
+              className="bg-zinc-950 hover:bg-zinc-900 border border-emerald-400/30 text-emerald-300 font-black px-6 py-4 rounded-xl text-center transition"
+            >
+              Trade Analyzer
+            </button>
+
+            <Link
+              href="/vendor/add"
+              className="bg-emerald-400 hover:bg-emerald-300 text-black font-black px-6 py-4 rounded-xl text-center transition"
+            >
+              + Add Item
+            </Link>
+          </div>
 
         </section>
 
@@ -1137,6 +1188,201 @@ export default function VendorDashboardPage() {
         )}
 
       </div>
+
+      {tradeAnalyzerOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 p-0 backdrop-blur-sm sm:items-center sm:p-5"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setTradeAnalyzerOpen(false);
+            }
+          }}
+        >
+          <div className="w-full max-w-lg rounded-t-3xl border border-zinc-800 bg-zinc-950 shadow-2xl sm:rounded-3xl">
+            <div className="flex items-start justify-between gap-5 border-b border-zinc-900 p-5">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400">
+                  Vendor Tool
+                </p>
+
+                <h2 className="mt-2 text-3xl font-black">
+                  Trade Analyzer
+                </h2>
+
+                <p className="mt-1 text-sm text-zinc-500">
+                  Calculate a buy offer or trade credit on the spot.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setTradeAnalyzerOpen(false)}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-zinc-800 bg-black text-xl text-zinc-400 transition hover:text-white"
+                aria-label="Close Trade Analyzer"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="p-5">
+              <div className="grid grid-cols-2 gap-2 rounded-2xl border border-zinc-900 bg-black p-1">
+                <button
+                  type="button"
+                  onClick={() => setTradeMode("buy")}
+                  className={`rounded-xl px-4 py-3 text-sm font-black transition ${
+                    tradeMode === "buy"
+                      ? "bg-emerald-400 text-black"
+                      : "text-zinc-500 hover:text-white"
+                  }`}
+                >
+                  BUY
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setTradeMode("trade")}
+                  className={`rounded-xl px-4 py-3 text-sm font-black transition ${
+                    tradeMode === "trade"
+                      ? "bg-emerald-400 text-black"
+                      : "text-zinc-500 hover:text-white"
+                  }`}
+                >
+                  TRADE
+                </button>
+              </div>
+
+              <div className="mt-5">
+                <label className="mb-2 block text-sm font-bold">
+                  Market Value
+                </label>
+
+                <div className="flex items-center rounded-xl border border-zinc-800 bg-black px-4 focus-within:border-emerald-400">
+                  <span className="font-black text-zinc-500">$</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={tradeMarketValue}
+                    onChange={(event) =>
+                      setTradeMarketValue(event.target.value)
+                    }
+                    placeholder="200.00"
+                    className="w-full bg-transparent px-2 py-4 text-xl font-black text-white outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-5">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="text-sm font-bold">
+                    {tradeMode === "buy"
+                      ? "Buy Percentage"
+                      : "Trade Percentage"}
+                  </label>
+
+                  <span className="text-sm font-black text-emerald-400">
+                    {analyzerPercentage}%
+                  </span>
+                </div>
+
+                <div className="mt-3 grid grid-cols-5 gap-2">
+                  {[60, 65, 70, 75, 80].map((percentage) => (
+                    <button
+                      key={percentage}
+                      type="button"
+                      onClick={() =>
+                        setTradePercentage(String(percentage))
+                      }
+                      className={`rounded-xl border px-2 py-3 text-sm font-black transition ${
+                        analyzerPercentage === percentage
+                          ? "border-emerald-400 bg-emerald-400 text-black"
+                          : "border-zinc-800 bg-black text-zinc-400 hover:border-zinc-700 hover:text-white"
+                      }`}
+                    >
+                      {percentage}%
+                    </button>
+                  ))}
+                </div>
+
+                <div className="mt-3 flex items-center rounded-xl border border-zinc-800 bg-black px-4 focus-within:border-emerald-400">
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.1"
+                    inputMode="decimal"
+                    value={tradePercentage}
+                    onChange={(event) =>
+                      setTradePercentage(event.target.value)
+                    }
+                    placeholder="Custom"
+                    className="w-full bg-transparent py-3 text-white outline-none"
+                  />
+                  <span className="font-black text-zinc-500">%</span>
+                </div>
+              </div>
+
+              <div className="mt-6 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-5">
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">
+                  {tradeMode === "buy" ? "Cash Offer" : "Trade Credit"}
+                </p>
+
+                <p className="mt-2 text-5xl font-black text-white">
+                  ${analyzerOffer.toLocaleString(undefined, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}
+                </p>
+
+                <div className="mt-5 grid grid-cols-2 gap-3 border-t border-emerald-400/10 pt-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-zinc-500">
+                      Market Value
+                    </p>
+                    <p className="mt-1 text-lg font-black">
+                      ${analyzerMarketValue.toLocaleString(undefined, {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-zinc-500">
+                      Difference
+                    </p>
+                    <p className="mt-1 text-lg font-black">
+                      ${analyzerMargin.toLocaleString(undefined, {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={resetTradeAnalyzer}
+                  className="rounded-xl border border-zinc-800 bg-black px-4 py-3 text-sm font-black text-zinc-400 transition hover:text-white"
+                >
+                  Reset
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setTradeAnalyzerOpen(false)}
+                  className="rounded-xl bg-emerald-400 px-4 py-3 text-sm font-black text-black transition hover:bg-emerald-300"
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {qrItem && (
         <div

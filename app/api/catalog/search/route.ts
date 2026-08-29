@@ -2,69 +2,44 @@ import {
   NextRequest,
   NextResponse,
 } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 
-type TCGdexCardBrief = {
-  id?: string;
-  localId?: string;
-  name?: string;
-  image?: string;
+type CardRow = {
+  external_id: string;
+  data_source: string | null;
+  name: string | null;
+  set_name: string | null;
+  card_number: string | null;
+  image_url: string | null;
+  category: string | null;
+  rarity: string | null;
+  edition: string | null;
+  finish: string | null;
 };
 
-type TCGdexSetBrief = {
-  id?: string;
-  name?: string;
-};
-
-type TCGdexSetDetail = {
-  id?: string;
-  name?: string;
-  cards?: TCGdexCardBrief[];
-};
-
-type TCGdexCardDetail = {
-  id?: string;
-  localId?: string;
-  name?: string;
-  image?: string;
-  rarity?: string;
-  illustrator?: string;
-
-  set?: {
-    id?: string;
-    name?: string;
-  };
-
-  variants?: {
-    firstEdition?: boolean;
-    holo?: boolean;
-    normal?: boolean;
-    reverse?: boolean;
-    wPromo?: boolean;
-  };
+type SetRow = {
+  external_id: string;
+  name: string;
+  code: string | null;
 };
 
 type NormalizedCard = {
   external_id: string;
   data_source: "tcgdex";
-
   name: string | null;
   set_name: string | null;
   set_id: string | null;
-
   card_number: string | null;
-
   category: "Pokemon";
-
   rarity: string | null;
   edition: string | null;
   finish: string | null;
   illustrator: string | null;
-
   image_url: string | null;
 };
 
 type SetCandidate = {
-  set: TCGdexSetBrief;
+  set: SetRow;
   sourceQuery: string;
   score: number;
 };
@@ -82,88 +57,50 @@ const STOP_WORDS = new Set([
   "cards",
 ]);
 
-const TCGDEX_REVALIDATE_SECONDS = 3600;
-const TCGDEX_TIMEOUT_MS = 10000;
-const TCGDEX_RETRY_DELAY_MS = 750;
+function getSupabaseClient() {
+  const supabaseUrl =
+    process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey =
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-async function fetchTCGdex(
-  url: string
-): Promise<Response> {
-  let lastError: unknown = null;
-
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      TCGDEX_TIMEOUT_MS
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error(
+      "Supabase environment variables are not configured."
     );
-
-    try {
-      const response = await fetch(url, {
-        next: {
-          revalidate: TCGDEX_REVALIDATE_SECONDS,
-        },
-        signal: controller.signal,
-        headers: {
-          Accept: "application/json",
-          "User-Agent": "MintRadar/0.1",
-        },
-      });
-
-      clearTimeout(timeout);
-      return response;
-    } catch (error) {
-      clearTimeout(timeout);
-      lastError = error;
-
-      console.warn(
-        `TCGdex request attempt ${attempt} failed:`,
-        url,
-        error
-      );
-
-      if (attempt < 2) {
-        await new Promise<void>((resolve) =>
-          setTimeout(
-            resolve,
-            TCGDEX_RETRY_DELAY_MS
-          )
-        );
-      }
-    }
   }
 
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("TCGdex request failed.");
+  return createClient(
+    supabaseUrl,
+    supabaseAnonKey,
+    {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    }
+  );
 }
 
 export async function GET(
   request: NextRequest
 ) {
   try {
-    const searchParams =
-      request.nextUrl.searchParams;
-
     const query =
-      searchParams
+      request.nextUrl.searchParams
         .get("q")
         ?.trim();
 
     const requestedPage =
       Number(
-        searchParams.get("page") ||
-          "1"
+        request.nextUrl.searchParams.get(
+          "page"
+        ) || "1"
       );
 
     const page =
-      Number.isFinite(
-        requestedPage
-      ) &&
+      Number.isFinite(requestedPage) &&
       requestedPage > 0
-        ? Math.floor(
-            requestedPage
-          )
+        ? Math.floor(requestedPage)
         : 1;
 
     if (!query) {
@@ -173,42 +110,21 @@ export async function GET(
             "Search query is required.",
           results: [],
         },
-        {
-          status: 400,
-        }
+        { status: 400 }
       );
     }
 
-    // ----------------------------------------
-    // 1. FIND POSSIBLE SETS INSIDE THE QUERY
-    // ----------------------------------------
-    //
-    // Examples:
-    //
-    // "151"
-    //   -> set = 151
-    //
-    // "Charizard 151"
-    //   -> set = 151
-    //   -> card text = Charizard
-    //
-    // "Charizard from 151"
-    //   -> set = 151
-    //   -> card text = Charizard
-    //
-    // "Pikachu Prismatic Evolutions"
-    //   -> set = Prismatic Evolutions
-    //   -> card text = Pikachu
-    // ----------------------------------------
+    const supabase =
+      getSupabaseClient();
 
     const setCandidates =
       await findMatchingSets(
+        supabase,
         query
       );
 
     const bestSet =
-      setCandidates[0] ||
-      null;
+      setCandidates[0] || null;
 
     const cardTextWithinSet =
       bestSet
@@ -218,243 +134,55 @@ export async function GET(
           )
         : "";
 
-    // ----------------------------------------
-    // 2. SEARCH NORMAL CARD NAMES TOO
-    // ----------------------------------------
-    //
-    // If we found a set inside the query,
-    // search TCGdex using only the remaining
-    // card-name portion.
-    //
-    // Otherwise, search the original query.
-    // ----------------------------------------
-
-    const normalCardQuery =
-      cardTextWithinSet ||
-      query;
-
-    const normalSearchPromise =
-      normalCardQuery
-        ? searchCardsByName(
-            normalCardQuery,
-            page
-          )
-        : Promise.resolve(
-            [] as TCGdexCardBrief[]
-          );
-
-    const setSearchPromise =
-      bestSet
-        ? loadCardsFromSet(
-            bestSet.set
-          )
-        : Promise.resolve(
-            [] as TCGdexCardBrief[]
-          );
-
-    const [
-      normalSearchResult,
-      setCardsResult,
-    ] =
-      await Promise.allSettled([
-        normalSearchPromise,
-        setSearchPromise,
-      ]);
-
-    const normalNameMatches =
-      normalSearchResult.status ===
-      "fulfilled"
-        ? normalSearchResult.value
-        : [];
-
-    const allSetCards =
-      setCardsResult.status ===
-      "fulfilled"
-        ? setCardsResult.value
-        : [];
-
-    if (
-      normalSearchResult.status ===
-        "rejected" &&
-      setCardsResult.status ===
-        "rejected"
-    ) {
-      console.error(
-        "TCGdex card search failed:",
-        normalSearchResult.reason
-      );
-
-      console.error(
-        "TCGdex set-card search failed:",
-        setCardsResult.reason
-      );
-
-      return NextResponse.json(
-        {
-          error:
-            "TCGdex catalog search failed.",
-          results: [],
-        },
-        {
-          status: 502,
-        }
-      );
-    }
-
-    // ----------------------------------------
-    // 3. FILTER SET CARDS BY CARD NAME
-    // ----------------------------------------
-    //
-    // If the customer searched only a set name,
-    // keep every card from that set.
-    //
-    // If the customer searched "Charizard 151",
-    // keep only cards from 151 whose names match
-    // "Charizard".
-    // ----------------------------------------
-
-    const filteredSetCards =
-      bestSet
-        ? filterSetCardsByCardText(
-            allSetCards,
-            cardTextWithinSet
-          )
-        : [];
-
-    // ----------------------------------------
-    // 4. PREFER SET-SPECIFIC MATCHES
-    // ----------------------------------------
-    //
-    // This is important.
-    //
-    // For "Charizard 151", the Charizard cards
-    // from set 151 should appear BEFORE generic
-    // Charizard results from other sets.
-    // ----------------------------------------
-
-    const merged =
-      new Map<
-        string,
-        TCGdexCardBrief
-      >();
-
-    [
-      ...filteredSetCards,
-      ...normalNameMatches,
-    ].forEach((card) => {
-      if (!card.id) {
-        return;
-      }
-
-      if (
-        !merged.has(
-          card.id
-        )
-      ) {
-        merged.set(
-          card.id,
-          card
-        );
-      }
-    });
-
-    const mergedCards =
-      Array.from(
-        merged.values()
-      );
-
-    // ----------------------------------------
-    // 5. PAGE THE SET RESULTS LOCALLY
-    // ----------------------------------------
-    //
-    // Normal TCGdex card-name results are already
-    // paged by TCGdex. Set cards are not, so when
-    // a set is detected we paginate the merged
-    // results locally with set-specific matches
-    // ranked first.
-    // ----------------------------------------
-
-    let cardsForThisPage:
-      TCGdexCardBrief[];
-
-    let hasMore:
-      boolean;
+    let matchingCards:
+      CardRow[] = [];
 
     if (bestSet) {
-      const start =
-        (page - 1) *
-        PAGE_SIZE;
-
-      const end =
-        start +
-        PAGE_SIZE;
-
-      cardsForThisPage =
-        mergedCards.slice(
-          start,
-          end
+      matchingCards =
+        await searchWithinSet(
+          supabase,
+          bestSet.set,
+          cardTextWithinSet
         );
-
-      hasMore =
-        end <
-        mergedCards.length;
     } else {
-      cardsForThisPage =
-        mergedCards.slice(
-          0,
-          PAGE_SIZE
+      matchingCards =
+        await searchCardsByName(
+          supabase,
+          query
         );
-
-      hasMore =
-        normalNameMatches.length ===
-        PAGE_SIZE;
     }
 
-    // ----------------------------------------
-    // 6. LOAD CARD DETAILS
-    // ----------------------------------------
+    const start =
+      (page - 1) * PAGE_SIZE;
+    const end =
+      start + PAGE_SIZE;
 
-    const detailedCards =
-      await Promise.all(
-        cardsForThisPage.map(
-          (card) =>
-            loadCardDetail(
-              card
-            )
-        )
+    const pageRows =
+      matchingCards.slice(
+        start,
+        end
       );
 
     const results =
-      detailedCards.filter(
-        (
-          card
-        ): card is NormalizedCard =>
-          card !== null
+      pageRows.map(
+        normalizeCard
       );
 
     return NextResponse.json({
       query,
       page,
-      pageSize:
-        PAGE_SIZE,
-
-      count:
-        results.length,
-
-      hasMore,
+      pageSize: PAGE_SIZE,
+      count: results.length,
+      hasMore:
+        end < matchingCards.length,
 
       matchedSets:
         setCandidates
-          .filter(
-            (candidate) =>
-              candidate.set.id &&
-              candidate.set.name
-          )
           .slice(0, 5)
           .map(
             (candidate) => ({
               id:
-                candidate.set.id,
+                candidate.set.external_id,
               name:
                 candidate.set.name,
               score:
@@ -466,51 +194,45 @@ export async function GET(
         bestSet
           ? {
               set:
-                bestSet.set
-                  .name ||
-                null,
+                bestSet.set.name,
               cardText:
                 cardTextWithinSet ||
                 null,
             }
           : {
               set: null,
-              cardText:
-                query,
+              cardText: query,
             },
 
       results,
     });
   } catch (error) {
     console.error(
-      "MintRadar catalog search error:",
+      "MintRadar Pokémon catalog search error:",
       error
     );
 
     return NextResponse.json(
       {
         error:
-          "Something went wrong while searching the catalog.",
+          error instanceof Error
+            ? error.message
+            : "Something went wrong while searching the catalog.",
         results: [],
       },
-      {
-        status: 500,
-      }
+      { status: 500 }
     );
   }
 }
 
-// ============================================
-// SMART SET DETECTION
-// ============================================
-
 async function findMatchingSets(
+  supabase: ReturnType<
+    typeof getSupabaseClient
+  >,
   query: string
 ): Promise<SetCandidate[]> {
   const searchPieces =
-    buildSetSearchPieces(
-      query
-    );
+    buildSetSearchPieces(query);
 
   if (
     searchPieces.length === 0
@@ -519,17 +241,43 @@ async function findMatchingSets(
   }
 
   const searches =
-    await Promise.allSettled(
+    await Promise.all(
       searchPieces.map(
-        async (
-          piece
-        ) => ({
-          piece,
-          sets:
-            await searchSetsByName(
-              piece
-            ),
-        })
+        async (piece) => {
+          const safePiece =
+            escapeLikePattern(piece);
+
+          const { data, error } =
+            await supabase
+              .from("catalog_sets")
+              .select(
+                "external_id,name,code"
+              )
+              .eq(
+                "data_source",
+                "tcgdex"
+              )
+              .eq(
+                "category",
+                "Pokemon"
+              )
+              .or(
+                `name.ilike.%${safePiece}%,code.ilike.%${safePiece}%`
+              )
+              .limit(20);
+
+          if (error) {
+            throw new Error(
+              `Pokémon set search failed: ${error.message}`
+            );
+          }
+
+          return {
+            piece,
+            sets:
+              (data ?? []) as SetRow[],
+          };
+        }
       )
     );
 
@@ -539,75 +287,232 @@ async function findMatchingSets(
       SetCandidate
     >();
 
-  searches.forEach(
-    (result) => {
-      if (
-        result.status !==
-        "fulfilled"
-      ) {
-        return;
+  for (
+    const {
+      piece,
+      sets,
+    } of searches
+  ) {
+    for (const set of sets) {
+      const score =
+        scoreSetMatch(
+          query,
+          piece,
+          set
+        );
+
+      if (score <= 0) {
+        continue;
       }
 
-      const {
-        piece,
-        sets,
-      } =
-        result.value;
+      const existing =
+        candidates.get(
+          set.external_id
+        );
 
-      sets.forEach(
-        (set) => {
-          if (
-            !set.id ||
-            !set.name
-          ) {
-            return;
+      if (
+        !existing ||
+        score > existing.score
+      ) {
+        candidates.set(
+          set.external_id,
+          {
+            set,
+            sourceQuery: piece,
+            score,
           }
-
-          const score =
-            scoreSetMatch(
-              query,
-              piece,
-              set
-            );
-
-          if (
-            score <= 0
-          ) {
-            return;
-          }
-
-          const existing =
-            candidates.get(
-              set.id
-            );
-
-          if (
-            !existing ||
-            score >
-              existing.score
-          ) {
-            candidates.set(
-              set.id,
-              {
-                set,
-                sourceQuery:
-                  piece,
-                score,
-              }
-            );
-          }
-        }
-      );
+        );
+      }
     }
-  );
+  }
 
   return Array.from(
     candidates.values()
   ).sort(
     (a, b) =>
-      b.score -
-      a.score
+      b.score - a.score
   );
+}
+
+async function searchWithinSet(
+  supabase: ReturnType<
+    typeof getSupabaseClient
+  >,
+  set: SetRow,
+  cardText: string
+): Promise<CardRow[]> {
+  let request =
+    supabase
+      .from("cards")
+      .select(
+        "external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish"
+      )
+      .eq(
+        "data_source",
+        "tcgdex"
+      )
+      .eq(
+        "category",
+        "Pokemon"
+      )
+      .like(
+        "external_id",
+        `${escapeLikePattern(
+          set.external_id
+        )}-%`
+      );
+
+  const searchWords =
+    normalizeText(cardText)
+      .split(" ")
+      .filter(Boolean);
+
+  for (
+    const word of searchWords
+  ) {
+    request =
+      request.ilike(
+        "name",
+        `%${escapeLikePattern(
+          word
+        )}%`
+      );
+  }
+
+  const { data, error } =
+    await request
+      .order(
+        "card_number",
+        { ascending: true }
+      )
+      .limit(1000);
+
+  if (error) {
+    throw new Error(
+      `Pokémon set-card search failed: ${error.message}`
+    );
+  }
+
+  return (data ?? []) as CardRow[];
+}
+
+async function searchCardsByName(
+  supabase: ReturnType<
+    typeof getSupabaseClient
+  >,
+  query: string
+): Promise<CardRow[]> {
+  const words =
+    normalizeText(query)
+      .split(" ")
+      .filter(
+        (word) =>
+          word.length > 0 &&
+          !STOP_WORDS.has(word)
+      );
+
+  if (words.length === 0) {
+    return [];
+  }
+
+  let request =
+    supabase
+      .from("cards")
+      .select(
+        "external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish"
+      )
+      .eq(
+        "data_source",
+        "tcgdex"
+      )
+      .eq(
+        "category",
+        "Pokemon"
+      );
+
+  for (const word of words) {
+    request =
+      request.ilike(
+        "name",
+        `%${escapeLikePattern(
+          word
+        )}%`
+      );
+  }
+
+  const { data, error } =
+    await request
+      .order(
+        "name",
+        { ascending: true }
+      )
+      .order(
+        "set_name",
+        { ascending: true }
+      )
+      .limit(1000);
+
+  if (error) {
+    throw new Error(
+      `Pokémon card search failed: ${error.message}`
+    );
+  }
+
+  return (data ?? []) as CardRow[];
+}
+
+function normalizeCard(
+  card: CardRow
+): NormalizedCard {
+  return {
+    external_id:
+      card.external_id,
+    data_source: "tcgdex",
+    name: card.name,
+    set_name: card.set_name,
+    set_id:
+      deriveSetId(
+        card.external_id,
+        card.card_number
+      ),
+    card_number:
+      card.card_number,
+    category: "Pokemon",
+    rarity: card.rarity,
+    edition: card.edition,
+    finish: card.finish,
+    illustrator: null,
+    image_url: card.image_url,
+  };
+}
+
+function deriveSetId(
+  externalId: string,
+  cardNumber: string | null
+) {
+  if (
+    cardNumber &&
+    externalId.endsWith(
+      `-${cardNumber}`
+    )
+  ) {
+    return externalId.slice(
+      0,
+      -(
+        cardNumber.length + 1
+      )
+    );
+  }
+
+  const lastDash =
+    externalId.lastIndexOf("-");
+
+  return lastDash > 0
+    ? externalId.slice(
+        0,
+        lastDash
+      )
+    : null;
 }
 
 function buildSetSearchPieces(
@@ -624,28 +529,20 @@ function buildSetSearchPieces(
   const pieces =
     new Set<string>();
 
-  // Whole query first.
   if (cleaned) {
     pieces.add(cleaned);
   }
 
-  // Individual words matter for searches like
-  // "Charizard 151".
   words.forEach(
     (word) => {
       if (
-        !STOP_WORDS.has(
-          word
-        )
+        !STOP_WORDS.has(word)
       ) {
         pieces.add(word);
       }
     }
   );
 
-  // Add useful adjacent phrases so searches like
-  // "Pikachu Prismatic Evolutions" can identify
-  // the multi-word set name.
   for (
     let size =
       Math.min(
@@ -658,52 +555,35 @@ function buildSetSearchPieces(
     for (
       let start = 0;
       start <=
-      words.length -
-        size;
+      words.length - size;
       start++
     ) {
       const phrase =
         words
           .slice(
             start,
-            start +
-              size
+            start + size
           )
           .join(" ");
 
-      if (
-        phrase &&
-        !Array.from(
-          STOP_WORDS
-        ).includes(
-          phrase
-        )
-      ) {
-        pieces.add(
-          phrase
-        );
+      if (phrase) {
+        pieces.add(phrase);
       }
     }
   }
 
-  // Keep request count reasonable.
   return Array.from(
     pieces
-  ).slice(
-    0,
-    12
-  );
+  ).slice(0, 12);
 }
 
 function scoreSetMatch(
   fullQuery: string,
   sourcePiece: string,
-  set: TCGdexSetBrief
+  set: SetRow
 ) {
   const normalizedFull =
-    normalizeText(
-      fullQuery
-    );
+    normalizeText(fullQuery);
 
   const normalizedPiece =
     normalizeText(
@@ -715,31 +595,32 @@ function scoreSetMatch(
       set.name || ""
     );
 
+  const setCode =
+    normalizeText(
+      set.code || ""
+    );
+
   if (
-    !setName ||
-    !normalizedPiece
+    !normalizedPiece ||
+    (!setName && !setCode)
   ) {
     return 0;
   }
 
-  // Exact set-only search:
-  // "151"
   if (
     normalizedFull ===
-    setName
+      setName ||
+    normalizedFull ===
+      setCode
   ) {
     return 1000;
   }
 
-  // Search contains exact set name:
-  // "Charizard Prismatic Evolutions"
   if (
-    normalizedFull
-      .split(" ")
-      .join(" ")
-      .includes(
-        setName
-      )
+    setName &&
+    normalizedFull.includes(
+      setName
+    )
   ) {
     return (
       900 +
@@ -747,20 +628,30 @@ function scoreSetMatch(
     );
   }
 
-  // The fragment sent to TCGdex exactly equals
-  // the set name:
-  // piece "151" -> set "151"
   if (
-    normalizedPiece ===
-    setName
+    setCode &&
+    normalizedFull
+      .split(" ")
+      .includes(setCode)
   ) {
     return (
-      800 +
-      setName.length
+      880 +
+      setCode.length
     );
   }
 
-  // Favor longer multi-word set fragments.
+  if (
+    normalizedPiece ===
+      setName ||
+    normalizedPiece ===
+      setCode
+  ) {
+    return (
+      800 +
+      normalizedPiece.length
+    );
+  }
+
   if (
     setName.includes(
       normalizedPiece
@@ -773,31 +664,25 @@ function scoreSetMatch(
   }
 
   if (
-    normalizedPiece.includes(
-      setName
+    setCode.includes(
+      normalizedPiece
     )
   ) {
     return (
-      450 +
-      setName.length
+      490 +
+      normalizedPiece.length
     );
   }
 
   return 0;
 }
 
-// ============================================
-// EXTRACT CARD TEXT FROM QUERY
-// ============================================
-
 function extractCardText(
   query: string,
   candidate: SetCandidate
 ) {
   const queryWords =
-    normalizeText(
-      query
-    )
+    normalizeText(query)
       .split(" ")
       .filter(Boolean);
 
@@ -805,6 +690,13 @@ function extractCardText(
     normalizeText(
       candidate.set.name ||
         candidate.sourceQuery
+    )
+      .split(" ")
+      .filter(Boolean);
+
+  const codeWords =
+    normalizeText(
+      candidate.set.code || ""
     )
       .split(" ")
       .filter(Boolean);
@@ -819,6 +711,7 @@ function extractCardText(
   const wordsToRemove =
     new Set([
       ...setWords,
+      ...codeWords,
       ...sourceWords,
       ...STOP_WORDS,
     ]);
@@ -834,374 +727,14 @@ function extractCardText(
     .trim();
 }
 
-// ============================================
-// CARD NAME SEARCH
-// ============================================
-
-async function searchCardsByName(
-  query: string,
-  page: number
-): Promise<
-  TCGdexCardBrief[]
-> {
-  const params =
-    new URLSearchParams();
-
-  params.set(
-    "name",
-    query
-  );
-
-  params.set(
-    "pagination:page",
-    String(page)
-  );
-
-  params.set(
-    "pagination:itemsPerPage",
-    String(PAGE_SIZE)
-  );
-
-  const response =
-    await fetchTCGdex(`https://api.tcgdex.net/v2/en/cards?${params.toString()}`);
-
-  if (
-    !response.ok
-  ) {
-    const errorText =
-      await response.text();
-
-    throw new Error(
-      `TCGdex card search failed (${response.status}): ${errorText}`
-    );
-  }
-
-  const data =
-    await response.json();
-
-  return Array.isArray(
-    data
-  )
-    ? (data as TCGdexCardBrief[])
-    : [];
-}
-
-// ============================================
-// SET NAME SEARCH
-// ============================================
-
-async function searchSetsByName(
-  query: string
-): Promise<
-  TCGdexSetBrief[]
-> {
-  const params =
-    new URLSearchParams();
-
-  params.set(
-    "name",
-    query
-  );
-
-  params.set(
-    "pagination:page",
-    "1"
-  );
-
-  params.set(
-    "pagination:itemsPerPage",
-    "20"
-  );
-
-  const response =
-    await fetchTCGdex(`https://api.tcgdex.net/v2/en/sets?${params.toString()}`);
-
-  if (
-    !response.ok
-  ) {
-    const errorText =
-      await response.text();
-
-    throw new Error(
-      `TCGdex set search failed (${response.status}): ${errorText}`
-    );
-  }
-
-  const data =
-    await response.json();
-
-  return Array.isArray(
-    data
-  )
-    ? (data as TCGdexSetBrief[])
-    : [];
-}
-
-// ============================================
-// LOAD ALL CARDS FROM ONE SET
-// ============================================
-
-async function loadCardsFromSet(
-  set: TCGdexSetBrief
-): Promise<
-  TCGdexCardBrief[]
-> {
-  if (
-    !set.id
-  ) {
-    return [];
-  }
-
-  const response =
-    await fetchTCGdex(`https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(
-        set.id
-      )}`);
-
-  if (
-    !response.ok
-  ) {
-    const errorText =
-      await response.text();
-
-    throw new Error(
-      `TCGdex set detail failed (${response.status}): ${errorText}`
-    );
-  }
-
-  const detail:
-    TCGdexSetDetail =
-      await response.json();
-
-  return Array.isArray(
-    detail.cards
-  )
-    ? detail.cards
-    : [];
-}
-
-// ============================================
-// FILTER CARDS INSIDE MATCHED SET
-// ============================================
-
-function filterSetCardsByCardText(
-  cards: TCGdexCardBrief[],
-  cardText: string
+function escapeLikePattern(
+  value: string
 ) {
-  const normalizedCardText =
-    normalizeText(
-      cardText
-    );
-
-  // Searching only the set:
-  // "151"
-  // -> return the whole set.
-  if (
-    !normalizedCardText
-  ) {
-    return cards;
-  }
-
-  const searchWords =
-    normalizedCardText
-      .split(" ")
-      .filter(Boolean);
-
-  return cards.filter(
-    (card) => {
-      const cardName =
-        normalizeText(
-          card.name || ""
-        );
-
-      if (
-        !cardName
-      ) {
-        return false;
-      }
-
-      // Require every meaningful remaining
-      // search word to exist in the card name.
-      return searchWords.every(
-        (word) =>
-          cardName.includes(
-            word
-          )
-      );
-    }
-  );
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/%/g, "\\%")
+    .replace(/_/g, "\\_");
 }
-
-// ============================================
-// CARD DETAIL NORMALIZATION
-// ============================================
-
-async function loadCardDetail(
-  card: TCGdexCardBrief
-): Promise<
-  NormalizedCard | null
-> {
-  if (
-    !card.id
-  ) {
-    return null;
-  }
-
-  try {
-    const detailResponse =
-      await fetchTCGdex(`https://api.tcgdex.net/v2/en/cards/${encodeURIComponent(
-          card.id
-        )}`);
-
-    if (
-      !detailResponse.ok
-    ) {
-      return {
-        external_id:
-          card.id,
-
-        data_source:
-          "tcgdex",
-
-        name:
-          card.name ||
-          null,
-
-        set_name:
-          null,
-
-        set_id:
-          null,
-
-        card_number:
-          card.localId ||
-          null,
-
-        category:
-          "Pokemon",
-
-        rarity:
-          null,
-
-        edition:
-          null,
-
-        finish:
-          null,
-
-        illustrator:
-          null,
-
-        image_url:
-          card.image
-            ? `${card.image}/high.webp`
-            : null,
-      };
-    }
-
-    const detail:
-      TCGdexCardDetail =
-        await detailResponse.json();
-
-    let edition:
-      string | null =
-        null;
-
-    let finish:
-      string | null =
-        null;
-
-    if (
-      detail.variants
-        ?.firstEdition
-    ) {
-      edition =
-        "1st Edition";
-    }
-
-    if (
-      detail.variants
-        ?.holo
-    ) {
-      finish =
-        "Holo";
-    } else if (
-      detail.variants
-        ?.reverse
-    ) {
-      finish =
-        "Reverse Holo";
-    } else if (
-      detail.variants
-        ?.normal
-    ) {
-      finish =
-        "Non-Holo";
-    }
-
-    return {
-      external_id:
-        detail.id ||
-        card.id,
-
-      data_source:
-        "tcgdex",
-
-      name:
-        detail.name ||
-        card.name ||
-        null,
-
-      set_name:
-        detail.set?.name ||
-        null,
-
-      set_id:
-        detail.set?.id ||
-        null,
-
-      card_number:
-        detail.localId ||
-        card.localId ||
-        null,
-
-      category:
-        "Pokemon",
-
-      rarity:
-        detail.rarity ||
-        null,
-
-      edition,
-
-      finish,
-
-      illustrator:
-        detail.illustrator ||
-        null,
-
-      image_url:
-        detail.image
-          ? `${detail.image}/high.webp`
-          : card.image
-          ? `${card.image}/high.webp`
-          : null,
-    };
-  } catch (
-    error
-  ) {
-    console.error(
-      "TCGdex detail fetch failed:",
-      card.id,
-      error
-    );
-
-    return null;
-  }
-}
-
-// ============================================
-// TEXT NORMALIZATION
-// ============================================
 
 function normalizeText(
   value: string
