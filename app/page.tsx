@@ -19,6 +19,8 @@ type InventoryListing = {
 type Card = {
   id: string;
   event_id?: string | null;
+  external_id?: string | null;
+  data_source?: string | null;
   name?: string | null;
   set_name?: string | null;
   card_number?: string | null;
@@ -118,6 +120,8 @@ export default function Home() {
         .select(`
           id,
           event_id,
+          external_id,
+          data_source,
           name,
           set_name,
           card_number,
@@ -126,7 +130,7 @@ export default function Home() {
           rarity,
           edition,
           finish,
-          inventory (
+          inventory!inner (
             id,
             listing_type,
             condition,
@@ -136,7 +140,8 @@ export default function Home() {
             price,
             quantity
           )
-        `);
+        `)
+        .gt("inventory.quantity", 0);
 
       if (error) {
         console.error(
@@ -429,6 +434,25 @@ export default function Home() {
     });
 
     return counts;
+  }, [cards]);
+
+  // -----------------------------------------
+  // LIVE INVENTORY LOOKUP FOR CATALOG RESULTS
+  // -----------------------------------------
+
+  const liveCardIds = useMemo(() => {
+    const lookup = new Map<string, string>();
+
+    cards.forEach((card) => {
+      if (card.data_source && card.external_id) {
+        lookup.set(
+          `${card.data_source}:${card.external_id}`,
+          card.id
+        );
+      }
+    });
+
+    return lookup;
   }, [cards]);
 
   // -----------------------------------------
@@ -760,6 +784,7 @@ export default function Home() {
                   <CatalogCardView
                     key={key}
                     card={card}
+                    cardId={liveCardIds.get(key) || null}
                     wished={wished}
                     busy={wishlistBusy === key}
                     onWishlist={() => addToWishlist(card)}
@@ -1111,23 +1136,27 @@ function ListingPreview({
 
 function CatalogCardView({
   card,
+  cardId,
   wished,
   busy,
   onWishlist,
 }: {
   card: CatalogCard;
+  cardId: string | null;
   wished: boolean;
   busy: boolean;
   onWishlist: () => void;
 }) {
-  return (
-    <article className="h-full bg-zinc-950 border border-zinc-900 rounded-2xl overflow-hidden hover:border-emerald-400/50 transition">
+  const cardContent = (
+    <>
       <div className="aspect-[3/4] bg-zinc-900 flex items-center justify-center overflow-hidden">
         {card.image_url ? (
           <img
             src={card.image_url}
             alt={card.name}
-            className="w-full h-full object-contain p-3"
+            className={`w-full h-full object-contain p-3 transition duration-200 ${
+              cardId ? "group-hover:scale-[1.03]" : ""
+            }`}
           />
         ) : (
           <div className="text-zinc-700 text-sm text-center px-4">
@@ -1136,10 +1165,18 @@ function CatalogCardView({
         )}
       </div>
 
-      <div className="p-4">
-        <span className="inline-flex text-[10px] uppercase tracking-[0.14em] font-black px-2 py-1 rounded-full border border-emerald-400/20 bg-emerald-400/10 text-emerald-300">
-          {getCategoryLabel(card.category || "Other")}
-        </span>
+      <div className="p-4 pb-0">
+        <div className="flex items-center justify-between gap-2">
+          <span className="inline-flex text-[10px] uppercase tracking-[0.14em] font-black px-2 py-1 rounded-full border border-emerald-400/20 bg-emerald-400/10 text-emerald-300">
+            {getCategoryLabel(card.category || "Other")}
+          </span>
+
+          {cardId && (
+            <span className="text-[10px] uppercase tracking-[0.14em] font-black text-emerald-400">
+              Available
+            </span>
+          )}
+        </div>
 
         <div className="mt-3">
           <div className="flex items-start justify-between gap-2">
@@ -1175,9 +1212,38 @@ function CatalogCardView({
               </span>
             )}
           </div>
-        </div>
 
-        <div className="mt-4 pt-4 border-t border-zinc-900">
+          {cardId && (
+            <p className="mt-4 text-sm font-black text-emerald-400">
+              View available listing →
+            </p>
+          )}
+        </div>
+      </div>
+    </>
+  );
+
+  return (
+    <article
+      className={`h-full bg-zinc-950 border border-zinc-900 rounded-2xl overflow-hidden transition ${
+        cardId
+          ? "hover:border-emerald-400/60"
+          : "hover:border-emerald-400/50"
+      }`}
+    >
+      {cardId ? (
+        <Link
+          href={`/card/${cardId}`}
+          className="group block"
+        >
+          {cardContent}
+        </Link>
+      ) : (
+        cardContent
+      )}
+
+      <div className="p-4">
+        <div className="pt-4 border-t border-zinc-900">
           <button
             type="button"
             disabled={wished || busy}
