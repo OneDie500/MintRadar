@@ -2,18 +2,16 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase";
 
 export default function VendorSignup() {
-  const router = useRouter();
-
   const [businessName, setBusinessName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [instagram, setInstagram] = useState("");
   const [bio, setBio] = useState("");
+
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
@@ -47,46 +45,38 @@ export default function VendorSignup() {
     setLoading(true);
 
     try {
-      const { data, error: signupError } = await supabase.auth.signUp({
+      const { data, error } = await supabase.auth.signUp({
         email: email.trim(),
         password,
+        options: {
+          data: {
+            business_name: businessName.trim(),
+            instagram: instagram.trim() || null,
+            bio: bio.trim() || null,
+          },
+        },
       });
 
-      if (signupError) {
-        throw signupError;
-      }
+      if (error) {
+        console.error("Supabase signup error:", {
+          message: error.message,
+          status: error.status,
+          name: error.name,
+        });
 
-      const user = data.user;
-
-      if (!user) {
-        setMessage(
-          "Account created. Please check your email to confirm your account before logging in."
-        );
-        setLoading(false);
+        setErrorMessage(error.message);
         return;
       }
 
-      const { error: vendorError } = await supabase
-        .from("vendors")
-        .insert({
-          user_id: user.id,
-          business_name: businessName.trim(),
-          instagram: instagram.trim() || null,
-          bio: bio.trim() || null,
-          status: "pending",
-        });
-
-      if (vendorError) {
-        throw vendorError;
-      }
-
-      if (data.session) {
-        router.push("/vendor");
+      if (!data.user) {
+        setErrorMessage(
+          "Account could not be created. Please try again."
+        );
         return;
       }
 
       setMessage(
-        "Vendor account created! Please check your email to confirm your account, then log in."
+        "Vendor account created! Check your email to confirm your account, then come back and log in."
       );
 
       setBusinessName("");
@@ -96,10 +86,15 @@ export default function VendorSignup() {
       setInstagram("");
       setBio("");
     } catch (error: any) {
-      console.error("Vendor signup error:", error);
+      console.error("Unexpected signup error:", {
+        message: error?.message,
+        name: error?.name,
+        stack: error?.stack,
+      });
 
       setErrorMessage(
-        error?.message || "Something went wrong while creating your account."
+        error?.message ||
+          "Something went wrong while creating your account."
       );
     } finally {
       setLoading(false);
@@ -109,6 +104,7 @@ export default function VendorSignup() {
   return (
     <main className="min-h-screen bg-black text-white flex items-center justify-center px-5 py-12">
       <div className="w-full max-w-xl">
+
         <div className="mb-8 text-center">
           <p className="text-emerald-400 text-xs uppercase tracking-[0.25em] font-bold mb-3">
             MintRadar Vendor Portal
@@ -119,7 +115,7 @@ export default function VendorSignup() {
           </h1>
 
           <p className="text-zinc-500 mt-3">
-            Set up your vendor profile and start building your MintRadar inventory.
+            Create your account and start building your MintRadar inventory.
           </p>
         </div>
 
@@ -137,7 +133,9 @@ export default function VendorSignup() {
               <input
                 type="text"
                 value={businessName}
-                onChange={(event) => setBusinessName(event.target.value)}
+                onChange={(event) =>
+                  setBusinessName(event.target.value)
+                }
                 placeholder="OnlySlabs"
                 className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-white outline-none focus:border-emerald-400 transition"
               />
@@ -151,7 +149,9 @@ export default function VendorSignup() {
               <input
                 type="email"
                 value={email}
-                onChange={(event) => setEmail(event.target.value)}
+                onChange={(event) =>
+                  setEmail(event.target.value)
+                }
                 placeholder="vendor@example.com"
                 className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-white outline-none focus:border-emerald-400 transition"
               />
@@ -165,7 +165,9 @@ export default function VendorSignup() {
               <input
                 type="password"
                 value={password}
-                onChange={(event) => setPassword(event.target.value)}
+                onChange={(event) =>
+                  setPassword(event.target.value)
+                }
                 placeholder="Minimum 6 characters"
                 className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-white outline-none focus:border-emerald-400 transition"
               />
@@ -189,16 +191,18 @@ export default function VendorSignup() {
 
             <div>
               <label className="block text-sm font-bold mb-2">
-                Instagram
+                Instagram{" "}
                 <span className="text-zinc-600 font-normal">
-                  {" "}Optional
+                  Optional
                 </span>
               </label>
 
               <input
                 type="text"
                 value={instagram}
-                onChange={(event) => setInstagram(event.target.value)}
+                onChange={(event) =>
+                  setInstagram(event.target.value)
+                }
                 placeholder="@yourshop"
                 className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-white outline-none focus:border-emerald-400 transition"
               />
@@ -206,15 +210,17 @@ export default function VendorSignup() {
 
             <div>
               <label className="block text-sm font-bold mb-2">
-                Vendor Bio
+                Vendor Bio{" "}
                 <span className="text-zinc-600 font-normal">
-                  {" "}Optional
+                  Optional
                 </span>
               </label>
 
               <textarea
                 value={bio}
-                onChange={(event) => setBio(event.target.value)}
+                onChange={(event) =>
+                  setBio(event.target.value)
+                }
                 placeholder="Tell customers a little about your shop..."
                 rows={4}
                 className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-white outline-none focus:border-emerald-400 transition resize-none"
@@ -238,7 +244,9 @@ export default function VendorSignup() {
               disabled={loading}
               className="w-full bg-emerald-400 hover:bg-emerald-300 disabled:bg-zinc-700 disabled:text-zinc-400 text-black font-black rounded-xl px-5 py-4 transition"
             >
-              {loading ? "Creating Account..." : "Create Vendor Account"}
+              {loading
+                ? "Creating Account..."
+                : "Create Vendor Account"}
             </button>
           </div>
         </form>
