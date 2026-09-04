@@ -1,13 +1,13 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
 type Mode = "login" | "signup";
 
-export default function CustomerLoginPage() {
+function CustomerLoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -388,5 +388,23 @@ export default function CustomerLoginPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+export default function CustomerLoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-black px-4 py-24 text-white sm:px-6">
+          <div className="mx-auto w-full max-w-md text-center">
+            <p className="text-sm font-bold text-zinc-500">
+              Loading MintRadar...
+            </p>
+          </div>
+        </main>
+      }
+    >
+      <CustomerLoginContent />
+    </Suspense>
   );
 }
