@@ -100,91 +100,21 @@ function SetArtwork({
 }: {
   set: SetOption;
 }) {
-  const candidates = [
-    set.logoUrl,
-    set.symbolUrl,
-  ].filter(
-    (value): value is string =>
-      typeof value === "string" &&
-      value.length > 0
-  );
-
-  const [candidateIndex, setCandidateIndex] =
-    useState(0);
-
-  const src = candidates[candidateIndex];
-  const isSymbolFallback =
-    candidateIndex > 0 &&
-    src === set.symbolUrl;
-
-  const usePokemonPlaceholder =
-    !src && set.category === "Pokemon";
-
-  if (!src && !usePokemonPlaceholder) {
-    return (
-      <div
-        className="mb-5 h-24 rounded-xl border border-zinc-900 bg-black/50"
-        aria-hidden="true"
-      />
-    );
-  }
-
-  const artworkSrc =
-    src || "/catalog-logos/pokemon.png";
-
-  const isPlaceholder =
-    usePokemonPlaceholder;
+  const categoryConfig =
+    CATEGORIES.find(
+      (category) =>
+        category.value === set.category
+    ) || CATEGORIES[0];
 
   return (
-    <div
-      className={`mb-5 flex h-24 items-center justify-center rounded-xl border border-zinc-900 bg-black/50 ${
-        isSymbolFallback
-          ? "px-7 py-4"
-          : isPlaceholder
-            ? "px-8 py-5"
-            : "px-5 py-3"
-      }`}
-    >
-      <div
-        className={`relative ${
-          isSymbolFallback
-            ? "h-14 w-14"
-            : isPlaceholder
-              ? "h-full w-[150px] max-w-full"
-              : "h-full w-full"
-        }`}
-      >
+    <div className="mb-5 flex h-28 items-center justify-center rounded-xl border border-zinc-900 bg-black/50 px-7 py-5 transition duration-200 group-hover:border-emerald-400/30">
+      <div className="relative h-full w-full">
         <Image
-          src={artworkSrc}
-          alt={
-            isPlaceholder
-              ? "Pokémon Trading Card Game"
-              : isSymbolFallback
-                ? `${set.name} set symbol`
-                : `${set.name} set logo`
-          }
+          src={categoryConfig.logo}
+          alt={categoryConfig.logoAlt}
           fill
-          sizes={
-            isSymbolFallback
-              ? "56px"
-              : isPlaceholder
-                ? "150px"
-                : "(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 25vw"
-          }
-          className={`object-contain transition duration-200 ${
-            isSymbolFallback
-              ? "opacity-90 group-hover:scale-110 group-hover:opacity-100"
-              : isPlaceholder
-                ? "opacity-45 grayscale group-hover:opacity-65 group-hover:scale-[1.03]"
-                : "group-hover:scale-[1.03]"
-          }`}
-          onError={() => {
-            if (!isPlaceholder) {
-              setCandidateIndex(
-                (current) => current + 1
-              );
-            }
-          }}
+          sizes="(max-width: 640px) 75vw, (max-width: 1024px) 40vw, 220px"
+          className="object-contain opacity-90 transition duration-200 group-hover:scale-[1.04] group-hover:opacity-100"
         />
       </div>
     </div>

@@ -2,13 +2,14 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
 type Mode = "login" | "signup";
 
 export default function CustomerLoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const [mode, setMode] =
     useState<Mode>("login");
@@ -35,7 +36,16 @@ export default function CustomerLoginPage() {
     // Intentionally do not auto-redirect when a Supabase session exists.
     // Vendor and customer auth currently share the same Supabase Auth session,
     // so an existing vendor login should not block access to this page.
-  }, []);
+
+    const requestedMode =
+      searchParams.get("mode");
+
+    if (requestedMode === "signup") {
+      setMode("signup");
+    } else if (requestedMode === "login") {
+      setMode("login");
+    }
+  }, [searchParams]);
 
   function switchMode(
     nextMode: Mode

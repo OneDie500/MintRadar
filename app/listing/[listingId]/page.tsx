@@ -6,7 +6,7 @@ import {
 } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
 type Listing = {
@@ -35,6 +35,8 @@ type Listing = {
   vendors: {
     id: string;
     business_name: string | null;
+    phone: string | null;
+    show_phone: boolean;
   } | null;
 };
 
@@ -55,6 +57,7 @@ type MarketplaceListing = {
 };
 
 export default function PublicListingPage() {
+  const router = useRouter();
   const params =
     useParams<{
       listingId: string;
@@ -75,6 +78,16 @@ export default function PublicListingPage() {
 
   const [error, setError] =
     useState("");
+
+  const [
+    messaging,
+    setMessaging,
+  ] = useState(false);
+
+  const [
+    messageError,
+    setMessageError,
+  ] = useState("");
 
   const [
     marketplaceListings,
@@ -125,7 +138,9 @@ export default function PublicListingPage() {
             ),
             vendors (
               id,
-              business_name
+              business_name,
+              phone,
+              show_phone
             )
           `)
           .eq(
@@ -276,6 +291,84 @@ export default function PublicListingPage() {
     };
   }, [listingId]);
 
+  async function messageVendor() {
+    if (!listing || messaging) {
+      return;
+    }
+
+    setMessaging(true);
+    setMessageError("");
+
+    try {
+      const {
+        data: {
+          session,
+        },
+        error:
+          sessionError,
+      } =
+        await supabase.auth.getSession();
+
+      if (sessionError) {
+        throw sessionError;
+      }
+
+      if (!session) {
+        const returnTo =
+          `/listing/${listing.id}`;
+
+        router.push(
+          `/customer/login?next=${encodeURIComponent(
+            returnTo
+          )}`
+        );
+        return;
+      }
+
+      const {
+        data:
+          conversationId,
+        error:
+          conversationError,
+      } = await supabase.rpc(
+        "get_or_create_customer_vendor_conversation",
+        {
+          p_vendor_id:
+            listing.vendor_id,
+          p_inventory_id:
+            listing.id,
+        }
+      );
+
+      if (conversationError) {
+        throw conversationError;
+      }
+
+      if (!conversationId) {
+        throw new Error(
+          "MintRadar could not start this conversation."
+        );
+      }
+
+      router.push(
+        `/messages/${conversationId}`
+      );
+    } catch (err) {
+      console.error(
+        "Message vendor error:",
+        err
+      );
+
+      setMessageError(
+        err instanceof Error
+          ? err.message
+          : "Could not start this conversation."
+      );
+    } finally {
+      setMessaging(false);
+    }
+  }
+
   if (loading) {
     return (
       <main className="min-h-screen bg-black text-white flex items-center justify-center px-5">
@@ -345,6 +438,17 @@ export default function PublicListingPage() {
     Number(
       listing.quantity || 0
     ) > 0;
+
+  const vendorPhone =
+    listing.vendors?.phone?.trim() ||
+    "";
+
+  const canCallVendor =
+    Boolean(
+      listing.vendors
+        ?.show_phone &&
+        vendorPhone
+    );
 
   function listingLabel(
     item:
@@ -537,6 +641,50 @@ export default function PublicListingPage() {
                 </p>
               </div>
             )}
+
+            <div className="mt-8 rounded-3xl border border-zinc-900 bg-zinc-950 p-5">
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">
+                Contact Vendor
+              </p>
+
+              <p className="mt-2 text-sm text-zinc-500">
+                Ask {vendorName} about this exact listing or contact them directly when calling is enabled.
+              </p>
+
+              {messageError && (
+                <div className="mt-4 rounded-xl border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-300">
+                  {messageError}
+                </div>
+              )}
+
+              <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+                <button
+                  type="button"
+                  onClick={messageVendor}
+                  disabled={messaging}
+                  className="inline-flex flex-1 items-center justify-center rounded-2xl bg-emerald-400 px-5 py-4 font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {messaging
+                    ? "Opening Messages..."
+                    : "💬 Message Vendor"}
+                </button>
+
+                {canCallVendor && (
+                  <a
+                    href={`tel:${vendorPhone}`}
+                    className="inline-flex flex-1 items-center justify-center rounded-2xl border border-emerald-400/30 bg-emerald-400/[0.06] px-5 py-4 font-black text-emerald-300 transition hover:border-emerald-400 hover:bg-emerald-400/10"
+                  >
+                    📞 Call Vendor
+                  </a>
+                )}
+              </div>
+
+              {!canCallVendor && (
+                <p className="mt-3 text-xs text-zinc-700">
+                  This vendor has not enabled phone calls.
+                </p>
+              )}
+            </div>
 
             <section className="mt-10 border-t border-zinc-900 pt-8">
               <div className="flex items-end justify-between gap-4">
