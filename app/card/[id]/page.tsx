@@ -91,6 +91,38 @@ type Card = {
 };
 
 
+function CardImage({
+  src,
+  alt,
+}: {
+  src?: string | null;
+  alt?: string | null;
+}) {
+  const [imageFailed, setImageFailed] = useState(false);
+
+  useEffect(() => {
+    setImageFailed(false);
+  }, [src]);
+
+  if (!src || imageFailed) {
+    return (
+      <div className="w-full h-full flex items-center justify-center text-zinc-700">
+        No Image
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt || "Card"}
+      className="w-full h-full object-contain"
+      onError={() => setImageFailed(true)}
+    />
+  );
+}
+
+
 export default function CardDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -1260,20 +1292,10 @@ export default function CardDetailPage() {
 
             <div className="aspect-[3/4] bg-black rounded-2xl overflow-hidden">
 
-              {card.image_url ? (
-                <img
-                  src={card.image_url}
-                  alt={
-                    card.name ||
-                    "Card"
-                  }
-                  className="w-full h-full object-contain"
-                />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-zinc-700">
-                  No Image
-                </div>
-              )}
+              <CardImage
+              src={card.image_url}
+              alt={card.name}
+            />
 
             </div>
 
@@ -2089,20 +2111,10 @@ function GradedListingCard({
 
         <div className="aspect-[3/4] bg-black border border-zinc-900 rounded-2xl overflow-hidden">
 
-          {card.image_url ? (
-            <img
+          <CardImage
               src={card.image_url}
-              alt={
-                card.name ||
-                "Card"
-              }
-              className="w-full h-full object-contain"
+              alt={card.name}
             />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center text-zinc-700">
-              No Image
-            </div>
-          )}
 
         </div>
 
@@ -2319,20 +2331,10 @@ function RawListingCard({
 
         <div className="aspect-[3/4] bg-black border border-zinc-900 rounded-2xl overflow-hidden">
 
-          {card.image_url ? (
-            <img
+          <CardImage
               src={card.image_url}
-              alt={
-                card.name ||
-                "Card"
-              }
-              className="w-full h-full object-contain"
+              alt={card.name}
             />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center text-zinc-700">
-              No Image
-            </div>
-          )}
 
         </div>
 

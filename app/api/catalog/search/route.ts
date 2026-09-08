@@ -123,8 +123,21 @@ export async function GET(
         query
       );
 
-    const bestSet =
+    const bestSetCandidate =
       setCandidates[0] || null;
+
+    // Only let a set take over the search when the user's query
+    // contains the complete set name/code. Loose partial matches
+    // (for example "Ancient" -> "Ancient Origins") should not
+    // hijack a normal card-name search such as "Ancient Mew".
+    const bestSet =
+      bestSetCandidate &&
+      isConfidentSetMatch(
+        query,
+        bestSetCandidate
+      )
+        ? bestSetCandidate
+        : null;
 
     const cardTextWithinSet =
       bestSet
@@ -675,6 +688,59 @@ function scoreSetMatch(
   }
 
   return 0;
+}
+
+function isConfidentSetMatch(
+  query: string,
+  candidate: SetCandidate
+) {
+  const normalizedQuery =
+    normalizeText(query);
+
+  const setName =
+    normalizeText(
+      candidate.set.name || ""
+    );
+
+  const setCode =
+    normalizeText(
+      candidate.set.code || ""
+    );
+
+  if (!normalizedQuery) {
+    return false;
+  }
+
+  // Exact set-name or set-code search.
+  if (
+    normalizedQuery === setName ||
+    normalizedQuery === setCode
+  ) {
+    return true;
+  }
+
+  // A complete multi-word set name appearing in the query is
+  // strong enough to interpret as a set-qualified card search.
+  if (
+    setName &&
+    setName.includes(" ") &&
+    normalizedQuery.includes(setName)
+  ) {
+    return true;
+  }
+
+  // Set codes are intentionally compact identifiers. Require the
+  // code to appear as its own token rather than as a substring.
+  if (
+    setCode &&
+    normalizedQuery
+      .split(" ")
+      .includes(setCode)
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function extractCardText(
