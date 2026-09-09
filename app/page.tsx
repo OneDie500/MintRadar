@@ -174,7 +174,6 @@ async function requestPokemonFallbackImage({
       );
 
       if (!response.ok) {
-        pokemonImageFallbackCache.set(key, null);
         return null;
       }
 
@@ -186,12 +185,13 @@ async function requestPokemonFallbackImage({
           ? payload.imageUrl
           : null;
 
-      pokemonImageFallbackCache.set(key, imageUrl);
+      if (imageUrl) {
+        pokemonImageFallbackCache.set(key, imageUrl);
+      }
 
       return imageUrl;
     } catch (error) {
       console.error("Pokémon image fallback lookup failed:", error);
-      pokemonImageFallbackCache.set(key, null);
       return null;
     } finally {
       pokemonImageFallbackRequests.delete(key);

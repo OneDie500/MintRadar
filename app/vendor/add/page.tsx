@@ -136,6 +136,218 @@ const CATALOGS: {
   },
 ];
 
+type PokemonImageFallbackResponse = {
+  ok?: boolean;
+  imageUrl?: string | null;
+};
+
+const pokemonImageFallbackCache = new Map<string, string | null>();
+const pokemonImageFallbackRequests = new Map<string, Promise<string | null>>();
+
+function normalizeFallbackKeyPart(value?: string | null) {
+  return (value || "").trim().toLowerCase();
+}
+
+function buildPokemonFallbackKey({
+  name,
+  setName,
+  cardNumber,
+}: {
+  name?: string | null;
+  setName?: string | null;
+  cardNumber?: string | null;
+}) {
+  return [
+    normalizeFallbackKeyPart(name),
+    normalizeFallbackKeyPart(setName),
+    normalizeFallbackKeyPart(cardNumber),
+  ].join("|");
+}
+
+async function requestPokemonFallbackImage({
+  name,
+  setName,
+  cardNumber,
+}: {
+  name?: string | null;
+  setName?: string | null;
+  cardNumber?: string | null;
+}) {
+  const key = buildPokemonFallbackKey({
+    name,
+    setName,
+    cardNumber,
+  });
+
+  if (!name?.trim()) {
+    return null;
+  }
+
+  if (pokemonImageFallbackCache.has(key)) {
+    return pokemonImageFallbackCache.get(key) ?? null;
+  }
+
+  const existingRequest = pokemonImageFallbackRequests.get(key);
+
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const request = (async () => {
+    try {
+      const params = new URLSearchParams({
+        name: name.trim(),
+      });
+
+      if (setName?.trim()) {
+        params.set("setName", setName.trim());
+      }
+
+      if (cardNumber?.trim()) {
+        params.set("cardNumber", cardNumber.trim());
+      }
+
+      const response = await fetch(
+        `/api/catalog/pokemon-image-fallback?${params.toString()}`,
+        {
+          method: "GET",
+          cache: "no-store",
+        }
+      );
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const payload =
+        (await response.json()) as PokemonImageFallbackResponse;
+
+      const imageUrl =
+        payload.ok && payload.imageUrl
+          ? payload.imageUrl
+          : null;
+
+      if (imageUrl) {
+        pokemonImageFallbackCache.set(key, imageUrl);
+      }
+
+      return imageUrl;
+    } catch (error) {
+      console.error("Pokémon image fallback lookup failed:", error);
+      return null;
+    } finally {
+      pokemonImageFallbackRequests.delete(key);
+    }
+  })();
+
+  pokemonImageFallbackRequests.set(key, request);
+
+  return request;
+}
+
+function CatalogCardImage({
+  card,
+  className,
+}: {
+  card: CatalogCard;
+  className?: string;
+}) {
+  const [currentSrc, setCurrentSrc] =
+    useState<string | null>(card.image_url || null);
+
+  const [fallbackAttempted, setFallbackAttempted] =
+    useState(false);
+
+  const [imageFailed, setImageFailed] =
+    useState(false);
+
+  useEffect(() => {
+    setCurrentSrc(card.image_url || null);
+    setFallbackAttempted(false);
+    setImageFailed(false);
+  }, [
+    card.image_url,
+    card.name,
+    card.category,
+    card.set_name,
+    card.card_number,
+  ]);
+
+  async function tryPokemonFallback() {
+    const isPokemon =
+      normalizeFallbackKeyPart(card.category) === "pokemon";
+
+    if (
+      !isPokemon ||
+      fallbackAttempted ||
+      !card.name?.trim()
+    ) {
+      setImageFailed(true);
+      return;
+    }
+
+    setFallbackAttempted(true);
+
+    const fallbackImage =
+      await requestPokemonFallbackImage({
+        name: card.name,
+        setName: card.set_name,
+        cardNumber: card.card_number,
+      });
+
+    if (!fallbackImage) {
+      setImageFailed(true);
+      return;
+    }
+
+    setCurrentSrc(fallbackImage);
+    setImageFailed(false);
+  }
+
+  useEffect(() => {
+    if (!currentSrc && !fallbackAttempted && !imageFailed) {
+      void tryPokemonFallback();
+    }
+  }, [currentSrc, fallbackAttempted, imageFailed]);
+
+  if (imageFailed) {
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center text-center px-4">
+        <p className="text-emerald-400 text-[10px] font-black uppercase tracking-[0.18em]">
+          MintRadar
+        </p>
+        <p className="text-zinc-600 text-xs mt-2">
+          Image unavailable
+        </p>
+      </div>
+    );
+  }
+
+  if (!currentSrc) {
+    return (
+      <div className="w-full h-full flex items-center justify-center text-zinc-700 text-xs text-center px-4">
+        Loading image...
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={currentSrc}
+      alt={card.name || "Card"}
+      className={className || "w-full h-full object-contain"}
+      onError={() => {
+        if (currentSrc === card.image_url) {
+          void tryPokemonFallback();
+          return;
+        }
+
+        setImageFailed(true);
+      }}
+    />
+  );
+}
+
 export default function AddInventoryPage() {
   const router = useRouter();
 
@@ -1577,22 +1789,10 @@ export default function AddInventoryPage() {
 
                           <div className="aspect-[3/4] bg-zinc-950 rounded-xl overflow-hidden">
 
-                            {card.image_url ? (
-                              <img
-                                src={
-                                  card.image_url
-                                }
-                                alt={
-                                  card.name ||
-                                  "Card"
-                                }
-                                className="w-full h-full object-contain"
-                              />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center text-zinc-700">
-                                No Image
-                              </div>
-                            )}
+                            <CatalogCardImage
+                              card={card}
+                              className="w-full h-full object-contain"
+                            />
 
                           </div>
 
@@ -2672,22 +2872,10 @@ function SelectedCardHeader({
 
       <div className="w-28 h-40 bg-black border border-zinc-900 rounded-xl overflow-hidden shrink-0">
 
-        {card.image_url ? (
-          <img
-            src={
-              card.image_url
-            }
-            alt={
-              card.name ||
-              "Collectible"
-            }
-            className="w-full h-full object-contain"
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-zinc-700 text-xs text-center p-3">
-            No Image
-          </div>
-        )}
+        <CatalogCardImage
+          card={card}
+          className="w-full h-full object-contain"
+        />
 
       </div>
 

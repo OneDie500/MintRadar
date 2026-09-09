@@ -20,11 +20,80 @@ type PokemonTcgResponse = {
   data?: PokemonTcgCard[];
 };
 
+type FetchAttemptResult =
+  | {
+      ok: true;
+      response: Response;
+    }
+  | {
+      ok: false;
+      status?: number;
+      error?: string;
+    };
+
+type KnownImageOverride = {
+  name: string;
+  setName?: string;
+  cardNumber?: string;
+  imageUrl: string;
+};
+
+const KNOWN_IMAGE_OVERRIDES: KnownImageOverride[] = [
+  {
+    name: "Ancient Mew",
+    setName: "Miscellaneous Promos",
+    cardNumber: "001",
+    imageUrl: "/card-overrides/pokemon/ancient-mew-001.jpg",
+  },
+];
+
 function normalize(value?: string | null) {
   return (value || "")
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "");
+}
+
+function findKnownImageOverride({
+  name,
+  setName,
+  cardNumber,
+}: {
+  name: string;
+  setName?: string | null;
+  cardNumber?: string | null;
+}) {
+  const wantedName = normalize(name);
+  const wantedSet = normalize(setName);
+  const wantedNumber = normalize(cardNumber);
+
+  return KNOWN_IMAGE_OVERRIDES.find((override) => {
+    const overrideName = normalize(override.name);
+    const overrideSet = normalize(override.setName);
+    const overrideNumber = normalize(override.cardNumber);
+
+    if (overrideName !== wantedName) {
+      return false;
+    }
+
+    if (
+      overrideSet &&
+      wantedSet &&
+      overrideSet !== wantedSet
+    ) {
+      return false;
+    }
+
+    if (
+      overrideNumber &&
+      wantedNumber &&
+      overrideNumber !== wantedNumber
+    ) {
+      return false;
+    }
+
+    return true;
+  });
 }
 
 function scoreCard(
@@ -88,29 +157,83 @@ function scoreCard(
   return score;
 }
 
-export async function GET(request: NextRequest) {
-  try {
-    const apiKey = process.env.POKEMON_TCG_API_KEY;
+function wait(ms: number) {
+  return new Promise((resolve) =>
+    setTimeout(resolve, ms)
+  );
+}
 
-    if (!apiKey) {
-      return NextResponse.json(
-        {
-          ok: false,
-          imageUrl: null,
-          error: "Pokémon image fallback is not configured.",
-        },
-        { status: 503 }
-      );
+function isRetryableStatus(status: number) {
+  return (
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504
+  );
+}
+
+async function fetchPokemonCards(
+  url: string,
+  apiKey: string
+): Promise<FetchAttemptResult> {
+  const controller = new AbortController();
+
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, 7000);
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "X-Api-Key": apiKey,
+        Accept: "application/json",
+      },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+      };
     }
 
+    return {
+      ok: true,
+      response,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Unknown upstream request error",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
     const name =
-      request.nextUrl.searchParams.get("name")?.trim() || "";
+      request.nextUrl.searchParams
+        .get("name")
+        ?.trim() || "";
 
     const setName =
-      request.nextUrl.searchParams.get("setName")?.trim() || null;
+      request.nextUrl.searchParams
+        .get("setName")
+        ?.trim() || null;
 
     const cardNumber =
-      request.nextUrl.searchParams.get("cardNumber")?.trim() || null;
+      request.nextUrl.searchParams
+        .get("cardNumber")
+        ?.trim() || null;
 
     if (!name) {
       return NextResponse.json(
@@ -123,81 +246,169 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const query = `name:"${name.replace(/"/g, '\\"')}"`;
+    // -----------------------------------------
+    // KNOWN MINT RADAR OVERRIDES
+    // -----------------------------------------
+
+    const knownOverride =
+      findKnownImageOverride({
+        name,
+        setName,
+        cardNumber,
+      });
+
+    if (knownOverride) {
+      return NextResponse.json({
+        ok: true,
+        imageUrl: knownOverride.imageUrl,
+        provider: "mintradar-override",
+        match: {
+          name: knownOverride.name,
+          setName:
+            knownOverride.setName || null,
+          cardNumber:
+            knownOverride.cardNumber || null,
+        },
+      });
+    }
+
+    // -----------------------------------------
+    // POKEMON TCG API FALLBACK
+    // -----------------------------------------
+
+    const apiKey =
+      process.env.POKEMON_TCG_API_KEY;
+
+    if (!apiKey) {
+      return NextResponse.json(
+        {
+          ok: false,
+          imageUrl: null,
+          error:
+            "Pokémon image fallback is not configured.",
+        },
+        { status: 503 }
+      );
+    }
+
+    const query =
+      `name:"${name.replace(
+        /"/g,
+        '\\"'
+      )}"`;
 
     const url = new URL(
       "https://api.pokemontcg.io/v2/cards"
     );
 
-    url.searchParams.set("q", query);
-    url.searchParams.set("page", "1");
-    url.searchParams.set("pageSize", "50");
+    url.searchParams.set(
+      "q",
+      query
+    );
+
+    url.searchParams.set(
+      "page",
+      "1"
+    );
+
+    url.searchParams.set(
+      "pageSize",
+      "50"
+    );
+
     url.searchParams.set(
       "select",
       "id,name,number,set,images"
     );
 
-    const controller = new AbortController();
+    const requestUrl =
+      url.toString();
 
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, 7000);
+    let result =
+      await fetchPokemonCards(
+        requestUrl,
+        apiKey
+      );
 
-    let response: Response;
+    if (
+      !result.ok &&
+      result.status &&
+      isRetryableStatus(
+        result.status
+      )
+    ) {
+      await wait(600);
 
-    try {
-      response = await fetch(url.toString(), {
-        method: "GET",
-        headers: {
-          "X-Api-Key": apiKey,
-          Accept: "application/json",
-        },
-        cache: "no-store",
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeout);
+      result =
+        await fetchPokemonCards(
+          requestUrl,
+          apiKey
+        );
     }
 
-    if (!response.ok) {
+    if (!result.ok) {
       return NextResponse.json(
         {
           ok: false,
           imageUrl: null,
-          provider: "pokemon-tcg-api",
-          upstreamStatus: response.status,
+          provider:
+            "pokemon-tcg-api",
+          upstreamStatus:
+            result.status || null,
+          error:
+            result.error || null,
+          reason:
+            "upstream-unavailable",
         },
         { status: 502 }
       );
     }
 
     const payload =
-      (await response.json()) as PokemonTcgResponse;
+      (await result.response.json()) as PokemonTcgResponse;
 
-    const ranked = (payload.data || [])
-      .map((card) => ({
-        card,
-        score: scoreCard(card, {
-          name,
-          setName,
-          cardNumber,
-        }),
-      }))
-      .filter(
-        ({ card, score }) =>
-          score >= 1000 &&
-          Boolean(card.images?.large || card.images?.small)
-      )
-      .sort((a, b) => b.score - a.score);
+    const ranked =
+      (payload.data || [])
+        .map((card) => ({
+          card,
+          score:
+            scoreCard(
+              card,
+              {
+                name,
+                setName,
+                cardNumber,
+              }
+            ),
+        }))
+        .filter(
+          ({
+            card,
+            score,
+          }) =>
+            score >= 1000 &&
+            Boolean(
+              card.images?.large ||
+              card.images?.small
+            )
+        )
+        .sort(
+          (a, b) =>
+            b.score -
+            a.score
+        );
 
-    const best = ranked[0]?.card;
+    const best =
+      ranked[0]?.card;
 
     if (!best) {
       return NextResponse.json({
         ok: false,
         imageUrl: null,
-        provider: "pokemon-tcg-api",
-        reason: "no-confident-match",
+        provider:
+          "pokemon-tcg-api",
+        reason:
+          "no-confident-match",
       });
     }
 
@@ -207,13 +418,19 @@ export async function GET(request: NextRequest) {
         best.images?.large ||
         best.images?.small ||
         null,
-      provider: "pokemon-tcg-api",
+      provider:
+        "pokemon-tcg-api",
       match: {
-        id: best.id || null,
-        name: best.name || null,
-        number: best.number || null,
-        setId: best.set?.id || null,
-        setName: best.set?.name || null,
+        id:
+          best.id || null,
+        name:
+          best.name || null,
+        number:
+          best.number || null,
+        setId:
+          best.set?.id || null,
+        setName:
+          best.set?.name || null,
       },
     });
   } catch (error) {
@@ -226,8 +443,10 @@ export async function GET(request: NextRequest) {
       {
         ok: false,
         imageUrl: null,
-        provider: "pokemon-tcg-api",
-        error: message,
+        provider:
+          "pokemon-tcg-api",
+        error:
+          message,
       },
       { status: 502 }
     );
