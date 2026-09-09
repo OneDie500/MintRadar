@@ -94,6 +94,220 @@ const CATALOGS: CatalogOption[] = [
   },
 ];
 
+type PokemonImageFallbackResponse = {
+  ok?: boolean;
+  imageUrl?: string | null;
+};
+
+const pokemonImageFallbackCache = new Map<string, string | null>();
+const pokemonImageFallbackRequests = new Map<string, Promise<string | null>>();
+
+function normalizeFallbackKeyPart(value?: string | null) {
+  return (value || "").trim().toLowerCase();
+}
+
+function buildPokemonFallbackKey({
+  name,
+  setName,
+  cardNumber,
+}: {
+  name?: string | null;
+  setName?: string | null;
+  cardNumber?: string | null;
+}) {
+  return [
+    normalizeFallbackKeyPart(name),
+    normalizeFallbackKeyPart(setName),
+    normalizeFallbackKeyPart(cardNumber),
+  ].join("|");
+}
+
+async function requestPokemonFallbackImage({
+  name,
+  setName,
+  cardNumber,
+}: {
+  name?: string | null;
+  setName?: string | null;
+  cardNumber?: string | null;
+}) {
+  const key = buildPokemonFallbackKey({
+    name,
+    setName,
+    cardNumber,
+  });
+
+  if (!name?.trim()) {
+    return null;
+  }
+
+  if (pokemonImageFallbackCache.has(key)) {
+    return pokemonImageFallbackCache.get(key) ?? null;
+  }
+
+  const existingRequest = pokemonImageFallbackRequests.get(key);
+
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const request = (async () => {
+    try {
+      const params = new URLSearchParams({
+        name: name.trim(),
+      });
+
+      if (setName?.trim()) {
+        params.set("setName", setName.trim());
+      }
+
+      if (cardNumber?.trim()) {
+        params.set("cardNumber", cardNumber.trim());
+      }
+
+      const response = await fetch(
+        `/api/catalog/pokemon-image-fallback?${params.toString()}`,
+        {
+          method: "GET",
+          cache: "no-store",
+        }
+      );
+
+      if (!response.ok) {
+        pokemonImageFallbackCache.set(key, null);
+        return null;
+      }
+
+      const payload =
+        (await response.json()) as PokemonImageFallbackResponse;
+
+      const imageUrl =
+        payload.ok && payload.imageUrl
+          ? payload.imageUrl
+          : null;
+
+      pokemonImageFallbackCache.set(key, imageUrl);
+
+      return imageUrl;
+    } catch (error) {
+      console.error("Pokémon image fallback lookup failed:", error);
+      pokemonImageFallbackCache.set(key, null);
+      return null;
+    } finally {
+      pokemonImageFallbackRequests.delete(key);
+    }
+  })();
+
+  pokemonImageFallbackRequests.set(key, request);
+
+  return request;
+}
+
+function CatalogImage({
+  src,
+  alt,
+  category,
+  setName,
+  cardNumber,
+  className,
+}: {
+  src?: string | null;
+  alt?: string | null;
+  category?: string | null;
+  setName?: string | null;
+  cardNumber?: string | null;
+  className?: string;
+}) {
+  const [currentSrc, setCurrentSrc] =
+    useState<string | null>(src || null);
+
+  const [fallbackAttempted, setFallbackAttempted] =
+    useState(false);
+
+  const [imageFailed, setImageFailed] =
+    useState(false);
+
+  useEffect(() => {
+    setCurrentSrc(src || null);
+    setFallbackAttempted(false);
+    setImageFailed(false);
+  }, [src, alt, category, setName, cardNumber]);
+
+  async function tryPokemonFallback() {
+    const isPokemon =
+      normalizeFallbackKeyPart(category) === "pokemon";
+
+    if (
+      !isPokemon ||
+      fallbackAttempted ||
+      !alt?.trim()
+    ) {
+      setImageFailed(true);
+      return;
+    }
+
+    setFallbackAttempted(true);
+
+    const fallbackImage =
+      await requestPokemonFallbackImage({
+        name: alt,
+        setName,
+        cardNumber,
+      });
+
+    if (!fallbackImage) {
+      setImageFailed(true);
+      return;
+    }
+
+    setCurrentSrc(fallbackImage);
+    setImageFailed(false);
+  }
+
+  useEffect(() => {
+    if (!currentSrc && !fallbackAttempted && !imageFailed) {
+      void tryPokemonFallback();
+    }
+  }, [currentSrc, fallbackAttempted, imageFailed]);
+
+  if (imageFailed) {
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center text-center px-4">
+        <p className="text-emerald-400 text-[10px] font-black uppercase tracking-[0.18em]">
+          MintRadar
+        </p>
+        <p className="text-zinc-600 text-xs mt-2">
+          Image unavailable
+        </p>
+      </div>
+    );
+  }
+
+  if (!currentSrc) {
+    return (
+      <div className="w-full h-full flex items-center justify-center text-zinc-700 text-xs text-center px-4">
+        Loading image...
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={currentSrc}
+      alt={alt || "Card"}
+      className={className}
+      onError={() => {
+        if (currentSrc === src) {
+          void tryPokemonFallback();
+          return;
+        }
+
+        setImageFailed(true);
+      }}
+    />
+  );
+}
+
 export default function Home() {
   const [cards, setCards] = useState<Card[]>([]);
   const [loading, setLoading] = useState(true);
@@ -953,17 +1167,14 @@ function HomeCard({
         {/* IMAGE */}
 
         <div className="aspect-[3/4] bg-zinc-900 flex items-center justify-center overflow-hidden">
-          {card.image_url ? (
-            <img
-              src={card.image_url}
-              alt={card.name || "Card"}
-              className="w-full h-full object-contain p-3 group-hover:scale-[1.03] transition duration-200"
-            />
-          ) : (
-            <div className="text-zinc-700 text-sm text-center px-4">
-              No image available
-            </div>
-          )}
+          <CatalogImage
+            src={card.image_url}
+            alt={card.name}
+            category={card.category}
+            setName={card.set_name}
+            cardNumber={card.card_number}
+            className="w-full h-full object-contain p-3 group-hover:scale-[1.03] transition duration-200"
+          />
         </div>
 
         <div className="p-4">
@@ -1150,19 +1361,16 @@ function CatalogCardView({
   const cardContent = (
     <>
       <div className="aspect-[3/4] bg-zinc-900 flex items-center justify-center overflow-hidden">
-        {card.image_url ? (
-          <img
-            src={card.image_url}
-            alt={card.name}
-            className={`w-full h-full object-contain p-3 transition duration-200 ${
-              cardId ? "group-hover:scale-[1.03]" : ""
-            }`}
-          />
-        ) : (
-          <div className="text-zinc-700 text-sm text-center px-4">
-            No image available
-          </div>
-        )}
+        <CatalogImage
+          src={card.image_url}
+          alt={card.name}
+          category={card.category}
+          setName={card.set_name}
+          cardNumber={card.card_number}
+          className={`w-full h-full object-contain p-3 transition duration-200 ${
+            cardId ? "group-hover:scale-[1.03]" : ""
+          }`}
+        />
       </div>
 
       <div className="p-4 pb-0">

@@ -91,33 +91,215 @@ type Card = {
 };
 
 
+type PokemonImageFallbackResponse = {
+  ok?: boolean;
+  imageUrl?: string | null;
+};
+
+const pokemonImageFallbackCache = new Map<string, string | null>();
+const pokemonImageFallbackRequests = new Map<string, Promise<string | null>>();
+
+function normalizeFallbackKeyPart(value?: string | null) {
+  return (value || "").trim().toLowerCase();
+}
+
+function buildPokemonFallbackKey({
+  name,
+  setName,
+  cardNumber,
+}: {
+  name?: string | null;
+  setName?: string | null;
+  cardNumber?: string | null;
+}) {
+  return [
+    normalizeFallbackKeyPart(name),
+    normalizeFallbackKeyPart(setName),
+    normalizeFallbackKeyPart(cardNumber),
+  ].join("|");
+}
+
+async function requestPokemonFallbackImage({
+  name,
+  setName,
+  cardNumber,
+}: {
+  name?: string | null;
+  setName?: string | null;
+  cardNumber?: string | null;
+}) {
+  const key = buildPokemonFallbackKey({
+    name,
+    setName,
+    cardNumber,
+  });
+
+  if (!name?.trim()) {
+    return null;
+  }
+
+  if (pokemonImageFallbackCache.has(key)) {
+    return pokemonImageFallbackCache.get(key) ?? null;
+  }
+
+  const existingRequest = pokemonImageFallbackRequests.get(key);
+
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const request = (async () => {
+    try {
+      const params = new URLSearchParams({
+        name: name.trim(),
+      });
+
+      if (setName?.trim()) {
+        params.set("setName", setName.trim());
+      }
+
+      if (cardNumber?.trim()) {
+        params.set("cardNumber", cardNumber.trim());
+      }
+
+      const response = await fetch(
+        `/api/catalog/pokemon-image-fallback?${params.toString()}`,
+        {
+          method: "GET",
+          cache: "no-store",
+        }
+      );
+
+      if (!response.ok) {
+        pokemonImageFallbackCache.set(key, null);
+        return null;
+      }
+
+      const payload =
+        (await response.json()) as PokemonImageFallbackResponse;
+
+      const imageUrl =
+        payload.ok && payload.imageUrl
+          ? payload.imageUrl
+          : null;
+
+      pokemonImageFallbackCache.set(key, imageUrl);
+
+      return imageUrl;
+    } catch (error) {
+      console.error("Pokémon image fallback lookup failed:", error);
+      pokemonImageFallbackCache.set(key, null);
+      return null;
+    } finally {
+      pokemonImageFallbackRequests.delete(key);
+    }
+  })();
+
+  pokemonImageFallbackRequests.set(key, request);
+
+  return request;
+}
+
 function CardImage({
   src,
   alt,
+  category,
+  setName,
+  cardNumber,
 }: {
   src?: string | null;
   alt?: string | null;
+  category?: string | null;
+  setName?: string | null;
+  cardNumber?: string | null;
 }) {
-  const [imageFailed, setImageFailed] = useState(false);
+  const [currentSrc, setCurrentSrc] =
+    useState<string | null>(src || null);
+
+  const [fallbackAttempted, setFallbackAttempted] =
+    useState(false);
+
+  const [imageFailed, setImageFailed] =
+    useState(false);
 
   useEffect(() => {
+    setCurrentSrc(src || null);
+    setFallbackAttempted(false);
     setImageFailed(false);
-  }, [src]);
+  }, [src, alt, category, setName, cardNumber]);
 
-  if (!src || imageFailed) {
+  async function tryPokemonFallback() {
+    const isPokemon =
+      normalizeFallbackKeyPart(category) === "pokemon";
+
+    if (
+      !isPokemon ||
+      fallbackAttempted ||
+      !alt?.trim()
+    ) {
+      setImageFailed(true);
+      return;
+    }
+
+    setFallbackAttempted(true);
+
+    const fallbackImage =
+      await requestPokemonFallbackImage({
+        name: alt,
+        setName,
+        cardNumber,
+      });
+
+    if (!fallbackImage) {
+      setImageFailed(true);
+      return;
+    }
+
+    setCurrentSrc(fallbackImage);
+    setImageFailed(false);
+  }
+
+  useEffect(() => {
+    if (!currentSrc && !fallbackAttempted && !imageFailed) {
+      void tryPokemonFallback();
+    }
+  }, [currentSrc, fallbackAttempted, imageFailed]);
+
+  if (imageFailed) {
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center text-center px-3">
+        <p className="text-emerald-400 text-xs font-black tracking-[0.18em] uppercase">
+          MintRadar
+        </p>
+
+        <p className="text-zinc-600 text-xs mt-2">
+          Image unavailable
+        </p>
+      </div>
+    );
+  }
+
+  if (!currentSrc) {
     return (
       <div className="w-full h-full flex items-center justify-center text-zinc-700">
-        No Image
+        Loading image...
       </div>
     );
   }
 
   return (
     <img
-      src={src}
+      src={currentSrc}
       alt={alt || "Card"}
       className="w-full h-full object-contain"
-      onError={() => setImageFailed(true)}
+      onError={() => {
+        if (currentSrc === src) {
+          void tryPokemonFallback();
+          return;
+        }
+
+        setImageFailed(true);
+      }}
     />
   );
 }
@@ -1295,6 +1477,9 @@ export default function CardDetailPage() {
               <CardImage
               src={card.image_url}
               alt={card.name}
+              category={card.category}
+              setName={card.set_name}
+              cardNumber={card.card_number}
             />
 
             </div>
@@ -2114,6 +2299,9 @@ function GradedListingCard({
           <CardImage
               src={card.image_url}
               alt={card.name}
+              category={card.category}
+              setName={card.set_name}
+              cardNumber={card.card_number}
             />
 
         </div>
@@ -2334,6 +2522,9 @@ function RawListingCard({
           <CardImage
               src={card.image_url}
               alt={card.name}
+              category={card.category}
+              setName={card.set_name}
+              cardNumber={card.card_number}
             />
 
         </div>
