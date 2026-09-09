@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "../../../lib/supabase";
+import { getActiveVendorMembership } from "../../../lib/active-vendor";
 
 type VendorSettingsMetadata = {
   vendor_sale_updates?: boolean;
@@ -21,10 +22,9 @@ type VendorRole = "staff" | "manager" | "general_manager" | "owner";
 
 type InviteRow = {
   id: string;
+  email: string;
   expires_at?: string | null;
-  max_uses: number;
-  use_count: number;
-  active: boolean;
+  status: "pending" | "accepted" | "revoked" | "expired";
   created_at: string;
   role?: VendorRole | null;
 };
@@ -91,11 +91,10 @@ export default function VendorSettingsPage() {
   const [team, setTeam] = useState<TeamMember[]>([]);
   const [invites, setInvites] = useState<InviteRow[]>([]);
   const [teamLoading, setTeamLoading] = useState(false);
-  const [generating, setGenerating] = useState(false);
-  const [generatedCode, setGeneratedCode] = useState("");
+  const [sendingInvite, setSendingInvite] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<VendorRole>("staff");
-  const [generatedRole, setGeneratedRole] = useState<VendorRole | null>(null);
-  const [copyMessage, setCopyMessage] = useState("");
+  const [inviteMessage, setInviteMessage] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [teamError, setTeamError] = useState("");
@@ -121,9 +120,9 @@ export default function VendorSettingsPage() {
 
       const { data: inviteData, error: inviteError } =
         await supabase
-          .from("vendor_invite_codes")
+          .from("vendor_invites")
           .select(
-            "id, expires_at, max_uses, use_count, active, created_at, role"
+            "id, email, expires_at, status, created_at, role"
           )
           .eq("vendor_id", vendorId)
           .order("created_at", { ascending: false })
@@ -163,16 +162,11 @@ export default function VendorSettingsPage() {
           return;
         }
 
-        const {
-          data: membership,
-          error: membershipError,
-        } = await supabase
-          .from("vendor_members")
-          .select("vendor_id, role")
-          .eq("user_id", user.id)
-          .maybeSingle();
-
-        if (membershipError) throw membershipError;
+        const membership =
+          await getActiveVendorMembership(
+            supabase,
+            user.id
+          );
 
         if (!membership?.vendor_id) {
           throw new Error(
@@ -279,55 +273,67 @@ export default function VendorSettingsPage() {
     }
   }
 
-  async function generateInvite() {
-    if (!isOwner || generating) return;
+  async function sendInvite() {
+    if (!canManageTeam || sendingInvite) return;
 
-    setGenerating(true);
-    setGeneratedCode("");
-    setCopyMessage("");
+    const email = inviteEmail.trim().toLowerCase();
+
+    if (!email) {
+      setTeamError("Enter the email address you want to invite.");
+      return;
+    }
+
+    setSendingInvite(true);
+    setInviteMessage("");
     setTeamError("");
 
     try {
-      const { data, error: inviteError } =
-        await supabase.rpc("create_vendor_invite_code", {
-          p_role: inviteRole,
-          p_expires_in_days: 30,
-          p_max_uses: 1,
-        });
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
 
-      if (inviteError) throw inviteError;
+      if (sessionError) throw sessionError;
 
-      const row = Array.isArray(data) ? data[0] : data;
+      if (!session?.access_token) {
+        window.location.assign("/vendor/login");
+        return;
+      }
 
-      if (!row?.access_code) {
+      const response = await fetch("/api/vendor/invites/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          email,
+          role: inviteRole,
+          vendorId,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
         throw new Error(
-          "MintRadar did not receive the generated access code."
+          result?.error || "MintRadar could not send the invitation."
         );
       }
 
-      setGeneratedCode(row.access_code);
-      setGeneratedRole(inviteRole);
+      setInviteMessage(
+        `Invitation sent to ${email} as ${ROLE_LABELS[inviteRole]}.`
+      );
+      setInviteEmail("");
       await loadTeam();
     } catch (err: any) {
-      console.error("Vendor invite generation error:", err);
+      console.error("Vendor invitation send error:", err);
 
       setTeamError(
-        err?.message ||
-          "MintRadar could not generate an access code."
+        err?.message || "MintRadar could not send the invitation."
       );
     } finally {
-      setGenerating(false);
-    }
-  }
-
-  async function copyInviteCode() {
-    if (!generatedCode) return;
-
-    try {
-      await navigator.clipboard.writeText(generatedCode);
-      setCopyMessage("Copied!");
-    } catch {
-      setCopyMessage("Copy failed — select the code manually.");
+      setSendingInvite(false);
     }
   }
 
@@ -335,22 +341,42 @@ export default function VendorSettingsPage() {
     setTeamError("");
 
     try {
-      const { error: revokeError } = await supabase.rpc(
-        "revoke_vendor_invite_code",
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      if (sessionError) throw sessionError;
+
+      if (!session?.access_token) {
+        window.location.assign("/vendor/login");
+        return;
+      }
+
+      const response = await fetch(
+        `/api/vendor/invites/${inviteId}/revoke`,
         {
-          p_invite_id: inviteId,
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
         }
       );
 
-      if (revokeError) throw revokeError;
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          result?.error || "MintRadar could not revoke that invitation."
+        );
+      }
 
       await loadTeam();
     } catch (err: any) {
-      console.error("Vendor invite revoke error:", err);
+      console.error("Vendor invitation revoke error:", err);
 
       setTeamError(
-        err?.message ||
-          "MintRadar could not revoke that access code."
+        err?.message || "MintRadar could not revoke that invitation."
       );
     }
   }
@@ -529,36 +555,51 @@ export default function VendorSettingsPage() {
                     </p>
                   </div>
 
-                  {canManageTeam && (
-                    <div className="flex flex-col gap-2 sm:min-w-[230px]">
-                      <label className="text-xs font-black uppercase tracking-[0.15em] text-zinc-500">
-                        Invite As
-                      </label>
+                  {canManageTeam && allowedInviteRoles.length > 0 && (
+                    <div className="w-full sm:max-w-[430px]">
+                      <p className="text-xs font-black uppercase tracking-[0.15em] text-zinc-500">
+                        Invite Team Member
+                      </p>
 
-                      <select
-                        value={inviteRole}
-                        onChange={(event) =>
-                          setInviteRole(event.target.value as VendorRole)
-                        }
-                        disabled={generating}
-                        className="rounded-xl border border-zinc-700 bg-black px-4 py-3 font-black text-white outline-none transition focus:border-emerald-400"
-                      >
-                        {allowedInviteRoles.map((option) => (
-                          <option key={option} value={option}>
-                            {ROLE_LABELS[option]}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_150px]">
+                        <input
+                          type="email"
+                          value={inviteEmail}
+                          onChange={(event) =>
+                            setInviteEmail(event.target.value)
+                          }
+                          placeholder="person@email.com"
+                          disabled={sendingInvite}
+                          className="min-w-0 rounded-xl border border-zinc-700 bg-black px-4 py-3 text-white outline-none transition placeholder:text-zinc-700 focus:border-emerald-400"
+                        />
+
+                        <select
+                          value={inviteRole}
+                          onChange={(event) =>
+                            setInviteRole(
+                              event.target.value as VendorRole
+                            )
+                          }
+                          disabled={sendingInvite}
+                          className="rounded-xl border border-zinc-700 bg-black px-4 py-3 font-black text-white outline-none transition focus:border-emerald-400"
+                        >
+                          {allowedInviteRoles.map((option) => (
+                            <option key={option} value={option}>
+                              {ROLE_LABELS[option]}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
 
                       <button
                         type="button"
-                        onClick={generateInvite}
-                        disabled={generating || allowedInviteRoles.length === 0}
-                        className="rounded-xl bg-emerald-400 px-5 py-3 font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+                        onClick={sendInvite}
+                        disabled={sendingInvite || !inviteEmail.trim()}
+                        className="mt-2 w-full rounded-xl bg-emerald-400 px-5 py-3 font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        {generating
-                          ? "Generating..."
-                          : `+ Generate ${ROLE_LABELS[inviteRole]} Code`}
+                        {sendingInvite
+                          ? "Sending Invitation..."
+                          : "Send Invitation"}
                       </button>
                     </div>
                   )}
@@ -582,47 +623,9 @@ export default function VendorSettingsPage() {
                   </div>
                 ) : (
                   <>
-                    {generatedCode && (
-                      <div className="mt-6 rounded-2xl border border-emerald-400/30 bg-emerald-400/5 p-5">
-                        <p className="text-xs font-black uppercase tracking-[0.15em] text-emerald-400">
-                          New {generatedRole ? ROLE_LABELS[generatedRole] : "Team"} Code
-                        </p>
-
-                        <div className="mt-3 flex flex-col gap-3 sm:flex-row">
-                          <div className="flex-1 rounded-xl border border-zinc-800 bg-black px-4 py-3 text-center font-mono text-lg font-black tracking-[0.1em]">
-                            {generatedCode}
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={copyInviteCode}
-                            className="rounded-xl border border-emerald-400/30 px-4 py-3 font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black"
-                          >
-                            Copy Code
-                          </button>
-                        </div>
-
-                        <p className="mt-3 text-xs text-zinc-500">
-                          Share this code plus{" "}
-                          <span className="font-mono text-zinc-300">
-                            /vendor/join
-                          </span>
-                          . This code expires in 30 days, can be
-                          redeemed once, and automatically grants
-                          <span className="font-bold text-zinc-300">
-                            {" "}
-                            {generatedRole
-                              ? ROLE_LABELS[generatedRole]
-                              : "Team"}
-                          </span>
-                          {" "}access.
-                        </p>
-
-                        {copyMessage && (
-                          <p className="mt-2 text-xs font-bold text-emerald-400">
-                            {copyMessage}
-                          </p>
-                        )}
+                    {inviteMessage && (
+                      <div className="mt-6 rounded-xl border border-emerald-400/30 bg-emerald-400/5 px-4 py-3 text-sm font-bold text-emerald-400">
+                        {inviteMessage}
                       </div>
                     )}
 
@@ -682,13 +685,13 @@ export default function VendorSettingsPage() {
 
                     <div className="mt-7">
                       <p className="text-xs font-black uppercase tracking-[0.15em] text-zinc-600">
-                        Recent Access Codes
+                        Invitations
                       </p>
 
                       <div className="mt-3 space-y-3">
                         {invites.length === 0 ? (
                           <p className="text-sm text-zinc-500">
-                            No access codes generated yet.
+                            No invitations sent yet.
                           </p>
                         ) : (
                           invites.map((invite) => (
@@ -697,13 +700,14 @@ export default function VendorSettingsPage() {
                               className="flex flex-col gap-3 rounded-2xl border border-zinc-800 bg-black p-4 sm:flex-row sm:items-center sm:justify-between"
                             >
                               <div>
-                                <p className="font-bold text-zinc-300">
-                                  {ROLE_LABELS[normalizeRole(invite.role)]}{" "}
-                                  • {invite.active
-                                    ? "Active"
-                                    : "Inactive"}{" "}
-                                  • {invite.use_count}/
-                                  {invite.max_uses} used
+                                <p className="font-black text-zinc-200">
+                                  {invite.email}
+                                </p>
+
+                                <p className="mt-1 text-xs uppercase tracking-[0.12em] text-zinc-600">
+                                  {ROLE_LABELS[normalizeRole(invite.role)]}
+                                  {" • "}
+                                  {invite.status}
                                 </p>
 
                                 <p className="mt-1 text-xs text-zinc-600">
@@ -715,7 +719,7 @@ export default function VendorSettingsPage() {
                                 </p>
                               </div>
 
-                              {invite.active && (
+                              {invite.status === "pending" && (
                                 <button
                                   type="button"
                                   onClick={() =>

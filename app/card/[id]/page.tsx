@@ -77,6 +77,8 @@ function buildCompDrafts(comps: Comp[] = []) {
 
 type Card = {
   id: string;
+  external_id?: string | null;
+  data_source?: string | null;
   name?: string | null;
   set_name?: string | null;
   card_number?: string | null;
@@ -206,42 +208,76 @@ function CardImage({
   category,
   setName,
   cardNumber,
+  externalId,
 }: {
   src?: string | null;
   alt?: string | null;
   category?: string | null;
   setName?: string | null;
   cardNumber?: string | null;
+  externalId?: string | null;
 }) {
   const [currentSrc, setCurrentSrc] =
     useState<string | null>(src || null);
 
-  const [fallbackAttempted, setFallbackAttempted] =
-    useState(false);
+  const [
+    pokemonFallbackAttempted,
+    setPokemonFallbackAttempted,
+  ] = useState(false);
+
+  const [
+    sportsFallbackAttempted,
+    setSportsFallbackAttempted,
+  ] = useState(false);
 
   const [imageFailed, setImageFailed] =
     useState(false);
 
+  const normalizedCategory =
+    normalizeFallbackKeyPart(category);
+
+  const isPokemon =
+    normalizedCategory === "pokemon";
+
+  const isSports =
+    [
+      "sports",
+      "baseball",
+      "basketball",
+      "football",
+      "soccer",
+      "hockey",
+      "wrestling",
+      "racing",
+      "golf",
+    ].some((term) =>
+      normalizedCategory.includes(term)
+    );
+
   useEffect(() => {
     setCurrentSrc(src || null);
-    setFallbackAttempted(false);
+    setPokemonFallbackAttempted(false);
+    setSportsFallbackAttempted(false);
     setImageFailed(false);
-  }, [src, alt, category, setName, cardNumber]);
+  }, [
+    src,
+    alt,
+    category,
+    setName,
+    cardNumber,
+    externalId,
+  ]);
 
   async function tryPokemonFallback() {
-    const isPokemon =
-      normalizeFallbackKeyPart(category) === "pokemon";
-
     if (
       !isPokemon ||
-      fallbackAttempted ||
+      pokemonFallbackAttempted ||
       !alt?.trim()
     ) {
-      setImageFailed(true);
-      return;
+      return false;
     }
 
-    setFallbackAttempted(true);
+    setPokemonFallbackAttempted(true);
 
     const fallbackImage =
       await requestPokemonFallbackImage({
@@ -251,19 +287,79 @@ function CardImage({
       });
 
     if (!fallbackImage) {
-      setImageFailed(true);
-      return;
+      return false;
     }
 
     setCurrentSrc(fallbackImage);
     setImageFailed(false);
+
+    return true;
+  }
+
+  function trySportsFallback() {
+    if (
+      !isSports ||
+      sportsFallbackAttempted ||
+      !externalId?.trim()
+    ) {
+      return false;
+    }
+
+    setSportsFallbackAttempted(true);
+    setImageFailed(false);
+
+    setCurrentSrc(
+      `/api/catalog/sports-image?id=${encodeURIComponent(
+        externalId.trim()
+      )}`
+    );
+
+    return true;
+  }
+
+  async function tryNextFallback() {
+    if (isPokemon) {
+      const foundPokemonImage =
+        await tryPokemonFallback();
+
+      if (foundPokemonImage) {
+        return;
+      }
+
+      setImageFailed(true);
+      return;
+    }
+
+    if (isSports) {
+      const startedSportsFallback =
+        trySportsFallback();
+
+      if (startedSportsFallback) {
+        return;
+      }
+
+      setImageFailed(true);
+      return;
+    }
+
+    setImageFailed(true);
   }
 
   useEffect(() => {
-    if (!currentSrc && !fallbackAttempted && !imageFailed) {
-      void tryPokemonFallback();
+    if (
+      !currentSrc &&
+      !imageFailed
+    ) {
+      void tryNextFallback();
     }
-  }, [currentSrc, fallbackAttempted, imageFailed]);
+  }, [
+    currentSrc,
+    imageFailed,
+    isPokemon,
+    isSports,
+    pokemonFallbackAttempted,
+    sportsFallbackAttempted,
+  ]);
 
   if (imageFailed) {
     return (
@@ -293,17 +389,22 @@ function CardImage({
       alt={alt || "Card"}
       className="w-full h-full object-contain"
       onError={() => {
-        if (currentSrc === src) {
-          void tryPokemonFallback();
+        const isSportsRoute =
+          isSports &&
+          currentSrc.startsWith(
+            "/api/catalog/sports-image?"
+          );
+
+        if (isSportsRoute) {
+          setImageFailed(true);
           return;
         }
 
-        setImageFailed(true);
+        void tryNextFallback();
       }}
     />
   );
 }
-
 
 export default function CardDetailPage() {
   const params = useParams();
@@ -388,6 +489,8 @@ export default function CardDetailPage() {
           .from("cards")
           .select(`
             id,
+            external_id,
+            data_source,
             name,
             set_name,
             card_number,
@@ -1480,6 +1583,7 @@ export default function CardDetailPage() {
               category={card.category}
               setName={card.set_name}
               cardNumber={card.card_number}
+              externalId={card.external_id}
             />
 
             </div>
@@ -2302,6 +2406,7 @@ function GradedListingCard({
               category={card.category}
               setName={card.set_name}
               cardNumber={card.card_number}
+              externalId={card.external_id}
             />
 
         </div>
@@ -2525,6 +2630,7 @@ function RawListingCard({
               category={card.category}
               setName={card.set_name}
               cardNumber={card.card_number}
+              externalId={card.external_id}
             />
 
         </div>

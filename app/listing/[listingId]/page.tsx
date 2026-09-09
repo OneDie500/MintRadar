@@ -27,6 +27,8 @@ type Listing = {
     set_name: string | null;
     card_number: string | null;
     image_url: string | null;
+    external_id: string | null;
+    data_source: string | null;
     rarity: string | null;
     category: string | null;
     edition: string | null;
@@ -55,6 +57,253 @@ type MarketplaceListing = {
     business_name: string | null;
   } | null;
 };
+
+type CardProviderLink = {
+  provider: "tcgplayer" | "collectr" | "pricecharting";
+  provider_product_id: string | null;
+  product_url: string;
+  match_status: "auto" | "verified" | "manual";
+};
+
+type MarketLink = {
+  name: string;
+  href: string;
+  description: string;
+  badge: string;
+  exact: boolean;
+};
+
+
+type ListingCard = NonNullable<Listing["cards"]>;
+
+type PokemonImageFallbackResponse = {
+  ok?: boolean;
+  imageUrl?: string | null;
+};
+
+function ListingCardImage({
+  card,
+}: {
+  card: ListingCard;
+}) {
+  const category =
+    (card.category || "").trim().toLowerCase();
+
+  const dataSource =
+    (card.data_source || "").trim().toLowerCase();
+
+  const isPokemon =
+    category === "pokemon";
+
+  const isSports =
+    dataSource.includes("cardsight") ||
+    [
+      "sports",
+      "baseball",
+      "basketball",
+      "football",
+      "soccer",
+      "hockey",
+      "wrestling",
+      "racing",
+      "golf",
+    ].some((term) => category.includes(term));
+
+  function sportsImageUrl() {
+    if (!card.external_id?.trim()) {
+      return null;
+    }
+
+    return `/api/catalog/sports-image?id=${encodeURIComponent(
+      card.external_id.trim()
+    )}`;
+  }
+
+  const preferredInitialSrc =
+    isSports && sportsImageUrl()
+      ? sportsImageUrl()
+      : card.image_url || null;
+
+  const [currentSrc, setCurrentSrc] =
+    useState<string | null>(preferredInitialSrc);
+
+  const [
+    pokemonFallbackAttempted,
+    setPokemonFallbackAttempted,
+  ] = useState(false);
+
+  const [imageFailed, setImageFailed] =
+    useState(false);
+
+  useEffect(() => {
+    const nextSportsSrc =
+      isSports && card.external_id?.trim()
+        ? `/api/catalog/sports-image?id=${encodeURIComponent(
+            card.external_id.trim()
+          )}`
+        : null;
+
+    setCurrentSrc(
+      nextSportsSrc ||
+        card.image_url ||
+        null
+    );
+
+    setPokemonFallbackAttempted(false);
+    setImageFailed(false);
+  }, [
+    card.id,
+    card.image_url,
+    card.external_id,
+    card.data_source,
+    card.name,
+    card.set_name,
+    card.card_number,
+    card.category,
+    isSports,
+  ]);
+
+  async function tryPokemonFallback() {
+    if (
+      !isPokemon ||
+      pokemonFallbackAttempted ||
+      !card.name?.trim()
+    ) {
+      setImageFailed(true);
+      return;
+    }
+
+    setPokemonFallbackAttempted(true);
+
+    try {
+      const params =
+        new URLSearchParams({
+          name: card.name.trim(),
+        });
+
+      if (card.set_name?.trim()) {
+        params.set(
+          "setName",
+          card.set_name.trim()
+        );
+      }
+
+      if (card.card_number?.trim()) {
+        params.set(
+          "cardNumber",
+          card.card_number.trim()
+        );
+      }
+
+      const response =
+        await fetch(
+          `/api/catalog/pokemon-image-fallback?${params.toString()}`,
+          {
+            method: "GET",
+            cache: "no-store",
+          }
+        );
+
+      if (!response.ok) {
+        setImageFailed(true);
+        return;
+      }
+
+      const payload =
+        (await response.json()) as PokemonImageFallbackResponse;
+
+      if (
+        !payload.ok ||
+        !payload.imageUrl
+      ) {
+        setImageFailed(true);
+        return;
+      }
+
+      setCurrentSrc(payload.imageUrl);
+      setImageFailed(false);
+    } catch (error) {
+      console.error(
+        "Public listing Pokémon image fallback failed:",
+        error
+      );
+
+      setImageFailed(true);
+    }
+  }
+
+  useEffect(() => {
+    if (currentSrc || imageFailed) {
+      return;
+    }
+
+    if (isPokemon) {
+      void tryPokemonFallback();
+      return;
+    }
+
+    setImageFailed(true);
+  }, [
+    currentSrc,
+    imageFailed,
+    isPokemon,
+    pokemonFallbackAttempted,
+  ]);
+
+  if (imageFailed) {
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center px-4 text-center">
+        <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-400">
+          MintRadar
+        </p>
+
+        <p className="mt-2 text-sm text-zinc-700">
+          Image unavailable
+        </p>
+      </div>
+    );
+  }
+
+  if (!currentSrc) {
+    return (
+      <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-zinc-700">
+        Loading image...
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={currentSrc}
+      alt={
+        card.name ||
+        "Trading card"
+      }
+      className="h-full w-full object-contain"
+      onError={() => {
+        const sportsSrc =
+          sportsImageUrl();
+
+        if (
+          isSports &&
+          sportsSrc &&
+          currentSrc !== sportsSrc
+        ) {
+          setCurrentSrc(sportsSrc);
+          setImageFailed(false);
+          return;
+        }
+
+        if (isPokemon) {
+          void tryPokemonFallback();
+          return;
+        }
+
+        setImageFailed(true);
+      }}
+    />
+  );
+}
 
 export default function PublicListingPage() {
   const router = useRouter();
@@ -99,6 +348,11 @@ export default function PublicListingPage() {
     setMarketplaceLoading,
   ] = useState(false);
 
+  const [
+    providerLinks,
+    setProviderLinks,
+  ] = useState<CardProviderLink[]>([]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -131,6 +385,8 @@ export default function PublicListingPage() {
               set_name,
               card_number,
               image_url,
+              external_id,
+              data_source,
               rarity,
               category,
               edition,
@@ -166,6 +422,46 @@ export default function PublicListingPage() {
           setListing(
             typedListing
           );
+
+          const {
+            data:
+              exactProviderLinks,
+            error:
+              providerLinksError,
+          } = await supabase
+            .from(
+              "card_provider_links"
+            )
+            .select(`
+              provider,
+              provider_product_id,
+              product_url,
+              match_status
+            `)
+            .eq(
+              "card_id",
+              typedListing.card_id
+            );
+
+          if (
+            providerLinksError
+          ) {
+            console.error(
+              "Provider links load error:",
+              providerLinksError
+            );
+
+            setProviderLinks(
+              []
+            );
+          } else if (
+            !cancelled
+          ) {
+            setProviderLinks(
+              (exactProviderLinks ||
+                []) as CardProviderLink[]
+            );
+          }
 
           setMarketplaceLoading(
             true
@@ -450,6 +746,171 @@ export default function PublicListingPage() {
         vendorPhone
     );
 
+  function exactProviderLink(
+    provider:
+      CardProviderLink["provider"]
+  ) {
+    return providerLinks.find(
+      (link) =>
+        link.provider ===
+        provider
+    );
+  }
+
+  const marketQuery = [
+    card?.name,
+    card?.set_name,
+    card?.card_number
+      ? `#${card.card_number}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const encodedMarketQuery =
+    encodeURIComponent(
+      marketQuery
+    );
+
+  const tcgplayerExact =
+    exactProviderLink(
+      "tcgplayer"
+    );
+
+  const collectrExact =
+    exactProviderLink(
+      "collectr"
+    );
+
+  const pricechartingExact =
+    exactProviderLink(
+      "pricecharting"
+    );
+
+  const category =
+    (
+      card?.category ||
+      ""
+    ).toLowerCase();
+
+  const isSports =
+    [
+      "sports",
+      "baseball",
+      "basketball",
+      "football",
+      "soccer",
+      "hockey",
+      "wrestling",
+      "racing",
+      "golf",
+    ].some(
+      (term) =>
+        category.includes(
+          term
+        )
+    );
+
+  const tcgplayerLink: MarketLink = {
+    name: "TCGplayer",
+    href:
+      tcgplayerExact?.product_url ||
+      `https://www.tcgplayer.com/search/all/product?q=${encodedMarketQuery}`,
+    description:
+      tcgplayerExact
+        ? "Exact matched product page"
+        : "Card search fallback",
+    badge:
+      tcgplayerExact
+        ? "EXACT"
+        : "TCG",
+    exact:
+      Boolean(
+        tcgplayerExact
+      ),
+  };
+
+  const pricechartingLink: MarketLink = {
+    name: "PriceCharting",
+    href:
+      pricechartingExact?.product_url ||
+      `https://www.pricecharting.com/search-products?q=${encodedMarketQuery}&type=prices`,
+    description:
+      pricechartingExact
+        ? "Exact matched product page"
+        : "Card search fallback",
+    badge:
+      pricechartingExact
+        ? "EXACT"
+        : "PC",
+    exact:
+      Boolean(
+        pricechartingExact
+      ),
+  };
+
+  const collectrLink: MarketLink = {
+    name: "Collectr",
+    href:
+      collectrExact?.product_url ||
+      "https://app.getcollectr.com/",
+    description:
+      collectrExact
+        ? "Exact matched product page"
+        : "Open Collectr product search",
+    badge:
+      collectrExact
+        ? "EXACT"
+        : "COLL",
+    exact:
+      Boolean(
+        collectrExact
+      ),
+  };
+
+  const point130Link: MarketLink = {
+    name: "130point",
+    href:
+      "https://130point.com/search/",
+    description:
+      "Search recent collectible card sales",
+    badge: "130",
+    exact: false,
+  };
+
+  const ebaySoldLink: MarketLink = {
+    name: "eBay Sold",
+    href: `https://www.ebay.com/sch/i.html?_nkw=${encodedMarketQuery}&LH_Sold=1&LH_Complete=1`,
+    description:
+      "Recent completed and sold listings",
+    badge: "SOLD",
+    exact: false,
+  };
+
+  const cardLadderLink: MarketLink = {
+    name: "Card Ladder",
+    href: `https://www.cardladder.com/ladder?query=${encodedMarketQuery}`,
+    description:
+      "Sports card sales and market data",
+    badge: "CL",
+    exact: false,
+  };
+
+  const marketLinks: MarketLink[] =
+    isSports
+      ? [
+          cardLadderLink,
+          point130Link,
+          ebaySoldLink,
+        ]
+      : [
+          tcgplayerLink,
+          pricechartingLink,
+          collectrLink,
+          point130Link,
+          ebaySoldLink,
+        ];
+
   function listingLabel(
     item:
       | Listing
@@ -497,7 +958,7 @@ export default function PublicListingPage() {
           </Link>
 
           <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-300">
-            Live Vendor Price
+            Live Listing
           </span>
         </div>
       </header>
@@ -506,16 +967,9 @@ export default function PublicListingPage() {
         <div className="grid gap-8 md:grid-cols-[320px_1fr] md:items-start">
           <div className="mx-auto w-full max-w-[320px] overflow-hidden rounded-3xl border border-zinc-900 bg-zinc-950 p-4">
             <div className="aspect-[0.716] overflow-hidden rounded-2xl bg-black">
-              {card?.image_url ? (
-                <img
-                  src={
-                    card.image_url
-                  }
-                  alt={
-                    card.name ||
-                    "Trading card"
-                  }
-                  className="h-full w-full object-contain"
+              {card ? (
+                <ListingCardImage
+                  card={card}
                 />
               ) : (
                 <div className="flex h-full items-center justify-center text-sm text-zinc-700">
@@ -618,6 +1072,100 @@ export default function PublicListingPage() {
                   }`}
                 />
               </div>
+            </div>
+
+            <div className="mt-6 rounded-3xl border border-zinc-800 bg-zinc-950 p-6">
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">
+                Check the Market
+              </p>
+
+              <h2 className="mt-2 text-2xl font-black">
+                Compare before you buy.
+              </h2>
+
+              <p className="mt-2 max-w-xl text-sm leading-relaxed text-zinc-500">
+                {isSports
+                  ? "Sports comps prioritize Card Ladder, 130point, and eBay sold listings."
+                  : "TCG comps prioritize TCGplayer, PriceCharting, Collectr, 130point, and eBay sold listings. Exact provider matches are used whenever MintRadar has them."}
+              </p>
+
+              <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                {marketLinks.map(
+                  (market) => (
+                    <a
+                      key={
+                        market.name
+                      }
+                      href={
+                        market.href
+                      }
+                      target="_blank"
+                      rel="noreferrer"
+                      className="group flex items-center justify-between gap-4 rounded-2xl border border-zinc-800 bg-black px-4 py-4 transition hover:border-emerald-400/40 hover:bg-emerald-400/[0.04]"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-black text-white transition group-hover:text-emerald-300">
+                            {
+                              market.name
+                            }
+                          </p>
+
+                          {market.exact && (
+                            <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-emerald-300">
+                              Exact Match
+                            </span>
+                          )}
+                        </div>
+
+                        <p className="mt-1 text-xs text-zinc-600">
+                          {
+                            market.description
+                          }
+                        </p>
+                      </div>
+
+                      <span
+                        className={`shrink-0 rounded-lg border px-2.5 py-2 text-[10px] font-black tracking-[0.12em] transition ${
+                          market.exact
+                            ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
+                            : "border-zinc-800 bg-zinc-950 text-zinc-500 group-hover:border-emerald-400/30 group-hover:text-emerald-300"
+                        }`}
+                      >
+                        {
+                          market.badge
+                        }
+                      </span>
+                    </a>
+                  )
+                )}
+              </div>
+
+              <p className="mt-4 text-xs leading-relaxed text-zinc-700">
+                eBay intentionally stays a sold-listings search so customers can compare multiple recent sales.
+              </p>
+            </div>
+
+            <div className="mt-6 rounded-3xl border border-zinc-800 bg-zinc-950 p-6">
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-zinc-600">
+                Ready to Buy?
+              </p>
+
+              <h2 className="mt-2 text-2xl font-black">
+                Pay Now
+              </h2>
+
+              <p className="mt-2 text-sm leading-relaxed text-zinc-500">
+                Vendor payment options will live here so this same QR can eventually take a customer from scan to purchase without changing the physical label.
+              </p>
+
+              <button
+                type="button"
+                disabled
+                className="mt-5 inline-flex w-full cursor-not-allowed items-center justify-center rounded-2xl border border-zinc-800 bg-black px-5 py-4 font-black text-zinc-600 sm:w-auto"
+              >
+                Pay Now — Coming Soon
+              </button>
             </div>
 
             {graded &&

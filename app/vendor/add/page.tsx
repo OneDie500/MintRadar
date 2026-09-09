@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase";
+import { getActiveVendorMembership } from "../../../lib/active-vendor";
 
 type ListingType =
   | "raw"
@@ -50,6 +51,7 @@ type CatalogCard = {
 
 type Membership = {
   vendor_id: string;
+  role?: string | null;
 };
 
 const SPORTS_PARALLELS = [
@@ -255,17 +257,31 @@ function CatalogCardImage({
   const [currentSrc, setCurrentSrc] =
     useState<string | null>(card.image_url || null);
 
-  const [fallbackAttempted, setFallbackAttempted] =
+  const [pokemonFallbackAttempted, setPokemonFallbackAttempted] =
+    useState(false);
+
+  const [sportsFallbackAttempted, setSportsFallbackAttempted] =
     useState(false);
 
   const [imageFailed, setImageFailed] =
     useState(false);
 
+  const normalizedCategory =
+    normalizeFallbackKeyPart(card.category);
+
+  const isPokemon =
+    normalizedCategory === "pokemon";
+
+  const isSports =
+    normalizedCategory === "sports";
+
   useEffect(() => {
     setCurrentSrc(card.image_url || null);
-    setFallbackAttempted(false);
+    setPokemonFallbackAttempted(false);
+    setSportsFallbackAttempted(false);
     setImageFailed(false);
   }, [
+    card.external_id,
     card.image_url,
     card.name,
     card.category,
@@ -274,19 +290,15 @@ function CatalogCardImage({
   ]);
 
   async function tryPokemonFallback() {
-    const isPokemon =
-      normalizeFallbackKeyPart(card.category) === "pokemon";
-
     if (
       !isPokemon ||
-      fallbackAttempted ||
+      pokemonFallbackAttempted ||
       !card.name?.trim()
     ) {
-      setImageFailed(true);
-      return;
+      return false;
     }
 
-    setFallbackAttempted(true);
+    setPokemonFallbackAttempted(true);
 
     const fallbackImage =
       await requestPokemonFallbackImage({
@@ -296,19 +308,77 @@ function CatalogCardImage({
       });
 
     if (!fallbackImage) {
-      setImageFailed(true);
-      return;
+      return false;
     }
 
     setCurrentSrc(fallbackImage);
     setImageFailed(false);
+
+    return true;
+  }
+
+  function trySportsFallback() {
+    if (
+      !isSports ||
+      sportsFallbackAttempted ||
+      !card.external_id?.trim()
+    ) {
+      return false;
+    }
+
+    setSportsFallbackAttempted(true);
+
+    setCurrentSrc(
+      `/api/catalog/sports-image?id=${encodeURIComponent(
+        card.external_id.trim()
+      )}`
+    );
+
+    setImageFailed(false);
+
+    return true;
+  }
+
+  async function tryNextFallback() {
+    if (isPokemon) {
+      const foundPokemonImage =
+        await tryPokemonFallback();
+
+      if (foundPokemonImage) {
+        return;
+      }
+
+      setImageFailed(true);
+      return;
+    }
+
+    if (isSports) {
+      const startedSportsFallback =
+        trySportsFallback();
+
+      if (startedSportsFallback) {
+        return;
+      }
+
+      setImageFailed(true);
+      return;
+    }
+
+    setImageFailed(true);
   }
 
   useEffect(() => {
-    if (!currentSrc && !fallbackAttempted && !imageFailed) {
-      void tryPokemonFallback();
+    if (!currentSrc && !imageFailed) {
+      void tryNextFallback();
     }
-  }, [currentSrc, fallbackAttempted, imageFailed]);
+  }, [
+    currentSrc,
+    imageFailed,
+    isPokemon,
+    isSports,
+    pokemonFallbackAttempted,
+    sportsFallbackAttempted,
+  ]);
 
   if (imageFailed) {
     return (
@@ -316,6 +386,7 @@ function CatalogCardImage({
         <p className="text-emerald-400 text-[10px] font-black uppercase tracking-[0.18em]">
           MintRadar
         </p>
+
         <p className="text-zinc-600 text-xs mt-2">
           Image unavailable
         </p>
@@ -337,12 +408,18 @@ function CatalogCardImage({
       alt={card.name || "Card"}
       className={className || "w-full h-full object-contain"}
       onError={() => {
-        if (currentSrc === card.image_url) {
-          void tryPokemonFallback();
+        const sportsFallbackUrl =
+          isSports &&
+          currentSrc.startsWith(
+            "/api/catalog/sports-image?"
+          );
+
+        if (sportsFallbackUrl) {
+          setImageFailed(true);
           return;
         }
 
-        setImageFailed(true);
+        void tryNextFallback();
       }}
     />
   );
@@ -515,51 +592,67 @@ export default function AddInventoryPage() {
   }
 
   // -----------------------------------------
-  // LOAD CURRENT VENDOR
+  // LOAD CURRENT / ACTIVE VENDOR
   // -----------------------------------------
 
   useEffect(() => {
     async function loadVendor() {
-      const {
-        data: { session },
-      } =
-        await supabase.auth.getSession();
+      try {
+        setCheckingAuth(true);
 
-      if (!session) {
-        router.replace(
-          "/vendor/login"
-        );
-        return;
-      }
+        const {
+          data: { session },
+          error: sessionError,
+        } = await supabase.auth.getSession();
 
-      const {
-        data,
-        error,
-      } = await supabase
-        .from("vendor_members")
-        .select("vendor_id")
-        .eq(
-          "user_id",
-          session.user.id
-        )
-        .maybeSingle();
+        if (sessionError) {
+          throw sessionError;
+        }
 
-      if (error) {
+        if (!session) {
+          router.replace(
+            "/vendor/login"
+          );
+          return;
+        }
+
+        const activeMembership =
+          await getActiveVendorMembership(
+            supabase,
+            session.user.id
+          );
+
+        if (!activeMembership) {
+          setMembership(null);
+          setPublishError(
+            "This account is not connected to a vendor."
+          );
+          return;
+        }
+
+        setMembership({
+          vendor_id:
+            activeMembership.vendor_id,
+          role:
+            activeMembership.role,
+        });
+
+        setPublishError("");
+      } catch (error: any) {
         console.error(
-          "Vendor membership error:",
+          "Active vendor membership error:",
           error
         );
-      }
 
-      if (!data) {
+        setMembership(null);
+
         setPublishError(
-          "This account is not connected to a vendor."
+          error?.message ||
+            "Vendor account could not be verified."
         );
-      } else {
-        setMembership(data);
+      } finally {
+        setCheckingAuth(false);
       }
-
-      setCheckingAuth(false);
     }
 
     loadVendor();
@@ -2151,6 +2244,11 @@ export default function AddInventoryPage() {
               }
             />
 
+            <VendorCompButtons
+              card={selectedCard}
+              listingType={listingType}
+            />
+
             <div className="grid sm:grid-cols-2 gap-5 mt-7">
 
               {/* CONDITION */}
@@ -2412,6 +2510,13 @@ export default function AddInventoryPage() {
               card={
                 selectedCard
               }
+            />
+
+            <VendorCompButtons
+              card={selectedCard}
+              listingType={listingType}
+              gradingCompany={gradingCompany}
+              grade={grade}
             />
 
             <div className="mt-7 bg-black border border-zinc-900 rounded-2xl p-5">
@@ -2945,6 +3050,194 @@ function SelectedCardHeader({
 
       </div>
 
+    </div>
+  );
+}
+
+
+function VendorCompButtons({
+  card,
+  listingType,
+  gradingCompany,
+  grade,
+}: {
+  card: CatalogCard;
+  listingType: ListingType;
+  gradingCompany?: string;
+  grade?: string;
+}) {
+  const normalizedCategory =
+    normalizeFallbackKeyPart(card.category);
+
+  const isSports =
+    normalizedCategory === "sports" ||
+    [
+      "baseball",
+      "basketball",
+      "football",
+      "soccer",
+      "hockey",
+      "wrestling",
+      "racing",
+      "golf",
+    ].some((term) =>
+      normalizedCategory.includes(term)
+    );
+
+  const baseQuery = [
+    card.name,
+    card.year,
+    card.manufacturer,
+    card.release_name || card.set_name,
+    card.card_number
+      ? `#${card.card_number}`
+      : null,
+    card.parallel_name || card.finish,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const gradedQuery =
+    listingType === "graded"
+      ? [
+          baseQuery,
+          gradingCompany,
+          grade
+            ? `Grade ${grade}`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" ")
+      : baseQuery;
+
+  const encodedQuery =
+    encodeURIComponent(
+      gradedQuery.trim()
+    );
+
+  const links = isSports
+    ? [
+        {
+          name: "Card Ladder",
+          logo: "/market-logos/cardladder.png",
+          description:
+            "Sports card sales and market data",
+          href: `https://www.cardladder.com/ladder?query=${encodedQuery}`,
+        },
+        {
+          name: "130point",
+          logo: "/market-logos/130point.png",
+          description:
+            "Search recent sports card sales",
+          href: "https://130point.com/search/",
+        },
+        {
+          name: "eBay Sold",
+          logo: "/market-logos/ebay.png",
+          description:
+            "Completed and sold listings",
+          href: `https://www.ebay.com/sch/i.html?_nkw=${encodedQuery}&LH_Sold=1&LH_Complete=1`,
+        },
+      ]
+    : [
+        {
+          name: "TCGplayer",
+          logo: "/market-logos/tcgplayer.png",
+          description:
+            "Search current TCG marketplace listings",
+          href: `https://www.tcgplayer.com/search/all/product?q=${encodedQuery}`,
+        },
+        {
+          name: "PriceCharting",
+          logo: "/market-logos/pricecharting.png",
+          description:
+            "Search historical pricing",
+          href: `https://www.pricecharting.com/search-products?q=${encodedQuery}&type=prices`,
+        },
+        {
+          name: "Collectr",
+          logo: "/market-logos/collectr.svg",
+          description:
+            "Open Collectr product search",
+          href: "https://app.getcollectr.com/",
+        },
+        {
+          name: "130point",
+          logo: "/market-logos/130point.png",
+          description:
+            "Search recent collectible card sales",
+          href: "https://130point.com/search/",
+        },
+        {
+          name: "eBay Sold",
+          logo: "/market-logos/ebay.png",
+          description:
+            "Completed and sold listings",
+          href: `https://www.ebay.com/sch/i.html?_nkw=${encodedQuery}&LH_Sold=1&LH_Complete=1`,
+        },
+      ];
+
+  return (
+    <div className="mt-6 overflow-hidden rounded-2xl border border-emerald-400/25 bg-black">
+      <div className="border-b border-zinc-900 bg-emerald-400/[0.05] px-4 py-4 sm:px-5">
+        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-400">
+          📡 Market Radar
+        </p>
+
+        <div className="mt-1 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+          <h3 className="text-xl font-black">
+            Check Comps Before You Price
+          </h3>
+
+          <p className="text-xs text-zinc-600">
+            Opens in a new tab
+          </p>
+        </div>
+
+        <p className="mt-2 text-sm leading-6 text-zinc-500">
+          {isSports
+            ? "Sports comps prioritize Card Ladder, 130point and eBay sold listings."
+            : "TCG comps prioritize TCGplayer, PriceCharting, Collectr, 130point and eBay sold listings."}
+        </p>
+      </div>
+
+      <div className="grid gap-2 p-4 sm:grid-cols-2 sm:p-5">
+        {links.map((market) => (
+          <a
+            key={market.name}
+            href={market.href}
+            target="_blank"
+            rel="noreferrer"
+            className="group flex items-center justify-between gap-4 rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 transition hover:border-emerald-400/40 hover:bg-emerald-400/[0.04]"
+          >
+            <div className="min-w-0">
+              <p className="font-black text-white transition group-hover:text-emerald-300">
+                {market.name}
+              </p>
+
+              <p className="mt-1 text-xs text-zinc-600">
+                {market.description}
+              </p>
+            </div>
+
+            <div className="flex h-12 w-24 shrink-0 items-center justify-center rounded-lg border border-zinc-800 bg-transparent px-2.5 py-2 transition group-hover:border-emerald-400/40">
+              <img
+                src={market.logo}
+                alt={`${market.name} logo`}
+                className="max-h-8 max-w-full object-contain"
+              />
+            </div>
+          </a>
+        ))}
+      </div>
+
+      {gradedQuery.trim() && (
+        <div className="border-t border-zinc-900 px-4 py-3 sm:px-5">
+          <p className="truncate text-[11px] text-zinc-700">
+            Search: {gradedQuery}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
