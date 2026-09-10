@@ -37,6 +37,9 @@ type ConversationSnapshot = {
   grading_company?: string | null;
   grade?: string | null;
   vendor_name?: string | null;
+  category?: string | null;
+  external_id?: string | null;
+  data_source?: string | null;
 };
 
 type InboxRow = {
@@ -184,6 +187,7 @@ type InventoryTradeItem = {
   cards?: {
     id: string;
     external_id?: string | null;
+    data_source?: string | null;
     name?: string | null;
     set_name?: string | null;
     card_number?: string | null;
@@ -199,7 +203,7 @@ type CollectionTradeItem = {
   id: string;
   card_id: string | null;
   snapshot: Record<string, unknown> | null;
-  item_type: "raw" | "graded";
+  item_type: "raw" | "graded" | "sealed";
   quantity: number;
   condition: string | null;
   grading_company: string | null;
@@ -243,12 +247,46 @@ type OfferDraftItem = {
     | "catalog"
     | "collection"
     | "inventory";
+
+  itemType: "raw" | "slab" | "sealed";
+
+  condition: string;
+
+  gradingCompany: string;
+  grade: string;
+  certNumber: string;
+
+  sealedCondition: string;
+
   quantity: number;
   marketValue: string;
   tradePercentage: number;
 };
 
 const QUICK_PERCENTAGES = [70, 75, 80, 85, 90, 100];
+
+const TRADE_TCG_CONDITIONS = [
+  "NM",
+  "LP",
+  "MP",
+  "HP",
+  "DMG",
+];
+
+const TRADE_GRADING_COMPANIES = [
+  "PSA",
+  "BGS",
+  "CGC",
+  "SGC",
+  "TAG",
+  "Other",
+];
+
+const TRADE_SEALED_CONDITIONS = [
+  "Factory Sealed",
+  "Sealed - Minor Wear",
+  "Sealed - Damaged Box",
+];
 
 const TRADE_CATALOGS: CatalogType[] = [
   "Pokemon",
@@ -289,6 +327,17 @@ function newOfferDraftItem(): OfferDraftItem {
     selectedInventory: null,
     selectedCollection: null,
     selectionSource: "catalog",
+
+    itemType: "raw",
+
+    condition: "NM",
+
+    gradingCompany: "",
+    grade: "",
+    certNumber: "",
+
+    sealedCondition: "Factory Sealed",
+
     quantity: 1,
     marketValue: "",
     tradePercentage: 80,
@@ -354,6 +403,249 @@ function isSportsCard(card: CatalogCard) {
     "racing",
     "golf",
   ].some((term) => value.includes(term));
+}
+
+
+type ResilientCardImageProps = {
+  src?: string | null;
+  name?: string | null;
+  setName?: string | null;
+  cardNumber?: string | null;
+  category?: string | null;
+  dataSource?: string | null;
+  externalId?: string | null;
+  className?: string;
+  emptyLabel?: string;
+};
+
+function ResilientCardImage({
+  src,
+  name,
+  setName,
+  cardNumber,
+  category,
+  dataSource,
+  externalId,
+  className = "h-full w-full object-contain",
+  emptyLabel = "No Image",
+}: ResilientCardImageProps) {
+  const [currentSrc, setCurrentSrc] =
+    useState<string | null>(src || null);
+
+  const [
+    pokemonFallbackAttempted,
+    setPokemonFallbackAttempted,
+  ] = useState(false);
+
+  const [
+    sportsFallbackAttempted,
+    setSportsFallbackAttempted,
+  ] = useState(false);
+
+  const [imageFailed, setImageFailed] =
+    useState(false);
+
+  const normalizedCategory =
+    (category || "").trim().toLowerCase();
+
+  const normalizedSource =
+    (dataSource || "").trim().toLowerCase();
+
+  const isPokemon =
+    normalizedCategory === "pokemon" ||
+    normalizedSource.includes("tcgdex");
+
+  const isSports =
+    normalizedSource.includes("cardsight") ||
+    [
+      "sports",
+      "baseball",
+      "basketball",
+      "football",
+      "soccer",
+      "hockey",
+      "wrestling",
+      "racing",
+      "golf",
+    ].some((term) =>
+      normalizedCategory.includes(term)
+    );
+
+  useEffect(() => {
+    setCurrentSrc(src || null);
+    setPokemonFallbackAttempted(false);
+    setSportsFallbackAttempted(false);
+    setImageFailed(false);
+  }, [
+    src,
+    name,
+    setName,
+    cardNumber,
+    category,
+    dataSource,
+    externalId,
+  ]);
+
+  async function tryPokemonFallback() {
+    if (
+      !isPokemon ||
+      pokemonFallbackAttempted ||
+      !name?.trim()
+    ) {
+      return false;
+    }
+
+    setPokemonFallbackAttempted(true);
+
+    try {
+      const params = new URLSearchParams({
+        name: name.trim(),
+      });
+
+      if (setName?.trim()) {
+        params.set(
+          "setName",
+          setName.trim()
+        );
+      }
+
+      if (cardNumber?.trim()) {
+        params.set(
+          "cardNumber",
+          cardNumber.trim()
+        );
+      }
+
+      const response = await fetch(
+        `/api/catalog/pokemon-image-fallback?${params.toString()}`,
+        {
+          method: "GET",
+          cache: "no-store",
+        }
+      );
+
+      if (!response.ok) {
+        return false;
+      }
+
+      const payload = (await response.json()) as {
+        ok?: boolean;
+        imageUrl?: string | null;
+      };
+
+      if (
+        !payload.ok ||
+        !payload.imageUrl
+      ) {
+        return false;
+      }
+
+      setCurrentSrc(payload.imageUrl);
+      setImageFailed(false);
+      return true;
+    } catch (error) {
+      console.error(
+        "Pokémon image fallback failed:",
+        error
+      );
+      return false;
+    }
+  }
+
+  function trySportsFallback() {
+    if (
+      !isSports ||
+      sportsFallbackAttempted ||
+      !externalId?.trim()
+    ) {
+      return false;
+    }
+
+    setSportsFallbackAttempted(true);
+    setCurrentSrc(
+      `/api/catalog/sports-image?id=${encodeURIComponent(
+        externalId.trim()
+      )}`
+    );
+    setImageFailed(false);
+    return true;
+  }
+
+  async function tryNextFallback() {
+    if (isPokemon) {
+      const ok =
+        await tryPokemonFallback();
+
+      if (ok) return;
+    }
+
+    if (isSports) {
+      const started =
+        trySportsFallback();
+
+      if (started) return;
+    }
+
+    setImageFailed(true);
+  }
+
+  useEffect(() => {
+    if (
+      !currentSrc &&
+      !imageFailed
+    ) {
+      void tryNextFallback();
+    }
+  }, [
+    currentSrc,
+    imageFailed,
+    isPokemon,
+    isSports,
+    pokemonFallbackAttempted,
+    sportsFallbackAttempted,
+  ]);
+
+  if (imageFailed) {
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center p-2 text-center">
+        <p className="text-[9px] font-black uppercase tracking-[0.12em] text-emerald-400">
+          MintRadar
+        </p>
+        <p className="mt-1 text-[10px] text-zinc-700">
+          {emptyLabel}
+        </p>
+      </div>
+    );
+  }
+
+  if (!currentSrc) {
+    return (
+      <div className="flex h-full w-full items-center justify-center p-2 text-center text-[10px] text-zinc-700">
+        Loading...
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={currentSrc}
+      alt={name || "Trading card"}
+      className={className}
+      onError={() => {
+        const usingSportsRoute =
+          currentSrc.startsWith(
+            "/api/catalog/sports-image?"
+          );
+
+        if (usingSportsRoute) {
+          setImageFailed(true);
+          return;
+        }
+
+        void tryNextFallback();
+      }}
+    />
+  );
 }
 
 function TradeCompButtons({
@@ -441,11 +733,9 @@ function TradeCompButtons({
             className="group flex min-h-14 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 transition hover:border-emerald-400/40 hover:bg-emerald-400/[0.04]"
             title={market.name}
           >
-            <img
-              src={market.logo}
-              alt={`${market.name} logo`}
-              className="max-h-7 max-w-full object-contain"
-            />
+            <span className="text-xs font-black text-zinc-300 transition group-hover:text-emerald-300">
+              {market.name}
+            </span>
           </a>
         ))}
       </div>
@@ -904,6 +1194,14 @@ function TradeOfferCatalogCardEditor({
       selectedCard: null,
       selectedInventory: null,
       selectedCollection: null,
+
+      itemType: "raw",
+      condition: "NM",
+      gradingCompany: "",
+      grade: "",
+      certNumber: "",
+      sealedCondition: "Factory Sealed",
+
       quantity: 1,
       marketValue: "",
     });
@@ -923,6 +1221,14 @@ function TradeOfferCatalogCardEditor({
       selectedInventory: null,
       selectedCollection: null,
       selectionSource: "catalog",
+
+      itemType: "raw",
+      condition: "NM",
+      gradingCompany: "",
+      grade: "",
+      certNumber: "",
+      sealedCondition: "Factory Sealed",
+
       quantity: 1,
       marketValue: "",
     });
@@ -946,6 +1252,29 @@ function TradeOfferCatalogCardEditor({
         inventoryItem,
       selectedCollection: null,
       selectionSource: "inventory",
+
+      itemType:
+        inventoryItem.listing_type === "graded" ||
+        inventoryItem.grading_company ||
+        inventoryItem.grade
+          ? "slab"
+          : "raw",
+
+      condition:
+        inventoryItem.condition || "NM",
+
+      gradingCompany:
+        inventoryItem.grading_company || "",
+
+      grade:
+        inventoryItem.grade || "",
+
+      certNumber:
+        inventoryItem.cert_number || "",
+
+      sealedCondition:
+        "Factory Sealed",
+
       quantity: 1,
       marketValue:
         inventoryItem.price != null
@@ -971,6 +1300,31 @@ function TradeOfferCatalogCardEditor({
       selectedCollection:
         collectionItem,
       selectionSource: "collection",
+
+      itemType:
+        collectionItem.item_type === "graded" ||
+        collectionItem.grading_company ||
+        collectionItem.grade
+          ? "slab"
+          : collectionItem.item_type === "sealed"
+            ? "sealed"
+            : "raw",
+
+      condition:
+        collectionItem.condition || "NM",
+
+      gradingCompany:
+        collectionItem.grading_company || "",
+
+      grade:
+        collectionItem.grade || "",
+
+      certNumber:
+        collectionItem.cert_number || "",
+
+      sealedCondition:
+        "Factory Sealed",
+
       quantity: 1,
       marketValue:
         collectionItem.personal_value != null
@@ -1031,6 +1385,48 @@ function TradeOfferCatalogCardEditor({
         >
           Remove
         </button>
+      </div>
+
+      <div className="mt-4">
+        <label className="text-xs font-black uppercase tracking-wider text-zinc-600">
+          Item Type
+        </label>
+
+        <div className="mt-2 grid grid-cols-3 gap-2">
+          {[
+            ["raw", "Raw Card"],
+            ["slab", "Graded / Slab"],
+            ["sealed", "Sealed Product"],
+          ].map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() =>
+                onUpdate(
+                  item.localId,
+                  {
+                    itemType:
+                      value as
+                        | "raw"
+                        | "slab"
+                        | "sealed",
+                  }
+                )
+              }
+              className={`rounded-xl border px-3 py-3 text-xs font-black transition ${
+                item.itemType === value
+                  ? "border-emerald-400 bg-emerald-400 text-black"
+                  : "border-zinc-800 bg-black text-zinc-500 hover:text-white"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <p className="mt-2 text-xs text-zinc-700">
+          Choose the item type first, then search the catalog, your collection, or vendor inventory.
+        </p>
       </div>
 
       {!selectedCard && (
@@ -1200,22 +1596,15 @@ function TradeOfferCatalogCardEditor({
                         className="flex w-full items-center gap-3 rounded-2xl border border-zinc-900 bg-black p-3 text-left transition hover:border-emerald-400/40"
                       >
                         <div className="flex h-20 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-zinc-900 bg-zinc-950">
-                          {card.image_url ? (
-                            <img
-                              src={
-                                card.image_url
-                              }
-                              alt={
-                                card.name ||
-                                "Catalog card"
-                              }
-                              className="h-full w-full object-contain"
-                            />
-                          ) : (
-                            <span className="px-2 text-center text-[9px] font-black uppercase tracking-wider text-zinc-700">
-                              No image
-                            </span>
-                          )}
+                          <ResilientCardImage
+                            src={card.image_url}
+                            name={card.name}
+                            setName={card.set_name}
+                            cardNumber={card.card_number}
+                            category={card.category}
+                            dataSource={card.data_source}
+                            externalId={card.external_id}
+                          />
                         </div>
 
                         <div className="min-w-0 flex-1">
@@ -1316,20 +1705,23 @@ function TradeOfferCatalogCardEditor({
                       className="flex w-full items-center gap-3 rounded-2xl border border-zinc-900 bg-black p-3 text-left transition hover:border-emerald-400/40"
                     >
                       <div className="flex h-20 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-zinc-900 bg-zinc-950">
-                        {collectionItem.image_url ? (
-                          <img
-                            src={collectionItem.image_url}
-                            alt={
-                              collectionItem.card_name ||
-                              "Collection card"
-                            }
-                            className="h-full w-full object-contain"
-                          />
-                        ) : (
-                          <span className="px-2 text-center text-[9px] font-black uppercase tracking-wider text-zinc-700">
-                            No image
-                          </span>
-                        )}
+                        <ResilientCardImage
+                          src={collectionItem.image_url}
+                          name={collectionItem.card_name}
+                          setName={collectionItem.set_name}
+                          cardNumber={collectionItem.card_number}
+                          category={collectionItem.category}
+                          dataSource={
+                            typeof collectionItem.snapshot?.data_source === "string"
+                              ? collectionItem.snapshot.data_source
+                              : null
+                          }
+                          externalId={
+                            typeof collectionItem.snapshot?.external_id === "string"
+                              ? collectionItem.snapshot.external_id
+                              : null
+                          }
+                        />
                       </div>
 
                       <div className="min-w-0 flex-1">
@@ -1477,22 +1869,15 @@ function TradeOfferCatalogCardEditor({
                             className="flex w-full items-center gap-3 rounded-2xl border border-zinc-900 bg-black p-3 text-left transition hover:border-emerald-400/40"
                           >
                             <div className="flex h-20 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-zinc-900 bg-zinc-950">
-                              {card?.image_url ? (
-                                <img
-                                  src={
-                                    card.image_url
-                                  }
-                                  alt={
-                                    card.name ||
-                                    "Inventory card"
-                                  }
-                                  className="h-full w-full object-contain"
-                                />
-                              ) : (
-                                <span className="px-2 text-center text-[9px] font-black uppercase tracking-wider text-zinc-700">
-                                  No image
-                                </span>
-                              )}
+                              <ResilientCardImage
+                                src={card?.image_url}
+                                name={card?.name}
+                                setName={card?.set_name}
+                                cardNumber={card?.card_number}
+                                category={card?.category}
+                                dataSource={card?.data_source}
+                                externalId={card?.external_id}
+                              />
                             </div>
 
                             <div className="min-w-0 flex-1">
@@ -1559,22 +1944,15 @@ function TradeOfferCatalogCardEditor({
           <div className="mt-4 rounded-2xl border border-emerald-400/20 bg-black p-4">
             <div className="flex items-start gap-4">
               <div className="flex h-28 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-zinc-900 bg-zinc-950">
-                {selectedCard.image_url ? (
-                  <img
-                    src={
-                      selectedCard.image_url
-                    }
-                    alt={
-                      selectedCard.name ||
-                      "Selected card"
-                    }
-                    className="h-full w-full object-contain"
-                  />
-                ) : (
-                  <span className="px-2 text-center text-[9px] font-black uppercase tracking-wider text-zinc-700">
-                    No image
-                  </span>
-                )}
+                <ResilientCardImage
+                  src={selectedCard.image_url}
+                  name={selectedCard.name}
+                  setName={selectedCard.set_name}
+                  cardNumber={selectedCard.card_number}
+                  category={selectedCard.category}
+                  dataSource={selectedCard.data_source}
+                  externalId={selectedCard.external_id}
+                />
               </div>
 
               <div className="min-w-0 flex-1">
@@ -1702,6 +2080,156 @@ function TradeOfferCatalogCardEditor({
               card={selectedCard}
             />
           </div>
+
+          {item.itemType === "raw" && (
+            <div className="mt-4">
+              <label className="text-xs font-black uppercase tracking-wider text-zinc-600">
+                Condition
+              </label>
+
+              <div className="mt-2 grid grid-cols-5 gap-2">
+                {TRADE_TCG_CONDITIONS.map(
+                  (condition) => (
+                    <button
+                      key={condition}
+                      type="button"
+                      onClick={() =>
+                        onUpdate(
+                          item.localId,
+                          {
+                            condition,
+                          }
+                        )
+                      }
+                      className={`rounded-lg border px-2 py-2 text-xs font-black transition ${
+                        item.condition === condition
+                          ? "border-emerald-400 bg-emerald-400 text-black"
+                          : "border-zinc-800 bg-black text-zinc-500 hover:text-white"
+                      }`}
+                    >
+                      {condition}
+                    </button>
+                  )
+                )}
+              </div>
+            </div>
+          )}
+
+          {item.itemType === "slab" && (
+            <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <div>
+                <label className="text-xs font-black uppercase tracking-wider text-zinc-600">
+                  Grading Company
+                </label>
+
+                <select
+                  value={item.gradingCompany}
+                  onChange={(event) =>
+                    onUpdate(
+                      item.localId,
+                      {
+                        gradingCompany:
+                          event.target.value,
+                      }
+                    )
+                  }
+                  className="mt-2 w-full rounded-xl border border-zinc-800 bg-black px-3 py-3 text-sm font-black text-white outline-none focus:border-emerald-400/50"
+                >
+                  <option value="">
+                    Select
+                  </option>
+
+                  {TRADE_GRADING_COMPANIES.map(
+                    (company) => (
+                      <option
+                        key={company}
+                        value={company}
+                      >
+                        {company}
+                      </option>
+                    )
+                  )}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-black uppercase tracking-wider text-zinc-600">
+                  Grade
+                </label>
+
+                <input
+                  type="text"
+                  value={item.grade}
+                  onChange={(event) =>
+                    onUpdate(
+                      item.localId,
+                      {
+                        grade:
+                          event.target.value,
+                      }
+                    )
+                  }
+                  placeholder="10"
+                  className="mt-2 w-full rounded-xl border border-zinc-800 bg-black px-3 py-3 text-sm font-black text-white outline-none placeholder:text-zinc-700 focus:border-emerald-400/50"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-black uppercase tracking-wider text-zinc-600">
+                  Cert # — Optional
+                </label>
+
+                <input
+                  type="text"
+                  value={item.certNumber}
+                  onChange={(event) =>
+                    onUpdate(
+                      item.localId,
+                      {
+                        certNumber:
+                          event.target.value,
+                      }
+                    )
+                  }
+                  placeholder="Certification number"
+                  className="mt-2 w-full rounded-xl border border-zinc-800 bg-black px-3 py-3 text-sm font-bold text-white outline-none placeholder:text-zinc-700 focus:border-emerald-400/50"
+                />
+              </div>
+            </div>
+          )}
+
+          {item.itemType === "sealed" && (
+            <div className="mt-4">
+              <label className="text-xs font-black uppercase tracking-wider text-zinc-600">
+                Sealed Condition
+              </label>
+
+              <select
+                value={item.sealedCondition}
+                onChange={(event) =>
+                  onUpdate(
+                    item.localId,
+                    {
+                      sealedCondition:
+                        event.target.value,
+                    }
+                  )
+                }
+                className="mt-2 w-full rounded-xl border border-zinc-800 bg-black px-3 py-3 text-sm font-black text-white outline-none focus:border-emerald-400/50"
+              >
+                {TRADE_SEALED_CONDITIONS.map(
+                  (condition) => (
+                    <option
+                      key={condition}
+                      value={condition}
+                    >
+                      {condition}
+                    </option>
+                  )
+                )}
+              </select>
+            </div>
+          )}
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <div>
@@ -2070,6 +2598,27 @@ export default function ConversationPage() {
   const tradeDifference =
     offeredTradeTotal - targetValue;
 
+  const currentConversationTransactionIds =
+    useMemo(
+      () =>
+        Object.values(
+          tradeTransactions
+        )
+          .filter(
+            (transaction) =>
+              transaction.conversation_id ===
+              conversationId
+          )
+          .map(
+            (transaction) =>
+              transaction.id
+          ),
+      [
+        tradeTransactions,
+        conversationId,
+      ]
+    );
+
   function resetTradeBuilder() {
     setTradeOfferNote("");
     setTargetMarketValue(
@@ -2340,6 +2889,7 @@ export default function ConversationPage() {
               cards (
                 id,
                 external_id,
+                data_source,
                 name,
                 set_name,
                 card_number,
@@ -2515,8 +3065,12 @@ export default function ConversationPage() {
   }
 
   async function loadReceivedItems() {
-    if (!currentUserId) {
+    if (
+      !currentUserId ||
+      currentConversationTransactionIds.length === 0
+    ) {
       setReceivedItems([]);
+      setReceivedItemsLoading(false);
       return;
     }
 
@@ -2543,7 +3097,14 @@ export default function ConversationPage() {
           claimed_at,
           created_at
         `)
-        .eq("recipient_user_id", currentUserId)
+        .eq(
+          "recipient_user_id",
+          currentUserId
+        )
+        .in(
+          "trade_transaction_id",
+          currentConversationTransactionIds
+        )
         .order("created_at", {
           ascending: false,
         });
@@ -2751,13 +3312,20 @@ export default function ConversationPage() {
   }
 
   useEffect(() => {
-    if (!currentUserId) {
+    if (
+      !currentUserId ||
+      currentConversationTransactionIds.length === 0
+    ) {
       setReceivedItems([]);
       return;
     }
 
     void loadReceivedItems();
-  }, [currentUserId]);
+  }, [
+    currentUserId,
+    conversationId,
+    currentConversationTransactionIds.join(","),
+  ]);
 
   useEffect(() => {
     let mounted = true;
@@ -3311,28 +3879,34 @@ export default function ConversationPage() {
                 null,
 
               item_type:
-                collectionItem?.item_type ??
-                null,
+                item.itemType === "slab"
+                  ? "graded"
+                  : item.itemType,
 
               condition:
-                inventoryItem?.condition ||
-                collectionItem?.condition ||
-                null,
+                item.itemType === "raw"
+                  ? item.condition || null
+                  : null,
 
               grading_company:
-                inventoryItem?.grading_company ||
-                collectionItem?.grading_company ||
-                null,
+                item.itemType === "slab"
+                  ? item.gradingCompany || null
+                  : null,
 
               grade:
-                inventoryItem?.grade ||
-                collectionItem?.grade ||
-                null,
+                item.itemType === "slab"
+                  ? item.grade || null
+                  : null,
 
               cert_number:
-                inventoryItem?.cert_number ||
-                collectionItem?.cert_number ||
-                null,
+                item.itemType === "slab"
+                  ? item.certNumber || null
+                  : null,
+
+              sealed_condition:
+                item.itemType === "sealed"
+                  ? item.sealedCondition || null
+                  : null,
 
               vendor_name:
                 inventoryItem
@@ -3555,13 +4129,17 @@ export default function ConversationPage() {
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex min-w-0 flex-1 gap-3">
-                        {itemSnapshot.image_url && (
-                          <img
+                        <div className="h-16 w-11 shrink-0 overflow-hidden rounded-lg bg-zinc-950">
+                          <ResilientCardImage
                             src={itemSnapshot.image_url}
-                            alt={itemSnapshot.card_name || "Offered card"}
-                            className="h-16 w-11 shrink-0 rounded-lg object-contain"
+                            name={itemSnapshot.card_name}
+                            setName={itemSnapshot.set_name}
+                            cardNumber={itemSnapshot.card_number}
+                            category={itemSnapshot.category}
+                            dataSource={itemSnapshot.data_source}
+                            externalId={itemSnapshot.external_id}
                           />
-                        )}
+                        </div>
 
                         <div className="min-w-0">
                           <p className="font-black text-white">
@@ -4021,13 +4599,17 @@ export default function ConversationPage() {
 
           {snapshot?.card_name && (
             <div className="mt-4 flex gap-3 rounded-2xl border border-zinc-800 bg-black p-3">
-              {snapshot.image_url && (
-                <img
+              <div className="h-20 w-14 shrink-0 overflow-hidden rounded-lg bg-zinc-950">
+                <ResilientCardImage
                   src={snapshot.image_url}
-                  alt={snapshot.card_name}
-                  className="h-20 w-14 shrink-0 rounded-lg object-contain"
+                  name={snapshot.card_name}
+                  setName={snapshot.set_name}
+                  cardNumber={snapshot.card_number}
+                  category={snapshot.category}
+                  dataSource={snapshot.data_source}
+                  externalId={snapshot.external_id}
                 />
-              )}
+              </div>
 
               <div className="min-w-0 flex-1">
                 <p className="text-xs font-black uppercase tracking-wider text-zinc-600">
@@ -4160,6 +4742,9 @@ export default function ConversationPage() {
           )}
         </div>
 
+        {(receivedItemsLoading ||
+          receivedItems.length > 0) && (
+          <>
         <section className="mb-6 overflow-hidden rounded-3xl border border-emerald-400/20 bg-zinc-950">
           <div className="border-b border-zinc-900 bg-emerald-400/[0.04] p-5">
             <p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400">
@@ -4167,7 +4752,7 @@ export default function ConversationPage() {
             </p>
 
             <p className="mt-2 text-sm text-zinc-500">
-              Claim cards from completed trades into your personal collection or vendor inventory.
+              Claim cards received from trades in this conversation into your personal collection or vendor inventory.
             </p>
           </div>
 
@@ -4203,19 +4788,15 @@ export default function ConversationPage() {
                       >
                         <div className="flex gap-4">
                           <div className="flex h-28 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-zinc-900 bg-zinc-950">
-                            {imageUrl ? (
-                              <img
-                                src={imageUrl}
-                                alt={receiptCardName(
-                                  item
-                                )}
-                                className="h-full w-full object-contain"
-                              />
-                            ) : (
-                              <span className="px-2 text-center text-[9px] font-black uppercase tracking-wider text-zinc-700">
-                                No image
-                              </span>
-                            )}
+                            <ResilientCardImage
+                              src={imageUrl}
+                              name={receiptCardName(item)}
+                              setName={receiptText(item, "set_name")}
+                              cardNumber={receiptText(item, "card_number")}
+                              category={receiptText(item, "category")}
+                              dataSource={receiptText(item, "data_source")}
+                              externalId={receiptText(item, "external_id")}
+                            />
                           </div>
 
                           <div className="min-w-0 flex-1">
@@ -4449,6 +5030,8 @@ export default function ConversationPage() {
             )}
           </div>
         </section>
+          </>
+        )}
 
         {showTradeBuilder && (
           <div className="border-t border-emerald-400/20 bg-zinc-950 p-3 sm:p-4">
@@ -4502,18 +5085,17 @@ export default function ConversationPage() {
                   </p>
 
                   <div className="mt-3 flex gap-3">
-                    {snapshot?.image_url && (
-                      <img
-                        src={
-                          snapshot.image_url
-                        }
-                        alt={
-                          snapshot.card_name ||
-                          "Target card"
-                        }
-                        className="h-24 w-16 shrink-0 rounded-xl object-contain"
+                    <div className="h-24 w-16 shrink-0 overflow-hidden rounded-xl bg-zinc-950">
+                      <ResilientCardImage
+                        src={snapshot?.image_url}
+                        name={snapshot?.card_name}
+                        setName={snapshot?.set_name}
+                        cardNumber={snapshot?.card_number}
+                        category={snapshot?.category}
+                        dataSource={snapshot?.data_source}
+                        externalId={snapshot?.external_id}
                       />
-                    )}
+                    </div>
 
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-lg font-black text-white">

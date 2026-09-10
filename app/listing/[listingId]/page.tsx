@@ -403,6 +403,14 @@ export default function PublicListingPage() {
             "id",
             listingId
           )
+          .gt(
+            "quantity",
+            0
+          )
+          .gt(
+            "price",
+            0
+          )
           .maybeSingle();
 
         if (listingError) {
@@ -495,6 +503,10 @@ export default function PublicListingPage() {
             )
             .gt(
               "quantity",
+              0
+            )
+            .gt(
+              "price",
               0
             )
             .neq(

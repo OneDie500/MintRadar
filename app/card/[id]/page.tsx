@@ -77,8 +77,6 @@ function buildCompDrafts(comps: Comp[] = []) {
 
 type Card = {
   id: string;
-  external_id?: string | null;
-  data_source?: string | null;
   name?: string | null;
   set_name?: string | null;
   card_number?: string | null;
@@ -92,319 +90,6 @@ type Card = {
   comps?: Comp[];
 };
 
-
-type PokemonImageFallbackResponse = {
-  ok?: boolean;
-  imageUrl?: string | null;
-};
-
-const pokemonImageFallbackCache = new Map<string, string | null>();
-const pokemonImageFallbackRequests = new Map<string, Promise<string | null>>();
-
-function normalizeFallbackKeyPart(value?: string | null) {
-  return (value || "").trim().toLowerCase();
-}
-
-function buildPokemonFallbackKey({
-  name,
-  setName,
-  cardNumber,
-}: {
-  name?: string | null;
-  setName?: string | null;
-  cardNumber?: string | null;
-}) {
-  return [
-    normalizeFallbackKeyPart(name),
-    normalizeFallbackKeyPart(setName),
-    normalizeFallbackKeyPart(cardNumber),
-  ].join("|");
-}
-
-async function requestPokemonFallbackImage({
-  name,
-  setName,
-  cardNumber,
-}: {
-  name?: string | null;
-  setName?: string | null;
-  cardNumber?: string | null;
-}) {
-  const key = buildPokemonFallbackKey({
-    name,
-    setName,
-    cardNumber,
-  });
-
-  if (!name?.trim()) {
-    return null;
-  }
-
-  if (pokemonImageFallbackCache.has(key)) {
-    return pokemonImageFallbackCache.get(key) ?? null;
-  }
-
-  const existingRequest = pokemonImageFallbackRequests.get(key);
-
-  if (existingRequest) {
-    return existingRequest;
-  }
-
-  const request = (async () => {
-    try {
-      const params = new URLSearchParams({
-        name: name.trim(),
-      });
-
-      if (setName?.trim()) {
-        params.set("setName", setName.trim());
-      }
-
-      if (cardNumber?.trim()) {
-        params.set("cardNumber", cardNumber.trim());
-      }
-
-      const response = await fetch(
-        `/api/catalog/pokemon-image-fallback?${params.toString()}`,
-        {
-          method: "GET",
-          cache: "no-store",
-        }
-      );
-
-      if (!response.ok) {
-        pokemonImageFallbackCache.set(key, null);
-        return null;
-      }
-
-      const payload =
-        (await response.json()) as PokemonImageFallbackResponse;
-
-      const imageUrl =
-        payload.ok && payload.imageUrl
-          ? payload.imageUrl
-          : null;
-
-      pokemonImageFallbackCache.set(key, imageUrl);
-
-      return imageUrl;
-    } catch (error) {
-      console.error("Pokémon image fallback lookup failed:", error);
-      pokemonImageFallbackCache.set(key, null);
-      return null;
-    } finally {
-      pokemonImageFallbackRequests.delete(key);
-    }
-  })();
-
-  pokemonImageFallbackRequests.set(key, request);
-
-  return request;
-}
-
-function CardImage({
-  src,
-  alt,
-  category,
-  setName,
-  cardNumber,
-  externalId,
-}: {
-  src?: string | null;
-  alt?: string | null;
-  category?: string | null;
-  setName?: string | null;
-  cardNumber?: string | null;
-  externalId?: string | null;
-}) {
-  const [currentSrc, setCurrentSrc] =
-    useState<string | null>(src || null);
-
-  const [
-    pokemonFallbackAttempted,
-    setPokemonFallbackAttempted,
-  ] = useState(false);
-
-  const [
-    sportsFallbackAttempted,
-    setSportsFallbackAttempted,
-  ] = useState(false);
-
-  const [imageFailed, setImageFailed] =
-    useState(false);
-
-  const normalizedCategory =
-    normalizeFallbackKeyPart(category);
-
-  const isPokemon =
-    normalizedCategory === "pokemon";
-
-  const isSports =
-    [
-      "sports",
-      "baseball",
-      "basketball",
-      "football",
-      "soccer",
-      "hockey",
-      "wrestling",
-      "racing",
-      "golf",
-    ].some((term) =>
-      normalizedCategory.includes(term)
-    );
-
-  useEffect(() => {
-    setCurrentSrc(src || null);
-    setPokemonFallbackAttempted(false);
-    setSportsFallbackAttempted(false);
-    setImageFailed(false);
-  }, [
-    src,
-    alt,
-    category,
-    setName,
-    cardNumber,
-    externalId,
-  ]);
-
-  async function tryPokemonFallback() {
-    if (
-      !isPokemon ||
-      pokemonFallbackAttempted ||
-      !alt?.trim()
-    ) {
-      return false;
-    }
-
-    setPokemonFallbackAttempted(true);
-
-    const fallbackImage =
-      await requestPokemonFallbackImage({
-        name: alt,
-        setName,
-        cardNumber,
-      });
-
-    if (!fallbackImage) {
-      return false;
-    }
-
-    setCurrentSrc(fallbackImage);
-    setImageFailed(false);
-
-    return true;
-  }
-
-  function trySportsFallback() {
-    if (
-      !isSports ||
-      sportsFallbackAttempted ||
-      !externalId?.trim()
-    ) {
-      return false;
-    }
-
-    setSportsFallbackAttempted(true);
-    setImageFailed(false);
-
-    setCurrentSrc(
-      `/api/catalog/sports-image?id=${encodeURIComponent(
-        externalId.trim()
-      )}`
-    );
-
-    return true;
-  }
-
-  async function tryNextFallback() {
-    if (isPokemon) {
-      const foundPokemonImage =
-        await tryPokemonFallback();
-
-      if (foundPokemonImage) {
-        return;
-      }
-
-      setImageFailed(true);
-      return;
-    }
-
-    if (isSports) {
-      const startedSportsFallback =
-        trySportsFallback();
-
-      if (startedSportsFallback) {
-        return;
-      }
-
-      setImageFailed(true);
-      return;
-    }
-
-    setImageFailed(true);
-  }
-
-  useEffect(() => {
-    if (
-      !currentSrc &&
-      !imageFailed
-    ) {
-      void tryNextFallback();
-    }
-  }, [
-    currentSrc,
-    imageFailed,
-    isPokemon,
-    isSports,
-    pokemonFallbackAttempted,
-    sportsFallbackAttempted,
-  ]);
-
-  if (imageFailed) {
-    return (
-      <div className="w-full h-full flex flex-col items-center justify-center text-center px-3">
-        <p className="text-emerald-400 text-xs font-black tracking-[0.18em] uppercase">
-          MintRadar
-        </p>
-
-        <p className="text-zinc-600 text-xs mt-2">
-          Image unavailable
-        </p>
-      </div>
-    );
-  }
-
-  if (!currentSrc) {
-    return (
-      <div className="w-full h-full flex items-center justify-center text-zinc-700">
-        Loading image...
-      </div>
-    );
-  }
-
-  return (
-    <img
-      src={currentSrc}
-      alt={alt || "Card"}
-      className="w-full h-full object-contain"
-      onError={() => {
-        const isSportsRoute =
-          isSports &&
-          currentSrc.startsWith(
-            "/api/catalog/sports-image?"
-          );
-
-        if (isSportsRoute) {
-          setImageFailed(true);
-          return;
-        }
-
-        void tryNextFallback();
-      }}
-    />
-  );
-}
 
 export default function CardDetailPage() {
   const params = useParams();
@@ -489,8 +174,6 @@ export default function CardDetailPage() {
           .from("cards")
           .select(`
             id,
-            external_id,
-            data_source,
             name,
             set_name,
             card_number,
@@ -533,9 +216,27 @@ export default function CardDetailPage() {
         }
 
         if (data) {
-          setCard(
-            data as unknown as Card
-          );
+          const typedCard =
+            data as unknown as Card;
+
+          setCard({
+            ...typedCard,
+            inventory:
+              (
+                typedCard.inventory ||
+                []
+              ).filter(
+                (listing) =>
+                  Number(
+                    listing.quantity ??
+                      0
+                  ) > 0 &&
+                  Number(
+                    listing.price ??
+                      0
+                  ) > 0
+              ),
+          });
         }
       } catch (err: any) {
         console.error(
@@ -1577,14 +1278,20 @@ export default function CardDetailPage() {
 
             <div className="aspect-[3/4] bg-black rounded-2xl overflow-hidden">
 
-              <CardImage
-              src={card.image_url}
-              alt={card.name}
-              category={card.category}
-              setName={card.set_name}
-              cardNumber={card.card_number}
-              externalId={card.external_id}
-            />
+              {card.image_url ? (
+                <img
+                  src={card.image_url}
+                  alt={
+                    card.name ||
+                    "Card"
+                  }
+                  className="w-full h-full object-contain"
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-zinc-700">
+                  No Image
+                </div>
+              )}
 
             </div>
 
@@ -2400,14 +2107,20 @@ function GradedListingCard({
 
         <div className="aspect-[3/4] bg-black border border-zinc-900 rounded-2xl overflow-hidden">
 
-          <CardImage
+          {card.image_url ? (
+            <img
               src={card.image_url}
-              alt={card.name}
-              category={card.category}
-              setName={card.set_name}
-              cardNumber={card.card_number}
-              externalId={card.external_id}
+              alt={
+                card.name ||
+                "Card"
+              }
+              className="w-full h-full object-contain"
             />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-zinc-700">
+              No Image
+            </div>
+          )}
 
         </div>
 
@@ -2624,14 +2337,20 @@ function RawListingCard({
 
         <div className="aspect-[3/4] bg-black border border-zinc-900 rounded-2xl overflow-hidden">
 
-          <CardImage
+          {card.image_url ? (
+            <img
               src={card.image_url}
-              alt={card.name}
-              category={card.category}
-              setName={card.set_name}
-              cardNumber={card.card_number}
-              externalId={card.external_id}
+              alt={
+                card.name ||
+                "Card"
+              }
+              className="w-full h-full object-contain"
             />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-zinc-700">
+              No Image
+            </div>
+          )}
 
         </div>
 

@@ -4,9 +4,8 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import {
-  getStoredActiveVendorId,
+  getActiveVendorMembership,
   getVendorMemberships,
-  setStoredActiveVendorId,
   switchActiveVendor,
   type ActiveVendorMembership,
 } from "../../lib/active-vendor";
@@ -63,25 +62,11 @@ export default function AccountNav() {
           return;
         }
 
-        const storedVendorId =
-          getStoredActiveVendorId();
-
         const activeMembership =
-          memberships.find(
-            (membership) =>
-              membership.vendor_id ===
-              storedVendorId
-          ) ?? memberships[0];
-
-        if (
-          activeMembership &&
-          activeMembership.vendor_id !==
-            storedVendorId
-        ) {
-          setStoredActiveVendorId(
-            activeMembership.vendor_id
+          await getActiveVendorMembership(
+            supabase,
+            user.id
           );
-        }
 
         if (!mounted) return;
 
@@ -405,6 +390,33 @@ export default function AccountNav() {
             role="menuitem"
           >
             Profile / Account
+          </Link>
+
+          <Link
+            href="/customer/collection"
+            onClick={() => setOpen(false)}
+            className="block px-4 py-3 text-sm font-bold text-zinc-200 transition hover:bg-zinc-900 hover:text-emerald-300"
+            role="menuitem"
+          >
+            My Collection
+          </Link>
+
+          <Link
+            href="/wishlist"
+            onClick={() => setOpen(false)}
+            className="block px-4 py-3 text-sm font-bold text-zinc-200 transition hover:bg-zinc-900 hover:text-emerald-300"
+            role="menuitem"
+          >
+            Wishlist
+          </Link>
+
+          <Link
+            href="/trades"
+            onClick={() => setOpen(false)}
+            className="block px-4 py-3 text-sm font-bold text-zinc-200 transition hover:bg-zinc-900 hover:text-emerald-300"
+            role="menuitem"
+          >
+            Trade History
           </Link>
 
           <Link

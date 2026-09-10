@@ -2,11 +2,16 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import TradeAnalyzer from "../components/TradeAnalyzer";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase";
 import { getActiveVendorMembership } from "../../lib/active-vendor";
 import QRCode from "qrcode";
+import {
+  P31SWebPrinter,
+  supportsWebBluetooth,
+} from "../../lib/p31s-web";
 
 type Card = {
   id: string;
@@ -41,10 +46,88 @@ type InventoryItem = {
   cards?: Card | null;
 };
 
+type VendorSaleItem = {
+  id: string;
+  sale_id: string;
+  vendor_id: string;
+  inventory_id: string | null;
+  card_id: string | null;
+  quantity: number;
+  unit_price: number | string;
+  line_total: number | string;
+  snapshot: Record<string, unknown> | null;
+  created_at: string;
+};
+
+type VendorSale = {
+  id: string;
+  vendor_id: string;
+  sold_by_user_id: string;
+  sold_by_display_name: string;
+  total_amount: number | string;
+  total_quantity: number;
+  sale_source: string;
+  notes: string | null;
+  sold_at: string;
+  created_at: string;
+  vendor_sale_items?: VendorSaleItem[];
+};
+
 type Vendor = {
   id: string;
   business_name?: string | null;
 };
+
+const p31sPrinter =
+  new P31SWebPrinter();
+
+function saleMoney(
+  value: number | string | null | undefined
+) {
+  const numeric = Number(value ?? 0);
+
+  if (!Number.isFinite(numeric)) {
+    return "$0.00";
+  }
+
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+  }).format(numeric);
+}
+
+function saleTime(value?: string | null) {
+  if (!value) return "";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function saleSnapshotText(
+  item: VendorSaleItem | undefined,
+  key: string
+) {
+  const value = item?.snapshot?.[key];
+
+  if (
+    typeof value === "string" &&
+    value.trim()
+  ) {
+    return value.trim();
+  }
+
+  return null;
+}
 
 type LabelOrientation = "vertical" | "horizontal";
 
@@ -367,6 +450,13 @@ export default function VendorDashboardPage() {
   const [inventory, setInventory] =
     useState<InventoryItem[]>([]);
 
+  const [
+    inventoryFilter,
+    setInventoryFilter,
+  ] = useState<
+    "all" | "needs-price" | "published"
+  >("all");
+
   const [loading, setLoading] =
     useState(true);
 
@@ -397,6 +487,26 @@ export default function VendorDashboardPage() {
   const [showPriceOnLabel, setShowPriceOnLabel] =
     useState(false);
 
+  const [
+    p31sSupported,
+    setP31sSupported,
+  ] = useState(false);
+
+  const [
+    p31sConnected,
+    setP31sConnected,
+  ] = useState(false);
+
+  const [
+    p31sBusy,
+    setP31sBusy,
+  ] = useState(false);
+
+  const [
+    p31sStatus,
+    setP31sStatus,
+  ] = useState("");
+
   const [editItem, setEditItem] =
     useState<InventoryItem | null>(null);
 
@@ -409,11 +519,39 @@ export default function VendorDashboardPage() {
   const [editError, setEditError] =
     useState("");
 
+  const [sales, setSales] =
+    useState<VendorSale[]>([]);
+
+  const [salesLoading, setSalesLoading] =
+    useState(false);
+
+  const [saleItem, setSaleItem] =
+    useState<InventoryItem | null>(null);
+
+  const [saleQuantity, setSaleQuantity] =
+    useState("1");
+
+  const [saleUnitPrice, setSaleUnitPrice] =
+    useState("");
+
+  const [saleNotes, setSaleNotes] =
+    useState("");
+
+  const [saleSaving, setSaleSaving] =
+    useState(false);
+
+  const [saleError, setSaleError] =
+    useState("");
+
   // -----------------------------------------
   // LOAD SAVED PRINT PREFERENCES
   // -----------------------------------------
 
   useEffect(() => {
+    setP31sSupported(
+      supportsWebBluetooth()
+    );
+
     const savedOrientation =
       window.localStorage.getItem(
         "mintradar-label-orientation"
@@ -552,6 +690,7 @@ export default function VendorDashboardPage() {
             )
           `)
           .eq("vendor_id", vendorId)
+          .gt("quantity", 0)
           .order("id", {
             ascending: false,
           });
@@ -602,6 +741,256 @@ export default function VendorDashboardPage() {
       supabase.removeChannel(channel);
     };
   }, [vendorId]);
+
+  // -----------------------------------------
+  // LOAD SALES / TEAM ACTIVITY
+  // -----------------------------------------
+
+  async function loadSales() {
+    if (!vendorId) {
+      setSales([]);
+      return;
+    }
+
+    try {
+      setSalesLoading(true);
+
+      const {
+        data,
+        error: salesError,
+      } = await supabase
+        .from("vendor_sales")
+        .select(`
+          id,
+          vendor_id,
+          sold_by_user_id,
+          sold_by_display_name,
+          total_amount,
+          total_quantity,
+          sale_source,
+          notes,
+          sold_at,
+          created_at,
+          vendor_sale_items (
+            id,
+            sale_id,
+            vendor_id,
+            inventory_id,
+            card_id,
+            quantity,
+            unit_price,
+            line_total,
+            snapshot,
+            created_at
+          )
+        `)
+        .eq("vendor_id", vendorId)
+        .order("sold_at", {
+          ascending: false,
+        })
+        .limit(50);
+
+      if (salesError) {
+        throw salesError;
+      }
+
+      setSales(
+        (data || []) as unknown as VendorSale[]
+      );
+    } catch (err: any) {
+      console.error(
+        "Vendor sales load error:",
+        err
+      );
+    } finally {
+      setSalesLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!vendorId) {
+      return;
+    }
+
+    void loadSales();
+
+    const channel = supabase
+      .channel(
+        `vendor-sales-${vendorId}`
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "vendor_sales",
+          filter: `vendor_id=eq.${vendorId}`,
+        },
+        () => {
+          void loadSales();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [vendorId]);
+
+  function openSale(item: InventoryItem) {
+    setSaleItem(item);
+    setSaleQuantity("1");
+    setSaleUnitPrice(
+      String(item.price ?? "")
+    );
+    setSaleNotes("");
+    setSaleError("");
+  }
+
+  function closeSale() {
+    if (saleSaving) return;
+
+    setSaleItem(null);
+    setSaleQuantity("1");
+    setSaleUnitPrice("");
+    setSaleNotes("");
+    setSaleError("");
+  }
+
+  async function recordSale() {
+    if (
+      !saleItem ||
+      !vendorId ||
+      saleSaving
+    ) {
+      return;
+    }
+
+    const quantity =
+      Number(saleQuantity);
+
+    const unitPrice =
+      Number(saleUnitPrice);
+
+    if (
+      !Number.isInteger(quantity) ||
+      quantity <= 0
+    ) {
+      setSaleError(
+        "Enter a valid quantity sold."
+      );
+      return;
+    }
+
+    if (
+      quantity >
+      Number(
+        saleItem.quantity || 0
+      )
+    ) {
+      setSaleError(
+        "Sale quantity cannot exceed available inventory."
+      );
+      return;
+    }
+
+    if (
+      !Number.isFinite(unitPrice) ||
+      unitPrice < 0
+    ) {
+      setSaleError(
+        "Enter a valid sold price."
+      );
+      return;
+    }
+
+    try {
+      setSaleSaving(true);
+      setSaleError("");
+      setError("");
+
+      const {
+        data,
+        error: saleRpcError,
+      } = await supabase.rpc(
+        "record_vendor_sale",
+        {
+          p_vendor_id:
+            vendorId,
+          p_inventory_id:
+            saleItem.id,
+          p_quantity:
+            quantity,
+          p_unit_price:
+            unitPrice,
+          p_notes:
+            saleNotes.trim() || null,
+        }
+      );
+
+      if (saleRpcError) {
+        throw saleRpcError;
+      }
+
+      const result =
+        data as {
+          remaining_quantity?: number;
+        } | null;
+
+      const remaining =
+        Number(
+          result?.remaining_quantity ??
+            Math.max(
+              0,
+              Number(
+                saleItem.quantity || 0
+              ) - quantity
+            )
+        );
+
+      setInventory((current) =>
+        current
+          .map((item) =>
+            item.id === saleItem.id
+              ? {
+                  ...item,
+                  quantity:
+                    remaining,
+                }
+              : item
+          )
+          .filter(
+            (item) =>
+              Number(
+                item.quantity || 0
+              ) > 0
+          )
+      );
+
+      await loadSales();
+
+      closeSale();
+    } catch (err: any) {
+      console.error(
+        "Record vendor sale error:",
+        {
+          message: err?.message,
+          details: err?.details,
+          hint: err?.hint,
+          code: err?.code,
+          raw: err,
+        }
+      );
+
+      setSaleError(
+        err?.message ||
+          err?.details ||
+          "MintRadar could not record this sale."
+      );
+    } finally {
+      setSaleSaving(false);
+    }
+  }
 
   // -----------------------------------------
   // UPDATE QUANTITY
@@ -781,7 +1170,10 @@ export default function VendorDashboardPage() {
   ) {
     setEditItem(item);
     setEditPrice(
-      Number(item.price ?? 0).toFixed(2)
+      item.price != null &&
+      Number(item.price) > 0
+        ? Number(item.price).toFixed(2)
+        : ""
     );
     setEditError("");
   }
@@ -813,10 +1205,10 @@ export default function VendorDashboardPage() {
     if (
       !normalized ||
       !Number.isFinite(nextPrice) ||
-      nextPrice < 0
+      nextPrice <= 0
     ) {
       setEditError(
-        "Enter a valid listing price."
+        "Enter a price greater than $0 to publish this listing."
       );
       return;
     }
@@ -881,6 +1273,7 @@ export default function VendorDashboardPage() {
     setQrError("");
     setQrLoading(true);
     setShowPriceOnLabel(false);
+    setP31sStatus("");
 
     try {
       const listingUrl =
@@ -916,6 +1309,291 @@ export default function VendorDashboardPage() {
     setQrDataUrl("");
     setQrError("");
     setQrLoading(false);
+  }
+
+  function loadLabelImage(
+    src: string
+  ) {
+    return new Promise<HTMLImageElement>(
+      (resolve, reject) => {
+        const image =
+          new window.Image();
+
+        image.onload = () =>
+          resolve(image);
+
+        image.onerror = () =>
+          reject(
+            new Error(
+              "MintRadar could not load the QR image for Bluetooth printing."
+            )
+          );
+
+        image.src = src;
+      }
+    );
+  }
+
+  function fitCanvasText(
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    maxWidth: number,
+    maxSize: number,
+    minSize: number,
+    weight = 900
+  ) {
+    for (
+      let size = maxSize;
+      size >= minSize;
+      size -= 1
+    ) {
+      ctx.font =
+        `${weight} ${size}px Arial, Helvetica, sans-serif`;
+
+      if (
+        ctx.measureText(text)
+          .width <= maxWidth
+      ) {
+        return size;
+      }
+    }
+
+    return minSize;
+  }
+
+  async function buildP31SLabelCanvas() {
+    if (
+      !qrItem ||
+      !qrDataUrl
+    ) {
+      throw new Error(
+        "Open a MintRadar label first."
+      );
+    }
+
+    // P31S media is 14 × 40 mm.
+    // We preserve the existing MintRadar wrap-label concept:
+    // the first 14 × 20 mm half is printed; the second half stays blank.
+    const canvas =
+      document.createElement(
+        "canvas"
+      );
+
+    canvas.width = 320;
+    canvas.height = 112;
+
+    const ctx =
+      canvas.getContext("2d");
+
+    if (!ctx) {
+      throw new Error(
+        "MintRadar could not create the P31S label image."
+      );
+    }
+
+    ctx.imageSmoothingEnabled =
+      false;
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
+
+    const frontWidth = 160;
+    const pad = 7;
+    const contentWidth =
+      frontWidth - pad * 2;
+
+    const graded =
+      isGraded(qrItem);
+
+    const condition =
+      graded
+        ? `${qrItem.grading_company || "Graded"} ${qrItem.grade || ""}`.trim()
+        : qrItem.condition ||
+          "Raw";
+
+    const price =
+      Number(
+        qrItem.price ?? 0
+      ).toFixed(2);
+
+    ctx.fillStyle = "#000000";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+
+    const vendorSize =
+      fitCanvasText(
+        ctx,
+        vendorName.toUpperCase(),
+        contentWidth,
+        13,
+        8,
+        900
+      );
+
+    ctx.font =
+      `900 ${vendorSize}px Arial, Helvetica, sans-serif`;
+
+    ctx.fillText(
+      vendorName.toUpperCase(),
+      frontWidth / 2,
+      4
+    );
+
+    const conditionSize =
+      fitCanvasText(
+        ctx,
+        condition,
+        contentWidth,
+        11,
+        7,
+        800
+      );
+
+    ctx.font =
+      `800 ${conditionSize}px Arial, Helvetica, sans-serif`;
+
+    ctx.fillText(
+      condition,
+      frontWidth / 2,
+      20
+    );
+
+    const qr =
+      await loadLabelImage(
+        qrDataUrl
+      );
+
+    const qrSize = 66;
+
+    ctx.drawImage(
+      qr,
+      Math.round(
+        (frontWidth - qrSize) /
+          2
+      ),
+      34,
+      qrSize,
+      qrSize
+    );
+
+    const bottomText =
+      showPriceOnLabel
+        ? `$${price}`
+        : "SCAN FOR PRICE";
+
+    const bottomSize =
+      fitCanvasText(
+        ctx,
+        bottomText,
+        contentWidth,
+        10,
+        7,
+        900
+      );
+
+    ctx.font =
+      `900 ${bottomSize}px Arial, Helvetica, sans-serif`;
+
+    ctx.fillText(
+      bottomText,
+      frontWidth / 2,
+      101
+    );
+
+    // Visual fold marker kept extremely light in the bitmap.
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(
+      frontWidth,
+      0,
+      canvas.width -
+        frontWidth,
+      canvas.height
+    );
+
+    return canvas;
+  }
+
+  async function connectP31S() {
+    if (!p31sSupported) {
+      setP31sStatus(
+        "Web Bluetooth is not available in this browser/device."
+      );
+      return;
+    }
+
+    setP31sBusy(true);
+    setP31sStatus("");
+
+    try {
+      const deviceName =
+        await p31sPrinter.connect();
+
+      setP31sConnected(true);
+      setP31sStatus(
+        `Connected to ${deviceName}.`
+      );
+    } catch (error: any) {
+      console.error(
+        "P31S connect error:",
+        error
+      );
+
+      setP31sConnected(false);
+      setP31sStatus(
+        error?.message ||
+          "MintRadar could not connect to the P31S."
+      );
+    } finally {
+      setP31sBusy(false);
+    }
+  }
+
+  async function printQrLabelP31S() {
+    setP31sBusy(true);
+    setP31sStatus("");
+
+    try {
+      if (
+        !p31sPrinter.connected
+      ) {
+        const deviceName =
+          await p31sPrinter.connect();
+
+        setP31sConnected(true);
+        setP31sStatus(
+          `Connected to ${deviceName}. Sending label...`
+        );
+      }
+
+      const canvas =
+        await buildP31SLabelCanvas();
+
+      await p31sPrinter.printCanvas(
+        canvas
+      );
+
+      setP31sConnected(true);
+      setP31sStatus(
+        "MintRadar label sent to the P31S."
+      );
+    } catch (error: any) {
+      console.error(
+        "P31S label print error:",
+        error
+      );
+
+      setP31sStatus(
+        error?.message ||
+          "MintRadar could not print this label to the P31S."
+      );
+    } finally {
+      setP31sBusy(false);
+    }
   }
 
   function printQrLabel() {
@@ -1215,6 +1893,41 @@ export default function VendorDashboardPage() {
     );
   }
 
+  const needsPriceCount =
+    inventory.filter(
+      (item) =>
+        item.price == null ||
+        Number(item.price) <= 0
+    ).length;
+
+  const publishedCount =
+    inventory.filter(
+      (item) =>
+        Number(item.price ?? 0) > 0
+    ).length;
+
+  const visibleInventory =
+    inventory.filter((item) => {
+      const hasPrice =
+        Number(item.price ?? 0) > 0;
+
+      if (
+        inventoryFilter ===
+        "needs-price"
+      ) {
+        return !hasPrice;
+      }
+
+      if (
+        inventoryFilter ===
+        "published"
+      ) {
+        return hasPrice;
+      }
+
+      return true;
+    });
+
   // -----------------------------------------
   // LOADING
   // -----------------------------------------
@@ -1272,98 +1985,113 @@ export default function VendorDashboardPage() {
   }
 
   return (
-    <main className="min-h-screen bg-black text-white">
+    <main className="min-h-screen bg-black px-4 pb-16 pt-20 text-white sm:px-5 sm:pt-24">
+      <div className="mx-auto max-w-6xl">
 
-      {/* HEADER */}
+        {/* HEADER / INTRO */}
 
-      <header className="border-b border-zinc-900">
-        <div className="max-w-7xl mx-auto px-5 py-5 flex items-center justify-between gap-5">
+        <header className="mb-8">
+          <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+            <Link
+              href="/"
+              className="w-fit"
+            >
+              <Image
+                src="/mintradar-logo.png"
+                alt="MintRadar by OnlySlabs"
+                width={600}
+                height={300}
+                priority
+                className="h-auto w-[210px] sm:w-[260px]"
+              />
+            </Link>
 
-          <Link
-            href="/"
-            className="font-black text-xl"
-          >
-            Mint
-            <span className="text-emerald-400">
-              Radar
-            </span>
-          </Link>
+            <div className="flex flex-wrap gap-2">
+              <Link
+                href="/"
+                className="rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm font-black text-zinc-300 transition hover:border-emerald-400 hover:text-emerald-300"
+                title="Browse MintRadar without signing out"
+              >
+                Browse Marketplace
+              </Link>
 
-          <div className="flex items-center gap-3">
-
-          </div>
-        </div>
-      </header>
-
-      <div className="max-w-7xl mx-auto px-5 py-8">
-
-        {/* INTRO */}
-
-        <section className="flex flex-col md:flex-row md:items-end md:justify-between gap-6 mb-8">
-
-          <div>
-            <p className="text-emerald-400 text-xs uppercase tracking-[0.25em] font-bold">
-              Vendor Dashboard
-            </p>
-
-            <h1 className="text-4xl sm:text-5xl font-black mt-2">
-              {vendorName}
-            </h1>
-
-            <div className="flex flex-wrap gap-2 mt-3">
-
-              {role && (
-                <span className="bg-zinc-900 border border-zinc-800 rounded-full px-3 py-1 text-xs uppercase tracking-wider text-zinc-400">
-                  {role}
-                </span>
-              )}
-
-              <span className="bg-emerald-400/10 border border-emerald-400/20 rounded-full px-3 py-1 text-xs text-emerald-400">
-                Realtime Inventory
-              </span>
-
+              <a
+                href="#sales-history"
+                className="rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm font-black text-zinc-300 transition hover:border-emerald-400 hover:text-emerald-300"
+              >
+                Sales History
+              </a>
             </div>
           </div>
 
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <Link
-              href="/"
-              className="border border-zinc-800 bg-zinc-950 hover:border-emerald-400 hover:text-emerald-300 text-white font-black px-6 py-4 rounded-xl text-center transition"
-              title="Browse MintRadar without signing out"
-            >
-              Browse Marketplace
-            </Link>
+          <div className="mt-8 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400">
+                Vendor Dashboard
+              </p>
 
-            <Link
-              href="/vendor/add"
-              className="bg-emerald-400 hover:bg-emerald-300 text-black font-black px-6 py-4 rounded-xl text-center transition"
-            >
-              + Add Item
-            </Link>
+              <h1 className="mt-2 text-4xl font-black sm:text-5xl">
+                {vendorName}
+              </h1>
+
+              <p className="mt-3 max-w-2xl text-zinc-500">
+                Manage live inventory, evaluate trades, record sales, and keep your team synced in real time.
+              </p>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                {role && (
+                  <span className="rounded-full border border-zinc-800 bg-zinc-950 px-3 py-1 text-xs font-black uppercase tracking-wider text-zinc-500">
+                    {role}
+                  </span>
+                )}
+
+                <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-black text-emerald-300">
+                  Realtime Inventory
+                </span>
+              </div>
+            </div>
+
+            <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-3 lg:w-auto [&>button]:flex [&>button]:h-full [&>button]:w-full [&>button]:items-center [&>button]:justify-center [&>button]:whitespace-nowrap">
+              <TradeAnalyzer
+                inventory={inventory}
+              />
+
+              <Link
+                href="/vendor/import"
+                className="flex h-full w-full items-center justify-center whitespace-nowrap rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-6 py-4 text-center font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black"
+              >
+                Import CSV
+              </Link>
+
+              <Link
+                href="/vendor/add"
+                className="flex h-full w-full items-center justify-center whitespace-nowrap rounded-xl bg-emerald-400 px-6 py-4 text-center font-black text-black transition hover:bg-emerald-300"
+              >
+                + Add Item
+              </Link>
+            </div>
           </div>
-
-        </section>
+        </header>
 
         {/* STATS */}
 
-        <section className="grid sm:grid-cols-3 gap-4 mb-8">
-
-          <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-5">
-            <p className="text-zinc-500 text-sm">
+        <section className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-2xl border border-zinc-900 bg-zinc-950 p-5">
+            <p className="text-xs font-black uppercase tracking-[0.16em] text-zinc-600">
               Listings
             </p>
 
-            <p className="text-3xl font-black mt-1">
+            <p className="mt-2 text-3xl font-black">
               {inventory.length}
             </p>
           </div>
 
-          <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-5">
-            <p className="text-zinc-500 text-sm">
+          <div className="rounded-2xl border border-zinc-900 bg-zinc-950 p-5">
+            <p className="text-xs font-black uppercase tracking-[0.16em] text-zinc-600">
               Total Items
             </p>
 
-            <p className="text-3xl font-black mt-1">
+            <p className="mt-2 text-3xl font-black">
               {inventory.reduce(
                 (total, item) =>
                   total +
@@ -1373,12 +2101,12 @@ export default function VendorDashboardPage() {
             </p>
           </div>
 
-          <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-5">
-            <p className="text-zinc-500 text-sm">
+          <div className="rounded-2xl border border-emerald-400/20 bg-zinc-950 p-5">
+            <p className="text-xs font-black uppercase tracking-[0.16em] text-zinc-600">
               Inventory Value
             </p>
 
-            <p className="text-3xl font-black mt-1">
+            <p className="mt-2 text-3xl font-black text-emerald-400">
               $
               {inventory
                 .reduce(
@@ -1400,12 +2128,7 @@ export default function VendorDashboardPage() {
                 )}
             </p>
           </div>
-
         </section>
-
-        {/* TRADE ANALYZER */}
-
-        <TradeAnalyzer />
 
         {/* ERROR */}
 
@@ -1446,32 +2169,75 @@ export default function VendorDashboardPage() {
 
           /* INVENTORY */
 
-          <section>
+          <section className="mt-8">
 
-            <div className="flex items-center justify-between mb-4">
+            <div className="mb-5 flex flex-col gap-4">
 
-              <div>
-                <p className="text-emerald-400 text-xs uppercase tracking-[0.2em] font-bold">
-                  Live Inventory
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <p className="text-emerald-400 text-xs uppercase tracking-[0.2em] font-bold">
+                    Vendor Inventory
+                  </p>
+
+                  <h2 className="text-2xl font-black mt-1">
+                    Your Listings
+                  </h2>
+
+                  {needsPriceCount > 0 && (
+                    <p className="mt-2 text-sm font-bold text-amber-300">
+                      ⚠ {needsPriceCount} item
+                      {needsPriceCount === 1 ? "" : "s"} need pricing before they can appear on the marketplace.
+                    </p>
+                  )}
+                </div>
+
+                <p className="text-zinc-600 text-sm">
+                  {visibleInventory.length} shown
                 </p>
-
-                <h2 className="text-2xl font-black mt-1">
-                  Your Listings
-                </h2>
               </div>
 
-              <p className="text-zinc-600 text-sm">
-                {inventory.length}{" "}
-                {inventory.length === 1
-                  ? "listing"
-                  : "listings"}
-              </p>
-
+              <div className="flex flex-wrap gap-2">
+                {[
+                  {
+                    value: "all",
+                    label: `All (${inventory.length})`,
+                  },
+                  {
+                    value: "needs-price",
+                    label: `Needs Price (${needsPriceCount})`,
+                  },
+                  {
+                    value: "published",
+                    label: `Published (${publishedCount})`,
+                  },
+                ].map((filter) => (
+                  <button
+                    key={filter.value}
+                    type="button"
+                    onClick={() =>
+                      setInventoryFilter(
+                        filter.value as
+                          | "all"
+                          | "needs-price"
+                          | "published"
+                      )
+                    }
+                    className={`rounded-xl border px-4 py-2 text-xs font-black transition ${
+                      inventoryFilter ===
+                      filter.value
+                        ? "border-emerald-400 bg-emerald-400 text-black"
+                        : "border-zinc-800 bg-zinc-950 text-zinc-500 hover:border-emerald-400/40 hover:text-white"
+                    }`}
+                  >
+                    {filter.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <div className="space-y-3">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
 
-              {inventory.map(
+              {visibleInventory.map(
                 (item) => {
                   const card =
                     item.cards;
@@ -1482,152 +2248,132 @@ export default function VendorDashboardPage() {
                   const graded =
                     isGraded(item);
 
+                  const hasPrice =
+                    Number(
+                      item.price ?? 0
+                    ) > 0;
+
                   return (
-                    <div
+                    <article
                       key={item.id}
-                      className={`bg-zinc-950 rounded-2xl p-4 sm:p-5 border ${
-                        graded
-                          ? "border-emerald-400/30"
-                          : "border-zinc-900"
+                      className={`overflow-hidden rounded-3xl border bg-zinc-950 ${
+                        !hasPrice
+                          ? "border-amber-400/40"
+                          : graded
+                            ? "border-emerald-400/30"
+                            : "border-zinc-900"
                       }`}
                     >
+                      {/* CARD / LISTING INFO */}
 
-                      <div className="flex flex-col sm:flex-row sm:items-center gap-5">
-
-                        {/* IMAGE */}
-
-                        <div className="w-20 h-28 bg-black border border-zinc-900 rounded-xl overflow-hidden shrink-0">
-
+                      <div className="flex gap-4 p-4">
+                        <div className="flex h-32 w-24 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-zinc-900 bg-black">
                           <VendorCardImage
                             card={card}
                           />
-
                         </div>
 
-                        {/* CARD INFO */}
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-lg font-black">
+                            {card?.name ||
+                              "Unknown Card"}
+                          </p>
 
-                        <div className="flex-1 min-w-0">
+                          <p className="mt-1 text-xs text-zinc-500">
+                            {[
+                              card?.set_name,
+                              card?.card_number
+                                ? `#${card.card_number}`
+                                : null,
+                              card?.finish,
+                            ]
+                              .filter(Boolean)
+                              .join(" • ")}
+                          </p>
 
-                          <div className="flex flex-wrap items-center gap-2">
-
-                            <h3 className="text-xl font-black">
-                              {card?.name ||
-                                "Unknown Card"}
-                            </h3>
-
+                          <div className="mt-3 flex flex-wrap gap-1.5">
                             <span
-                              className={`rounded-full px-2.5 py-1 text-xs font-black border ${
+                              className={`rounded-full border px-2 py-1 text-[10px] font-black uppercase tracking-wider ${
                                 graded
-                                  ? "bg-emerald-400/10 border-emerald-400/30 text-emerald-400"
-                                  : "bg-zinc-900 border-zinc-800 text-zinc-300"
+                                  ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-300"
+                                  : "border-zinc-800 bg-black text-zinc-500"
                               }`}
                             >
+                              {graded
+                                ? "Slab"
+                                : "Raw"}
+                            </span>
+
+                            <span className="rounded-full border border-zinc-800 bg-black px-2 py-1 text-[10px] font-black uppercase tracking-wider text-zinc-500">
                               {getListingLabel(
                                 item
                               )}
                             </span>
 
+                            <span className="rounded-full border border-zinc-800 bg-black px-2 py-1 text-[10px] font-black uppercase tracking-wider text-zinc-500">
+                              Qty {quantity}
+                            </span>
+
+                            <span
+                              className={`rounded-full border px-2 py-1 text-[10px] font-black uppercase tracking-wider ${
+                                hasPrice
+                                  ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-300"
+                                  : "border-amber-400/30 bg-amber-400/10 text-amber-300"
+                              }`}
+                            >
+                              {hasPrice
+                                ? "Published"
+                                : "Needs Price"}
+                            </span>
                           </div>
 
-                          <p className="text-zinc-500 text-sm mt-1">
-
-                            {card?.set_name ||
-                              "Unknown Set"}
-
-                            {card?.card_number
-                              ? ` #${card.card_number}`
-                              : ""}
-
-                          </p>
-
-                          {/* GRADED INFO */}
-
-                          {graded && (
-                            <div className="mt-3">
-
-                              <p className="text-sm font-black text-white">
-                                {
-                                  item.grading_company
-                                }{" "}
-                                {
-                                  item.grade
-                                }
-                              </p>
-
-                              {item.cert_number && (
-                                <p className="text-xs text-zinc-600 mt-1">
-                                  Cert #
-                                  {
-                                    item.cert_number
-                                  }
-                                </p>
-                              )}
-
-                            </div>
-                          )}
-
-                          {/* RAW INFO */}
-
-                          {!graded && (
-                            <div className="flex flex-wrap gap-2 mt-3">
-
-                              {card?.edition && (
-                                <span className="text-xs text-zinc-400 bg-black border border-zinc-900 rounded-lg px-2 py-1">
-                                  {
-                                    card.edition
-                                  }
-                                </span>
-                              )}
-
-                              {card?.finish && (
-                                <span className="text-xs text-zinc-400 bg-black border border-zinc-900 rounded-lg px-2 py-1">
-                                  {
-                                    card.finish
-                                  }
-                                </span>
-                              )}
-
-                            </div>
-                          )}
-
-                          {item.notes && (
-                            <p className="text-zinc-600 text-sm mt-3">
-                              {
-                                item.notes
-                              }
+                          {graded &&
+                            item.cert_number && (
+                            <p className="mt-2 text-[10px] font-bold uppercase tracking-wider text-zinc-700">
+                              Cert #{item.cert_number}
                             </p>
                           )}
 
-                        </div>
+                          {!graded &&
+                            card?.edition && (
+                            <p className="mt-2 text-xs text-zinc-600">
+                              {card.edition}
+                            </p>
+                          )}
 
-                        {/* PRICE */}
-
-                        <div className="sm:text-right sm:min-w-28">
-
-                          <p className="text-xs uppercase tracking-wider text-zinc-600">
-                            Price
+                          <p className="mt-3 text-xs font-black uppercase tracking-wider text-zinc-700">
+                            Listing Price
                           </p>
 
-                          <p className="text-2xl font-black text-emerald-400 mt-1">
-                            $
-                            {Number(
-                              item.price ??
-                                0
-                            ).toFixed(2)}
-                          </p>
-
+                          {hasPrice ? (
+                            <p className="mt-1 text-xl font-black text-emerald-400">
+                              $
+                              {Number(
+                                item.price
+                              ).toFixed(2)}
+                            </p>
+                          ) : (
+                            <div className="mt-1">
+                              <p className="text-lg font-black text-amber-300">
+                                Unpriced
+                              </p>
+                              <p className="mt-1 text-[11px] font-bold leading-4 text-amber-300/60">
+                                Hidden from marketplace
+                              </p>
+                            </div>
+                          )}
                         </div>
+                      </div>
 
-                        {/* QUANTITY */}
+                      {/* QUANTITY */}
 
-                        <div className="sm:min-w-44">
-
-                          <p className="text-xs uppercase tracking-wider text-zinc-600 mb-2">
+                      <div className="border-t border-zinc-900 px-4 py-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-xs font-black uppercase tracking-wider text-zinc-600">
                             Quantity
                           </p>
 
                           <div className="flex items-center gap-2">
-
                             <button
                               type="button"
                               onClick={() =>
@@ -1640,12 +2386,12 @@ export default function VendorDashboardPage() {
                                 savingId === item.id ||
                                 deletingId === item.id
                               }
-                              className="w-10 h-10 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-xl font-black disabled:opacity-50 transition"
+                              className="flex h-9 w-9 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 font-black transition hover:bg-zinc-800 disabled:opacity-50"
                             >
                               −
                             </button>
 
-                            <div className="min-w-12 h-10 bg-black border border-zinc-900 rounded-xl flex items-center justify-center font-black">
+                            <div className="flex h-9 min-w-11 items-center justify-center rounded-xl border border-zinc-900 bg-black px-3 font-black">
                               {quantity}
                             </div>
 
@@ -1661,30 +2407,66 @@ export default function VendorDashboardPage() {
                                 savingId === item.id ||
                                 deletingId === item.id
                               }
-                              className="w-10 h-10 bg-emerald-400 hover:bg-emerald-300 text-black rounded-xl font-black disabled:opacity-50 transition"
+                              className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-400 font-black text-black transition hover:bg-emerald-300 disabled:opacity-50"
                             >
                               +
                             </button>
-
                           </div>
-
-                          {savingId ===
-                            item.id && (
-                            <p className="text-xs text-zinc-600 mt-2">
-                              Saving...
-                            </p>
-                          )}
-
                         </div>
 
-                        {/* LISTING ACTIONS */}
-
-                        <div className="sm:min-w-36">
-                          <p className="text-xs uppercase tracking-wider text-zinc-600 mb-2">
-                            Listing
+                        {savingId ===
+                          item.id && (
+                          <p className="mt-2 text-right text-xs text-zinc-600">
+                            Saving...
                           </p>
+                        )}
+                      </div>
 
-                          <div className="flex flex-col gap-2">
+                      {/* NOTES */}
+
+                      {item.notes && (
+                        <div className="border-t border-zinc-900 px-4 py-3">
+                          <p className="line-clamp-2 text-xs leading-5 text-zinc-600">
+                            {item.notes}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* ACTIONS */}
+
+                      <div className="grid grid-cols-2 gap-2 border-t border-zinc-900 p-4">
+                        {!hasPrice ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openEditListing(
+                                item
+                              )
+                            }
+                            disabled={
+                              deletingId === item.id ||
+                              savingId === item.id
+                            }
+                            className="col-span-2 rounded-xl bg-emerald-400 px-3 py-3 text-xs font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Publish Listing
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                openSale(item)
+                              }
+                              disabled={
+                                deletingId === item.id ||
+                                savingId === item.id
+                              }
+                              className="rounded-xl bg-emerald-400 px-3 py-3 text-xs font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Mark Sold
+                            </button>
+
                             <button
                               type="button"
                               onClick={() =>
@@ -1696,48 +2478,48 @@ export default function VendorDashboardPage() {
                                 deletingId === item.id ||
                                 savingId === item.id
                               }
-                              className="w-full rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-sm font-black text-white transition hover:border-emerald-400/40 hover:bg-emerald-400/10 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+                              className="rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-3 text-xs font-black text-white transition hover:border-emerald-400/40 hover:bg-emerald-400/10 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               Edit Listing
                             </button>
+                          </>
+                        )}
 
-                            <button
-                              type="button"
-                              onClick={() =>
-                                openQrLabel(
-                                  item
-                                )
-                              }
-                              disabled={
-                                deletingId === item.id
-                              }
-                              className="w-full rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              QR Code
-                            </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openQrLabel(
+                              item
+                            )
+                          }
+                          disabled={
+                            deletingId === item.id ||
+                            !hasPrice
+                          }
+                          className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-3 py-3 text-xs font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          QR Code
+                        </button>
 
-                            <button
-                              type="button"
-                              onClick={() =>
-                                deleteListing(
-                                  item
-                                )
-                              }
-                              disabled={
-                                deletingId === item.id ||
-                                savingId === item.id
-                              }
-                              className="w-full rounded-xl border border-red-400/30 bg-red-400/5 px-4 py-3 text-sm font-black text-red-300 transition hover:bg-red-400/10 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              {deletingId === item.id
-                                ? "Deleting..."
-                                : "Delete Listing"}
-                            </button>
-                          </div>
-                        </div>
-
+                        <button
+                          type="button"
+                          onClick={() =>
+                            deleteListing(
+                              item
+                            )
+                          }
+                          disabled={
+                            deletingId === item.id ||
+                            savingId === item.id
+                          }
+                          className="rounded-xl border border-red-400/30 bg-red-400/5 px-3 py-3 text-xs font-black text-red-300 transition hover:bg-red-400/10 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {deletingId === item.id
+                            ? "Deleting..."
+                            : "Delete"}
+                        </button>
                       </div>
-                    </div>
+                    </article>
                   );
                 }
               )}
@@ -1747,7 +2529,341 @@ export default function VendorDashboardPage() {
           </section>
         )}
 
+        {/* SALES / TEAM ACTIVITY */}
+
+        <section
+          id="sales-history"
+          className="mt-10 scroll-mt-24"
+        >
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-400">
+                Sales
+              </p>
+
+              <h2 className="mt-1 text-2xl font-black">
+                Team Activity
+              </h2>
+
+              <p className="mt-2 text-sm text-zinc-600">
+                See who sold what, when it sold, and the actual price it moved for.
+              </p>
+            </div>
+
+            <Link
+              href="/trades"
+              className="text-sm font-black text-zinc-600 transition hover:text-emerald-300"
+            >
+              Trade History →
+            </Link>
+          </div>
+
+          {salesLoading ? (
+            <div className="rounded-2xl border border-zinc-900 bg-zinc-950 p-5 text-sm font-bold text-emerald-400">
+              Loading sales activity...
+            </div>
+          ) : sales.length === 0 ? (
+            <div className="rounded-2xl border border-zinc-900 bg-zinc-950 p-6">
+              <p className="font-black text-white">
+                No recorded sales yet.
+              </p>
+              <p className="mt-2 text-sm text-zinc-600">
+                Use Mark Sold on an inventory item and the seller log will appear here automatically.
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-2xl border border-zinc-900 bg-zinc-950">
+              {sales.map(
+                (sale, index) => {
+                  const line =
+                    sale.vendor_sale_items?.[0];
+
+                  const cardName =
+                    saleSnapshotText(
+                      line,
+                      "card_name"
+                    ) ||
+                    "Unknown Collectible";
+
+                  const setName =
+                    saleSnapshotText(
+                      line,
+                      "set_name"
+                    );
+
+                  const cardNumber =
+                    saleSnapshotText(
+                      line,
+                      "card_number"
+                    );
+
+                  const listedPrice =
+                    saleSnapshotText(
+                      line,
+                      "listed_price"
+                    );
+
+                  return (
+                    <div
+                      key={sale.id}
+                      className={`grid gap-4 p-4 sm:grid-cols-[1fr_auto] sm:items-center ${
+                        index !==
+                        sales.length - 1
+                          ? "border-b border-zinc-900"
+                          : ""
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-black text-white">
+                            {
+                              sale.sold_by_display_name
+                            }
+                          </p>
+
+                          <span className="rounded-full border border-zinc-800 bg-black px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-zinc-600">
+                            Qty{" "}
+                            {
+                              sale.total_quantity
+                            }
+                          </span>
+                        </div>
+
+                        <p className="mt-1 text-sm text-zinc-400">
+                          Sold{" "}
+                          <span className="font-black text-white">
+                            {cardName}
+                          </span>
+                          {setName
+                            ? ` • ${setName}`
+                            : ""}
+                          {cardNumber
+                            ? ` #${cardNumber}`
+                            : ""}
+                        </p>
+
+                        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-700">
+                          <span>
+                            {saleTime(
+                              sale.sold_at
+                            )}
+                          </span>
+
+                          {listedPrice && (
+                            <span>
+                              Listed{" "}
+                              {saleMoney(
+                                listedPrice
+                              )}
+                            </span>
+                          )}
+
+                          {sale.notes && (
+                            <span>
+                              {sale.notes}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="sm:text-right">
+                        <p className="text-[10px] font-black uppercase tracking-wider text-zinc-700">
+                          Sold For
+                        </p>
+
+                        <p className="mt-1 text-2xl font-black text-emerald-400">
+                          {saleMoney(
+                            sale.total_amount
+                          )}
+                        </p>
+
+                        {line &&
+                          Number(
+                            line.quantity
+                          ) > 1 && (
+                            <p className="mt-1 text-xs text-zinc-700">
+                              {saleMoney(
+                                line.unit_price
+                              )}{" "}
+                              each
+                            </p>
+                          )}
+                      </div>
+                    </div>
+                  );
+                }
+              )}
+            </div>
+          )}
+        </section>
+
       </div>
+
+      {saleItem && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 p-0 backdrop-blur-sm sm:items-center sm:p-5"
+          onMouseDown={(event) => {
+            if (
+              event.target ===
+              event.currentTarget
+            ) {
+              closeSale();
+            }
+          }}
+        >
+          <div className="w-full max-w-lg rounded-t-3xl border border-zinc-800 bg-zinc-950 shadow-2xl sm:rounded-3xl">
+            <div className="flex items-start justify-between gap-4 border-b border-zinc-900 p-5 sm:p-6">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400">
+                  Mark Sold
+                </p>
+
+                <h3 className="mt-2 text-2xl font-black">
+                  {saleItem.cards?.name ||
+                    "Inventory Item"}
+                </h3>
+
+                <p className="mt-1 text-sm text-zinc-600">
+                  {saleItem.cards?.set_name ||
+                    "Unknown Set"}
+                  {saleItem.cards?.card_number
+                    ? ` #${saleItem.cards.card_number}`
+                    : ""}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={closeSale}
+                disabled={saleSaving}
+                className="text-xl font-black text-zinc-600 transition hover:text-white disabled:opacity-40"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="space-y-4 p-5 sm:p-6">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wider text-zinc-600">
+                  Quantity Sold
+                </p>
+
+                <input
+                  type="number"
+                  min="1"
+                  max={
+                    saleItem.quantity ??
+                    1
+                  }
+                  step="1"
+                  value={saleQuantity}
+                  onChange={(event) =>
+                    setSaleQuantity(
+                      event.target.value
+                    )
+                  }
+                  className="mt-2 w-full rounded-xl border border-zinc-800 bg-black px-4 py-3 font-black text-white outline-none focus:border-emerald-400/50"
+                />
+
+                <p className="mt-1.5 text-xs text-zinc-700">
+                  Available:{" "}
+                  {saleItem.quantity ?? 0}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs font-black uppercase tracking-wider text-zinc-600">
+                  Sold Price — Per Item
+                </p>
+
+                <div className="mt-2 flex items-center rounded-xl border border-zinc-800 bg-black focus-within:border-emerald-400/50">
+                  <span className="pl-4 font-black text-zinc-600">
+                    $
+                  </span>
+
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={saleUnitPrice}
+                    onChange={(event) =>
+                      setSaleUnitPrice(
+                        event.target.value
+                      )
+                    }
+                    className="min-w-0 flex-1 bg-transparent px-2 py-3 font-black text-white outline-none"
+                  />
+                </div>
+
+                <p className="mt-1.5 text-xs text-zinc-700">
+                  Current listing:{" "}
+                  {saleMoney(
+                    saleItem.price
+                  )}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs font-black uppercase tracking-wider text-zinc-600">
+                  Notes — Optional
+                </p>
+
+                <input
+                  type="text"
+                  value={saleNotes}
+                  onChange={(event) =>
+                    setSaleNotes(
+                      event.target.value
+                    )
+                  }
+                  placeholder="Cash, show sale, bundle, etc."
+                  className="mt-2 w-full rounded-xl border border-zinc-800 bg-black px-4 py-3 text-sm font-bold text-white outline-none placeholder:text-zinc-800 focus:border-emerald-400/50"
+                />
+              </div>
+
+              {saleError && (
+                <div className="rounded-xl border border-red-400/20 bg-red-400/10 p-3 text-sm font-bold text-red-300">
+                  {saleError}
+                </div>
+              )}
+
+              <div className="rounded-2xl border border-zinc-900 bg-black p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-sm font-bold text-zinc-500">
+                    Sale Total
+                  </span>
+
+                  <span className="text-2xl font-black text-emerald-400">
+                    {saleMoney(
+                      Number(
+                        saleUnitPrice ||
+                          0
+                      ) *
+                        Number(
+                          saleQuantity ||
+                            0
+                        )
+                    )}
+                  </span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() =>
+                  void recordSale()
+                }
+                disabled={saleSaving}
+                className="w-full rounded-xl bg-emerald-400 px-4 py-4 font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {saleSaving
+                  ? "Recording Sale..."
+                  : "Confirm Sale"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {editItem && (
         <div
@@ -2119,8 +3235,88 @@ export default function VendorDashboardPage() {
                     </div>
 
                     <p className="mt-4 text-center text-xs text-zinc-600">
-                      15 × 30 mm label • front half is printed • back half wraps around the card holder
+                      MintRadar wrap-label preview • P31S direct print scales this design to 14 × 40 mm with the front half printed and the back half left blank for wrapping
                     </p>
+                  </div>
+
+                  <div className="mt-5 rounded-2xl border border-zinc-800 bg-black p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">
+                          Direct Bluetooth
+                        </p>
+
+                        <p className="mt-1 text-sm font-black text-white">
+                          Polono P31S • 14 × 40 mm
+                        </p>
+
+                        <p className="mt-1 text-xs leading-5 text-zinc-600">
+                          Prints the same MintRadar QR label shown above, adapted to your P31S media.
+                        </p>
+                      </div>
+
+                      <span
+                        className={`w-fit rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-wider ${
+                          p31sConnected
+                            ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
+                            : "border-zinc-800 bg-zinc-950 text-zinc-600"
+                        }`}
+                      >
+                        {p31sConnected
+                          ? "Connected"
+                          : "Not Connected"}
+                      </span>
+                    </div>
+
+                    {!p31sSupported && (
+                      <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs font-bold leading-5 text-amber-200">
+                        This browser/device does not expose Web Bluetooth. After MintRadar is deployed over HTTPS, open it in a Web Bluetooth-capable browser/device to test direct P31S printing.
+                      </div>
+                    )}
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {!p31sConnected && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void connectP31S()
+                          }
+                          disabled={
+                            p31sBusy ||
+                            !p31sSupported
+                          }
+                          className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {p31sBusy
+                            ? "Connecting..."
+                            : "Connect P31S"}
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void printQrLabelP31S()
+                        }
+                        disabled={
+                          p31sBusy ||
+                          !p31sSupported
+                        }
+                        className="rounded-xl bg-emerald-400 px-4 py-3 text-sm font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {p31sBusy
+                          ? "Working..."
+                          : p31sConnected
+                            ? "Print to P31S"
+                            : "Connect & Print"}
+                      </button>
+                    </div>
+
+                    {p31sStatus && (
+                      <p className="mt-3 text-xs font-bold leading-5 text-zinc-500">
+                        {p31sStatus}
+                      </p>
+                    )}
                   </div>
 
                   <div className="sticky bottom-0 z-10 -mx-5 mt-5 border-t border-zinc-900 bg-zinc-950/95 px-5 pb-1 pt-4 backdrop-blur">

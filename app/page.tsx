@@ -209,7 +209,6 @@ function CatalogImage({
   category,
   setName,
   cardNumber,
-  externalId,
   className,
 }: {
   src?: string | null;
@@ -217,66 +216,37 @@ function CatalogImage({
   category?: string | null;
   setName?: string | null;
   cardNumber?: string | null;
-  externalId?: string | null;
   className?: string;
 }) {
   const [currentSrc, setCurrentSrc] =
     useState<string | null>(src || null);
 
-  const [pokemonFallbackAttempted, setPokemonFallbackAttempted] =
-    useState(false);
-
-  const [sportsFallbackAttempted, setSportsFallbackAttempted] =
+  const [fallbackAttempted, setFallbackAttempted] =
     useState(false);
 
   const [imageFailed, setImageFailed] =
     useState(false);
 
-  const normalizedCategory =
-    normalizeFallbackKeyPart(category);
-
-  const isPokemon =
-    normalizedCategory === "pokemon";
-
-  const isSports =
-    [
-      "sports",
-      "baseball",
-      "basketball",
-      "football",
-      "soccer",
-      "hockey",
-      "wrestling",
-      "racing",
-      "golf",
-    ].some((term) =>
-      normalizedCategory.includes(term)
-    );
-
   useEffect(() => {
     setCurrentSrc(src || null);
-    setPokemonFallbackAttempted(false);
-    setSportsFallbackAttempted(false);
+    setFallbackAttempted(false);
     setImageFailed(false);
-  }, [
-    src,
-    alt,
-    category,
-    setName,
-    cardNumber,
-    externalId,
-  ]);
+  }, [src, alt, category, setName, cardNumber]);
 
   async function tryPokemonFallback() {
+    const isPokemon =
+      normalizeFallbackKeyPart(category) === "pokemon";
+
     if (
       !isPokemon ||
-      pokemonFallbackAttempted ||
+      fallbackAttempted ||
       !alt?.trim()
     ) {
-      return false;
+      setImageFailed(true);
+      return;
     }
 
-    setPokemonFallbackAttempted(true);
+    setFallbackAttempted(true);
 
     const fallbackImage =
       await requestPokemonFallbackImage({
@@ -286,77 +256,19 @@ function CatalogImage({
       });
 
     if (!fallbackImage) {
-      return false;
+      setImageFailed(true);
+      return;
     }
 
     setCurrentSrc(fallbackImage);
     setImageFailed(false);
-
-    return true;
-  }
-
-  function trySportsFallback() {
-    if (
-      !isSports ||
-      sportsFallbackAttempted ||
-      !externalId?.trim()
-    ) {
-      return false;
-    }
-
-    setSportsFallbackAttempted(true);
-
-    setCurrentSrc(
-      `/api/catalog/sports-image?id=${encodeURIComponent(
-        externalId.trim()
-      )}`
-    );
-
-    setImageFailed(false);
-
-    return true;
-  }
-
-  async function tryNextFallback() {
-    if (isPokemon) {
-      const foundPokemonImage =
-        await tryPokemonFallback();
-
-      if (foundPokemonImage) {
-        return;
-      }
-
-      setImageFailed(true);
-      return;
-    }
-
-    if (isSports) {
-      const startedSportsFallback =
-        trySportsFallback();
-
-      if (startedSportsFallback) {
-        return;
-      }
-
-      setImageFailed(true);
-      return;
-    }
-
-    setImageFailed(true);
   }
 
   useEffect(() => {
-    if (!currentSrc && !imageFailed) {
-      void tryNextFallback();
+    if (!currentSrc && !fallbackAttempted && !imageFailed) {
+      void tryPokemonFallback();
     }
-  }, [
-    currentSrc,
-    imageFailed,
-    isPokemon,
-    isSports,
-    pokemonFallbackAttempted,
-    sportsFallbackAttempted,
-  ]);
+  }, [currentSrc, fallbackAttempted, imageFailed]);
 
   if (imageFailed) {
     return (
@@ -364,7 +276,6 @@ function CatalogImage({
         <p className="text-emerald-400 text-[10px] font-black uppercase tracking-[0.18em]">
           MintRadar
         </p>
-
         <p className="text-zinc-600 text-xs mt-2">
           Image unavailable
         </p>
@@ -386,18 +297,12 @@ function CatalogImage({
       alt={alt || "Card"}
       className={className}
       onError={() => {
-        const isSportsRoute =
-          isSports &&
-          currentSrc.startsWith(
-            "/api/catalog/sports-image?"
-          );
-
-        if (isSportsRoute) {
-          setImageFailed(true);
+        if (currentSrc === src) {
+          void tryPokemonFallback();
           return;
         }
 
-        void tryNextFallback();
+        setImageFailed(true);
       }}
     />
   );
@@ -450,7 +355,8 @@ export default function Home() {
             quantity
           )
         `)
-        .gt("inventory.quantity", 0);
+        .gt("inventory.quantity", 0)
+        .gt("inventory.price", 0);
 
       if (error) {
         console.error(
@@ -467,7 +373,9 @@ export default function Home() {
 
         const availableCards = typedCards.filter((card) =>
           card.inventory?.some(
-            (listing) => (listing.quantity ?? 0) > 0
+            (listing) =>
+              (listing.quantity ?? 0) > 0 &&
+              Number(listing.price ?? 0) > 0
           )
         );
 
@@ -836,7 +744,8 @@ export default function Home() {
         total +
         (card.inventory?.filter(
           (listing) =>
-            (listing.quantity ?? 0) > 0
+            (listing.quantity ?? 0) > 0 &&
+            Number(listing.price ?? 0) > 0
         ).length || 0),
       0
     );
@@ -1233,7 +1142,8 @@ function HomeCard({
   const liveListings =
     (card.inventory || []).filter(
       (listing) =>
-        (listing.quantity ?? 0) > 0
+        (listing.quantity ?? 0) > 0 &&
+        Number(listing.price ?? 0) > 0
     );
 
   const sortedListings =
@@ -1268,7 +1178,6 @@ function HomeCard({
             category={card.category}
             setName={card.set_name}
             cardNumber={card.card_number}
-            externalId={card.external_id}
             className="w-full h-full object-contain p-3 group-hover:scale-[1.03] transition duration-200"
           />
         </div>
@@ -1463,7 +1372,6 @@ function CatalogCardView({
           category={card.category}
           setName={card.set_name}
           cardNumber={card.card_number}
-          externalId={card.external_id}
           className={`w-full h-full object-contain p-3 transition duration-200 ${
             cardId ? "group-hover:scale-[1.03]" : ""
           }`}
@@ -1518,11 +1426,17 @@ function CatalogCardView({
             )}
           </div>
 
-          {cardId && (
-            <p className="mt-4 text-sm font-black text-emerald-400">
-              View available listing →
-            </p>
-          )}
+          <p
+            className={`mt-4 text-sm font-black ${
+              cardId
+                ? "text-emerald-400"
+                : "text-zinc-500"
+            }`}
+          >
+            {cardId
+              ? "View available listing →"
+              : "View card details & comps →"}
+          </p>
         </div>
       </div>
     </>
@@ -1536,16 +1450,40 @@ function CatalogCardView({
           : "hover:border-emerald-400/50"
       }`}
     >
-      {cardId ? (
-        <Link
-          href={`/card/${cardId}`}
-          className="group block"
-        >
-          {cardContent}
-        </Link>
-      ) : (
-        cardContent
-      )}
+      <Link
+        href={
+          cardId
+            ? `/card/${cardId}`
+            : `/catalog-card?${new URLSearchParams({
+                external_id: card.external_id,
+                data_source: card.data_source,
+                name: card.name,
+                set_name: card.set_name || "",
+                card_number: card.card_number || "",
+                image_url: card.image_url || "",
+                category: card.category || "",
+                rarity: card.rarity || "",
+                edition: card.edition || "",
+                finish: card.finish || "",
+                year: card.year || "",
+                manufacturer: card.manufacturer || "",
+                release_name: card.release_name || "",
+                parallel_name: card.parallel_name || "",
+                sport: card.sport || "",
+                print_run:
+                  card.print_run != null
+                    ? String(card.print_run)
+                    : "",
+                rookie:
+                  card.rookie == null
+                    ? ""
+                    : String(card.rookie),
+              }).toString()}`
+        }
+        className="group block"
+      >
+        {cardContent}
+      </Link>
 
       <div className="p-4">
         <div className="pt-4 border-t border-zinc-900">

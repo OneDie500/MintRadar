@@ -543,9 +543,33 @@ export default function CustomerCollectionPage() {
       notes: "",
     });
 
+  const activeItems =
+    useMemo(
+      () =>
+        items.filter(
+          (item) =>
+            Number(
+              item.quantity || 0
+            ) > 0
+        ),
+      [items]
+    );
+
+  const archivedCount =
+    useMemo(
+      () =>
+        items.filter(
+          (item) =>
+            Number(
+              item.quantity || 0
+            ) <= 0
+        ).length,
+      [items]
+    );
+
   const collectionValue =
     useMemo(() => {
-      return items.reduce(
+      return activeItems.reduce(
         (sum, item) =>
           sum +
           Number(
@@ -557,11 +581,11 @@ export default function CustomerCollectionPage() {
             ),
         0
       );
-    }, [items]);
+    }, [activeItems]);
 
   const totalCopies =
     useMemo(() => {
-      return items.reduce(
+      return activeItems.reduce(
         (sum, item) =>
           sum +
           Math.max(
@@ -570,26 +594,26 @@ export default function CustomerCollectionPage() {
           ),
         0
       );
-    }, [items]);
+    }, [activeItems]);
 
   const categories = useMemo(() => {
     const values = new Set<string>();
 
-    for (const item of items) {
+    for (const item of activeItems) {
       if (item.category) {
         values.add(item.category);
       }
     }
 
     return Array.from(values).sort();
-  }, [items]);
+  }, [activeItems]);
 
   const filteredItems =
     useMemo(() => {
       const query =
         filter.trim().toLowerCase();
 
-      return items.filter(
+      return activeItems.filter(
         (item) => {
           if (
             typeFilter !== "all" &&
@@ -634,7 +658,7 @@ export default function CustomerCollectionPage() {
       );
     }, [
       filter,
-      items,
+      activeItems,
       typeFilter,
       categoryFilter,
     ]);
@@ -1303,10 +1327,10 @@ export default function CustomerCollectionPage() {
 
             <div className="flex flex-wrap gap-2">
               <Link
-                href="/wishlist"
-                className="rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm font-black text-zinc-300 transition hover:border-emerald-400 hover:text-emerald-300"
+                href="/customer/collection"
+                className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black"
               >
-                Wishlist
+                My Collection
               </Link>
 
               <Link
@@ -1362,7 +1386,7 @@ export default function CustomerCollectionPage() {
             </p>
 
             <p className="mt-2 text-3xl font-black">
-              {items.length}
+              {activeItems.length}
             </p>
           </div>
 
@@ -1388,6 +1412,15 @@ export default function CustomerCollectionPage() {
             </p>
           </div>
         </section>
+
+        {archivedCount > 0 && (
+          <div className="mt-3 text-right">
+            <span className="text-xs font-bold text-zinc-700">
+              {archivedCount} traded-away / zero-quantity{" "}
+              {archivedCount === 1 ? "entry" : "entries"} preserved for history
+            </span>
+          </div>
+        )}
 
         {showAdd && (
           <section className="mt-6 overflow-hidden rounded-3xl border border-emerald-400/20 bg-zinc-950">
@@ -2111,18 +2144,18 @@ export default function CustomerCollectionPage() {
             0 ? (
             <div className="mt-5 rounded-3xl border border-zinc-900 bg-zinc-950 p-10 text-center">
               <p className="text-2xl font-black">
-                {items.length === 0
+                {activeItems.length === 0
                   ? "Your collection is ready."
                   : "No cards match that search."}
               </p>
 
               <p className="mx-auto mt-2 max-w-lg text-zinc-500">
-                {items.length === 0
-                  ? "Add your first card from the MintRadar catalog. CSV import is coming next."
+                {activeItems.length === 0
+                  ? "Add your first card from the MintRadar catalog. Traded-away cards stay preserved for future history."
                   : "Try another card name, set, number, condition, or grade."}
               </p>
 
-              {items.length ===
+              {activeItems.length ===
                 0 && (
                 <button
                   type="button"
