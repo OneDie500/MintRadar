@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import TradeAnalyzer from "../components/TradeAnalyzer";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase";
 import { getActiveVendorMembership } from "../../lib/active-vendor";
@@ -1401,6 +1402,10 @@ export default function VendorDashboardPage() {
           </div>
 
         </section>
+
+        {/* TRADE ANALYZER */}
+
+        <TradeAnalyzer />
 
         {/* ERROR */}
 
