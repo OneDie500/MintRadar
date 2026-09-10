@@ -195,11 +195,38 @@ type InventoryTradeItem = {
   } | null;
 };
 
+type CollectionTradeItem = {
+  id: string;
+  card_id: string | null;
+  snapshot: Record<string, unknown> | null;
+  item_type: "raw" | "graded";
+  quantity: number;
+  condition: string | null;
+  grading_company: string | null;
+  grade: string | null;
+  cert_number: string | null;
+  personal_value: number | string | null;
+  notes: string | null;
+  source: string;
+  card_name: string | null;
+  set_name: string | null;
+  card_number: string | null;
+  image_url: string | null;
+  rarity: string | null;
+  category: string | null;
+  edition: string | null;
+  finish: string | null;
+};
+
 type OfferDraftItem = {
   localId: string;
   selectedCard: CatalogCard | null;
   selectedInventory: InventoryTradeItem | null;
-  selectionSource: "catalog" | "inventory";
+  selectedCollection: CollectionTradeItem | null;
+  selectionSource:
+    | "catalog"
+    | "collection"
+    | "inventory";
   quantity: number;
   marketValue: string;
   tradePercentage: number;
@@ -244,6 +271,7 @@ function newOfferDraftItem(): OfferDraftItem {
         : `${Date.now()}-${Math.random()}`,
     selectedCard: null,
     selectedInventory: null,
+    selectedCollection: null,
     selectionSource: "catalog",
     quantity: 1,
     marketValue: "",
@@ -458,11 +486,106 @@ function inventoryLabel(item: InventoryTradeItem) {
   return item.condition || "Raw";
 }
 
+function collectionCardToCatalogCard(
+  item: CollectionTradeItem
+): CatalogCard {
+  const snapshot = item.snapshot || {};
+
+  return {
+    external_id: String(
+      snapshot.external_id ||
+        item.card_id ||
+        item.id
+    ),
+    data_source: String(
+      snapshot.data_source ||
+        "MintRadar Collection"
+    ),
+    name:
+      item.card_name ||
+      (snapshot.card_name as string | null | undefined),
+    set_name:
+      item.set_name ||
+      (snapshot.set_name as string | null | undefined),
+    set_id:
+      (snapshot.set_id as string | null | undefined) ||
+      null,
+    card_number:
+      item.card_number ||
+      (snapshot.card_number as string | null | undefined),
+    image_url:
+      item.image_url ||
+      (snapshot.image_url as string | null | undefined),
+    category:
+      item.category ||
+      (snapshot.category as string | null | undefined),
+    rarity:
+      item.rarity ||
+      (snapshot.rarity as string | null | undefined),
+    edition:
+      item.edition ||
+      (snapshot.edition as string | null | undefined),
+    finish:
+      item.finish ||
+      (snapshot.finish as string | null | undefined),
+    illustrator:
+      (snapshot.illustrator as string | null | undefined) ||
+      null,
+    year:
+      (snapshot.year as string | null | undefined) ||
+      null,
+    manufacturer:
+      (snapshot.manufacturer as string | null | undefined) ||
+      null,
+    release_name:
+      (snapshot.release_name as string | null | undefined) ||
+      null,
+    parallel_name:
+      (snapshot.parallel_name as string | null | undefined) ||
+      null,
+    sport:
+      (snapshot.sport as string | null | undefined) ||
+      null,
+    print_run:
+      typeof snapshot.print_run === "number"
+        ? snapshot.print_run
+        : null,
+    rookie:
+      typeof snapshot.rookie === "boolean"
+        ? snapshot.rookie
+        : null,
+  };
+}
+
+function collectionLabel(
+  item: CollectionTradeItem
+) {
+  if (
+    item.item_type === "graded" ||
+    item.grading_company ||
+    item.grade
+  ) {
+    return (
+      [item.grading_company, item.grade]
+        .filter(Boolean)
+        .join(" ") || "Slab"
+    );
+  }
+
+  return (
+    [item.condition, item.finish]
+      .filter(Boolean)
+      .join(" • ") || "Raw"
+  );
+}
+
 function TradeOfferCatalogCardEditor({
   item,
   index,
   inventory,
   inventoryLoading,
+  collection,
+  collectionLoading,
   activeVendorName,
   onUpdate,
   onRemove,
@@ -471,6 +594,8 @@ function TradeOfferCatalogCardEditor({
   index: number;
   inventory: InventoryTradeItem[];
   inventoryLoading: boolean;
+  collection: CollectionTradeItem[];
+  collectionLoading: boolean;
   activeVendorName: string | null;
   onUpdate: (
     localId: string,
@@ -485,6 +610,9 @@ function TradeOfferCatalogCardEditor({
     useState("");
 
   const [inventorySearch, setInventorySearch] =
+    useState("");
+
+  const [collectionSearch, setCollectionSearch] =
     useState("");
 
   const [results, setResults] =
@@ -635,19 +763,57 @@ function TradeOfferCatalogCardEditor({
       })
       .slice(0, 40);
 
+  const filteredCollection =
+    collection
+      .filter((collectionItem) => {
+        if (Number(collectionItem.quantity || 0) <= 0) {
+          return false;
+        }
+
+        const query =
+          collectionSearch.trim().toLowerCase();
+
+        if (!query) return true;
+
+        const haystack = [
+          collectionItem.card_name,
+          collectionItem.set_name,
+          collectionItem.card_number,
+          collectionItem.rarity,
+          collectionItem.category,
+          collectionItem.edition,
+          collectionItem.finish,
+          collectionItem.condition,
+          collectionItem.grading_company,
+          collectionItem.grade,
+          collectionItem.cert_number,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+
+        return haystack.includes(query);
+      })
+      .slice(0, 40);
+
   function chooseSource(
-    source: "catalog" | "inventory"
+    source:
+      | "catalog"
+      | "collection"
+      | "inventory"
   ) {
     onUpdate(item.localId, {
       selectionSource: source,
       selectedCard: null,
       selectedInventory: null,
+      selectedCollection: null,
       quantity: 1,
       marketValue: "",
     });
 
     setSearchTerm("");
     setInventorySearch("");
+    setCollectionSearch("");
     setResults([]);
     setSearchError("");
   }
@@ -658,6 +824,7 @@ function TradeOfferCatalogCardEditor({
     onUpdate(item.localId, {
       selectedCard: card,
       selectedInventory: null,
+      selectedCollection: null,
       selectionSource: "catalog",
       quantity: 1,
       marketValue: "",
@@ -680,6 +847,7 @@ function TradeOfferCatalogCardEditor({
       selectedCard: card,
       selectedInventory:
         inventoryItem,
+      selectedCollection: null,
       selectionSource: "inventory",
       quantity: 1,
       marketValue:
@@ -692,16 +860,43 @@ function TradeOfferCatalogCardEditor({
     setSearchError("");
   }
 
+  function selectCollectionCard(
+    collectionItem: CollectionTradeItem
+  ) {
+    const card =
+      collectionCardToCatalogCard(
+        collectionItem
+      );
+
+    onUpdate(item.localId, {
+      selectedCard: card,
+      selectedInventory: null,
+      selectedCollection:
+        collectionItem,
+      selectionSource: "collection",
+      quantity: 1,
+      marketValue:
+        collectionItem.personal_value != null
+          ? String(collectionItem.personal_value)
+          : "",
+    });
+
+    setCollectionSearch("");
+    setSearchError("");
+  }
+
   function changeCard() {
     onUpdate(item.localId, {
       selectedCard: null,
       selectedInventory: null,
+      selectedCollection: null,
       quantity: 1,
       marketValue: "",
     });
 
     setSearchTerm("");
     setInventorySearch("");
+    setCollectionSearch("");
     setResults([]);
     setSearchError("");
   }
@@ -709,8 +904,12 @@ function TradeOfferCatalogCardEditor({
   const selectedInventory =
     item.selectedInventory;
 
-  const maxInventoryQuantity =
+  const selectedCollection =
+    item.selectedCollection;
+
+  const maxOwnedQuantity =
     selectedInventory?.quantity ??
+    selectedCollection?.quantity ??
     null;
 
   return (
@@ -722,7 +921,7 @@ function TradeOfferCatalogCardEditor({
           </p>
 
           <p className="mt-1 text-xs text-zinc-600">
-            Search the catalog or pull directly from your active vendor inventory.
+            Search the catalog, choose from My Collection, or use active vendor inventory.
           </p>
         </div>
 
@@ -738,7 +937,13 @@ function TradeOfferCatalogCardEditor({
       </div>
 
       {!selectedCard && (
-        <div className="mt-4 grid grid-cols-2 gap-2 rounded-2xl border border-zinc-900 bg-black p-1.5">
+        <div
+          className={`mt-4 grid gap-2 rounded-2xl border border-zinc-900 bg-black p-1.5 ${
+            activeVendorName
+              ? "grid-cols-3"
+              : "grid-cols-2"
+          }`}
+        >
           <button
             type="button"
             onClick={() =>
@@ -758,18 +963,37 @@ function TradeOfferCatalogCardEditor({
             type="button"
             onClick={() =>
               chooseSource(
-                "inventory"
+                "collection"
               )
             }
             className={`rounded-xl px-3 py-2.5 text-sm font-black transition ${
               item.selectionSource ===
-              "inventory"
+              "collection"
                 ? "bg-emerald-400 text-black"
                 : "text-zinc-500 hover:text-white"
             }`}
           >
-            My Inventory
+            My Collection
           </button>
+
+          {activeVendorName && (
+            <button
+              type="button"
+              onClick={() =>
+                chooseSource(
+                  "inventory"
+                )
+              }
+              className={`rounded-xl px-3 py-2.5 text-sm font-black transition ${
+                item.selectionSource ===
+                "inventory"
+                  ? "bg-emerald-400 text-black"
+                  : "text-zinc-500 hover:text-white"
+              }`}
+            >
+              My Inventory
+            </button>
+          )}
         </div>
       )}
 
@@ -934,6 +1158,137 @@ function TradeOfferCatalogCardEditor({
               )}
             </div>
           </>
+        )}
+
+      {!selectedCard &&
+        item.selectionSource ===
+          "collection" && (
+          <div className="mt-4">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wider text-zinc-600">
+                  My Collection
+                </p>
+                <p className="mt-1 text-xs text-zinc-700">
+                  Your saved personal value starts the trade value automatically.
+                </p>
+              </div>
+
+              <span className="rounded-full border border-zinc-800 bg-zinc-950 px-3 py-1 text-[10px] font-black uppercase tracking-wider text-zinc-600">
+                {collection.length} items
+              </span>
+            </div>
+
+            <input
+              type="search"
+              value={collectionSearch}
+              onChange={(event) =>
+                setCollectionSearch(
+                  event.target.value
+                )
+              }
+              placeholder="Search your collection..."
+              className="mt-3 w-full rounded-xl border border-zinc-800 bg-black px-4 py-3 text-sm font-bold text-white outline-none transition placeholder:text-zinc-800 focus:border-emerald-400/50"
+            />
+
+            {collectionLoading ? (
+              <p className="mt-3 text-sm font-bold text-emerald-400">
+                Loading your collection...
+              </p>
+            ) : filteredCollection.length === 0 ? (
+              <div className="mt-3 rounded-2xl border border-zinc-900 bg-black p-4">
+                <p className="text-sm font-black text-zinc-400">
+                  No available collection cards found.
+                </p>
+                <p className="mt-1 text-xs text-zinc-700">
+                  Add cards from My Collection first, or switch to Search Catalog.
+                </p>
+              </div>
+            ) : (
+              <div className="mt-3 max-h-96 space-y-2 overflow-y-auto pr-1">
+                {filteredCollection.map(
+                  (collectionItem) => (
+                    <button
+                      key={collectionItem.id}
+                      type="button"
+                      onClick={() =>
+                        selectCollectionCard(
+                          collectionItem
+                        )
+                      }
+                      className="flex w-full items-center gap-3 rounded-2xl border border-zinc-900 bg-black p-3 text-left transition hover:border-emerald-400/40"
+                    >
+                      <div className="flex h-20 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-zinc-900 bg-zinc-950">
+                        {collectionItem.image_url ? (
+                          <img
+                            src={collectionItem.image_url}
+                            alt={
+                              collectionItem.card_name ||
+                              "Collection card"
+                            }
+                            className="h-full w-full object-contain"
+                          />
+                        ) : (
+                          <span className="px-2 text-center text-[9px] font-black uppercase tracking-wider text-zinc-700">
+                            No image
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="truncate font-black text-white">
+                            {collectionItem.card_name ||
+                              "Unknown Card"}
+                          </p>
+
+                          <span className="rounded-full border border-sky-400/20 bg-sky-400/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-sky-300">
+                            {collectionItem.item_type === "graded"
+                              ? "Slab"
+                              : "Raw"}
+                          </span>
+                        </div>
+
+                        <p className="mt-1 text-xs text-zinc-500">
+                          {[
+                            collectionItem.set_name,
+                            collectionItem.card_number
+                              ? `#${collectionItem.card_number}`
+                              : null,
+                            collectionItem.finish,
+                          ]
+                            .filter(Boolean)
+                            .join(" • ")}
+                        </p>
+
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <span className="rounded-full border border-zinc-800 bg-zinc-950 px-2 py-1 text-[9px] font-black uppercase tracking-wider text-zinc-500">
+                            {collectionLabel(
+                              collectionItem
+                            )}
+                          </span>
+
+                          <span className="rounded-full border border-zinc-800 bg-zinc-950 px-2 py-1 text-[9px] font-black uppercase tracking-wider text-zinc-500">
+                            Available{" "}
+                            {collectionItem.quantity}
+                          </span>
+
+                          {collectionItem.personal_value != null && (
+                            <span className="rounded-full border border-zinc-800 bg-zinc-950 px-2 py-1 text-[9px] font-black uppercase tracking-wider text-zinc-500">
+                              Value{" "}
+                              {money(
+                                collectionItem.personal_value
+                              )}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  )
+                )}
+              </div>
+            )}
+          </div>
         )}
 
       {!selectedCard &&
@@ -1139,6 +1494,12 @@ function TradeOfferCatalogCardEditor({
                           My Inventory
                         </span>
                       )}
+
+                      {selectedCollection && (
+                        <span className="rounded-full border border-sky-400/20 bg-sky-400/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-sky-300">
+                          My Collection
+                        </span>
+                      )}
                     </div>
 
                     {cardSecondaryLine(
@@ -1186,6 +1547,30 @@ function TradeOfferCatalogCardEditor({
                         )}
                       </div>
                     )}
+
+                    {selectedCollection && (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <span className="rounded-full border border-zinc-800 bg-zinc-950 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-zinc-500">
+                          {collectionLabel(
+                            selectedCollection
+                          )}
+                        </span>
+
+                        <span className="rounded-full border border-zinc-800 bg-zinc-950 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-zinc-500">
+                          Available{" "}
+                          {selectedCollection.quantity}
+                        </span>
+
+                        {selectedCollection.personal_value != null && (
+                          <span className="rounded-full border border-zinc-800 bg-zinc-950 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-zinc-500">
+                            Saved Value{" "}
+                            {money(
+                              selectedCollection.personal_value
+                            )}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   <button
@@ -1197,7 +1582,8 @@ function TradeOfferCatalogCardEditor({
                   </button>
                 </div>
 
-                {!selectedInventory && (
+                {!selectedInventory &&
+                  !selectedCollection && (
                   <div className="mt-3 flex flex-wrap gap-2">
                     {selectedCard.category && (
                       <span className="rounded-full border border-zinc-800 bg-zinc-950 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-zinc-500">
@@ -1230,7 +1616,7 @@ function TradeOfferCatalogCardEditor({
                 type="number"
                 min="1"
                 max={
-                  maxInventoryQuantity ??
+                  maxOwnedQuantity ??
                   undefined
                 }
                 step="1"
@@ -1246,13 +1632,13 @@ function TradeOfferCatalogCardEditor({
                     );
 
                   const clampedValue =
-                    maxInventoryQuantity !=
+                    maxOwnedQuantity !=
                       null
                       ? Math.min(
                           nextValue,
                           Math.max(
                             1,
-                            maxInventoryQuantity
+                            maxOwnedQuantity
                           )
                         )
                       : nextValue;
@@ -1268,14 +1654,12 @@ function TradeOfferCatalogCardEditor({
                 className="mt-2 w-full rounded-xl border border-zinc-800 bg-black px-3 py-3 text-sm font-black text-white outline-none transition focus:border-emerald-400/50"
               />
 
-              {selectedInventory &&
-                maxInventoryQuantity !=
-                  null && (
+              {(selectedInventory ||
+                selectedCollection) &&
+                maxOwnedQuantity != null && (
                   <p className="mt-1.5 text-xs text-zinc-700">
                     Max available:{" "}
-                    {
-                      maxInventoryQuantity
-                    }
+                    {maxOwnedQuantity}
                   </p>
                 )}
             </div>
@@ -1317,6 +1701,12 @@ function TradeOfferCatalogCardEditor({
                 null && (
                 <p className="mt-1.5 text-xs text-zinc-700">
                   Started from your listing price. Adjust after checking comps.
+                </p>
+              )}
+
+              {selectedCollection?.personal_value != null && (
+                <p className="mt-1.5 text-xs text-zinc-700">
+                  Started from your saved personal value. Adjust after checking comps.
                 </p>
               )}
             </div>
@@ -1504,6 +1894,12 @@ export default function ConversationPage() {
     useState<InventoryTradeItem[]>([]);
 
   const [tradeInventoryLoading, setTradeInventoryLoading] =
+    useState(false);
+
+  const [tradeCollection, setTradeCollection] =
+    useState<CollectionTradeItem[]>([]);
+
+  const [tradeCollectionLoading, setTradeCollectionLoading] =
     useState(false);
 
   const [showTradeBuilder, setShowTradeBuilder] =
@@ -1875,6 +2271,57 @@ export default function ConversationPage() {
       cancelled = true;
     };
   }, [activeVendorId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadTradeCollection() {
+      if (!currentUserId) {
+        setTradeCollection([]);
+        return;
+      }
+
+      try {
+        setTradeCollectionLoading(true);
+
+        const {
+          data,
+          error,
+        } = await supabase.rpc(
+          "get_my_collection"
+        );
+
+        if (error) {
+          throw error;
+        }
+
+        if (!cancelled) {
+          setTradeCollection(
+            (data || []) as CollectionTradeItem[]
+          );
+        }
+      } catch (err) {
+        console.error(
+          "Trade collection load error:",
+          err
+        );
+
+        if (!cancelled) {
+          setTradeCollection([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setTradeCollectionLoading(false);
+        }
+      }
+    }
+
+    loadTradeCollection();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId]);
 
   useEffect(() => {
     let mounted = true;
@@ -2323,7 +2770,7 @@ export default function ConversationPage() {
       )
     ) {
       setError(
-        "Select every offered card from the MintRadar catalog or your inventory before sending the offer."
+        "Select every offered card from the MintRadar catalog, My Collection, or My Inventory before sending the offer."
       );
       return;
     }
@@ -2366,13 +2813,21 @@ export default function ConversationPage() {
           const inventoryItem =
             item.selectedInventory;
 
+          const collectionItem =
+            item.selectedCollection;
+
           return {
             inventory_id:
               inventoryItem?.id ||
               null,
 
+            collection_item_id:
+              collectionItem?.id ||
+              null,
+
             card_id:
               inventoryItem?.card_id ||
+              collectionItem?.card_id ||
               null,
 
             snapshot: {
@@ -2399,30 +2854,48 @@ export default function ConversationPage() {
               source:
                 inventoryItem
                   ? "inventory"
-                  : "catalog",
+                  : collectionItem
+                    ? "collection"
+                    : "catalog",
 
               inventory_id:
                 inventoryItem?.id ||
+                null,
+
+              collection_item_id:
+                collectionItem?.id ||
                 null,
 
               inventory_listing_price:
                 inventoryItem?.price ??
                 null,
 
+              personal_value:
+                collectionItem?.personal_value ??
+                null,
+
+              item_type:
+                collectionItem?.item_type ??
+                null,
+
               condition:
                 inventoryItem?.condition ||
+                collectionItem?.condition ||
                 null,
 
               grading_company:
                 inventoryItem?.grading_company ||
+                collectionItem?.grading_company ||
                 null,
 
               grade:
                 inventoryItem?.grade ||
+                collectionItem?.grade ||
                 null,
 
               cert_number:
                 inventoryItem?.cert_number ||
+                collectionItem?.cert_number ||
                 null,
 
               vendor_name:
@@ -3393,6 +3866,8 @@ export default function ConversationPage() {
                       index={index}
                       inventory={tradeInventory}
                       inventoryLoading={tradeInventoryLoading}
+                      collection={tradeCollection}
+                      collectionLoading={tradeCollectionLoading}
                       activeVendorName={activeVendorName}
                       onUpdate={updateOfferItem}
                       onRemove={removeOfferItem}

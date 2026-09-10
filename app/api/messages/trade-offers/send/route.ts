@@ -6,6 +6,7 @@ export const dynamic = "force-dynamic";
 
 type OfferedItem = {
   inventory_id?: string | null;
+  collection_item_id?: string | null;
   card_id?: string | null;
   snapshot?: Record<string, unknown> | null;
   quantity?: number;
@@ -200,22 +201,127 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      const inventoryId =
+        item.inventory_id?.trim() || null;
+
+      const collectionItemId =
+        item.collection_item_id?.trim() || null;
+
+      const cardId =
+        item.card_id?.trim() || null;
+
+      if (
+        inventoryId &&
+        collectionItemId
+      ) {
+        return errorResponse(
+          "A trade item cannot come from both inventory and collection."
+        );
+      }
+
+      // -------------------------------------
+      // PERSONAL COLLECTION VALIDATION
+      // -------------------------------------
+      //
+      // RLS already restricts collection_items
+      // to auth.uid(), but we also explicitly
+      // verify ownership and quantity here so
+      // the API fails with a useful message.
+      //
+      if (collectionItemId) {
+        const {
+          data: collectionItem,
+          error: collectionError,
+        } = await supabase
+          .from("collection_items")
+          .select(
+            "id, user_id, card_id, quantity"
+          )
+          .eq("id", collectionItemId)
+          .maybeSingle();
+
+        if (collectionError) {
+          console.error(
+            "Trade offer collection validation error:",
+            collectionError
+          );
+
+          return errorResponse(
+            "MintRadar could not verify one of your collection cards.",
+            400
+          );
+        }
+
+        if (!collectionItem) {
+          return errorResponse(
+            "One of the collection cards in this offer no longer exists or is not available to your account.",
+            400
+          );
+        }
+
+        if (
+          collectionItem.user_id !==
+          user.id
+        ) {
+          return errorResponse(
+            "You cannot offer a collection card that does not belong to you.",
+            403
+          );
+        }
+
+        const availableQuantity =
+          Number(
+            collectionItem.quantity ?? 0
+          );
+
+        if (
+          !Number.isFinite(
+            availableQuantity
+          ) ||
+          availableQuantity <
+            quantity
+        ) {
+          return errorResponse(
+            "Trade quantity exceeds the quantity available in your collection.",
+            400
+          );
+        }
+
+        if (
+          cardId &&
+          collectionItem.card_id &&
+          cardId !==
+            collectionItem.card_id
+        ) {
+          return errorResponse(
+            "The selected collection card does not match the supplied card.",
+            400
+          );
+        }
+      }
+
       normalizedItems.push({
         inventory_id:
-          item.inventory_id?.trim() || null,
+          inventoryId,
+
+        collection_item_id:
+          collectionItemId,
 
         card_id:
-          item.card_id?.trim() || null,
+          cardId,
 
         snapshot:
           item.snapshot &&
-          typeof item.snapshot === "object"
+          typeof item.snapshot ===
+            "object"
             ? item.snapshot
             : {},
 
         quantity,
-        market_value: marketValue,
-        trade_percentage: tradePercentage,
+        market_value:
+          marketValue,
+        trade_percentage:
+          tradePercentage,
       });
     }
 
@@ -284,7 +390,10 @@ export async function POST(request: NextRequest) {
       if (
         message
           .toLowerCase()
-          .includes("access")
+          .includes("access") ||
+        message
+          .toLowerCase()
+          .includes("belong")
       ) {
         return errorResponse(
           message,
@@ -299,7 +408,8 @@ export async function POST(request: NextRequest) {
     }
 
     const result =
-      Array.isArray(data) && data.length > 0
+      Array.isArray(data) &&
+      data.length > 0
         ? data[0]
         : null;
 
