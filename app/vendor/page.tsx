@@ -1009,7 +1009,7 @@ export default function VendorDashboardPage() {
                     width: 15mm;
                     height: 15mm;
                     flex-direction: column;
-                    padding: 0.55mm 0.45mm 0.35mm;
+                    padding: 0.45mm 0.45mm 0.65mm;
                   `
                   : `
                     width: 15mm;
@@ -1017,7 +1017,7 @@ export default function VendorDashboardPage() {
                     flex-direction: column;
                     align-items: stretch;
                     justify-content: flex-start;
-                    padding: 0.45mm;
+                    padding: 0.4mm 0.45mm 0.65mm;
                   `
               }
             }
@@ -1074,7 +1074,8 @@ export default function VendorDashboardPage() {
               font-size: 3.4pt;
               line-height: 1;
               font-weight: 900;
-              margin-top: 0.2mm;
+              margin-top: 0.15mm;
+              flex: 0 0 auto;
               letter-spacing: 0.01em;
               white-space: nowrap;
               text-align: center;
@@ -1085,15 +1086,15 @@ export default function VendorDashboardPage() {
               display: flex;
               align-items: center;
               justify-content: center;
-              width: 11mm;
-              height: 11mm;
-              margin: 0.25mm auto 0;
+              width: 9.6mm;
+              height: 9.6mm;
+              margin: 0.2mm auto 0.15mm;
             }
 
             .qr {
               display: block;
-              width: 11mm;
-              height: 11mm;
+              width: 9.6mm;
+              height: 9.6mm;
               object-fit: contain;
               image-rendering: pixelated;
             }
@@ -2061,7 +2062,7 @@ export default function VendorDashboardPage() {
                         className={`absolute left-0 top-0 flex overflow-hidden text-black ${
                           labelOrientation ===
                           "vertical"
-                            ? "h-1/2 w-full flex-col items-center px-2 pt-2 text-center"
+                            ? "h-1/2 w-full flex-col items-center px-2 pt-2 pb-2 text-center"
                             : "h-full w-1/2 flex-col items-center px-2 py-2 text-center"
                         }`}
                       >
@@ -2079,7 +2080,7 @@ export default function VendorDashboardPage() {
                         </div>
 
                         <div
-                          className={`mt-1 flex aspect-square w-[78%] max-w-[126px] items-center justify-center ${
+                          className={`mt-1 flex aspect-square w-[68%] max-w-[108px] items-center justify-center ${
                             labelOrientation ===
                             "vertical"
                               ? "flex-1"
@@ -2089,7 +2090,7 @@ export default function VendorDashboardPage() {
                           <img
                             src={qrDataUrl}
                             alt="Listing QR code"
-                            className="h-full max-h-[126px] w-full max-w-[126px] object-contain"
+                            className="h-full max-h-[108px] w-full max-w-[108px] object-contain"
                           />
                         </div>
 
