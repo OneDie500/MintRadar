@@ -218,6 +218,22 @@ type CollectionTradeItem = {
   finish: string | null;
 };
 
+type TradeReceivedItem = {
+  id: string;
+  trade_transaction_id: string;
+  trade_offer_id: string;
+  recipient_user_id: string;
+  recipient_vendor_id: string | null;
+  source_trade_offer_item_id: string | null;
+  card_id: string | null;
+  snapshot: Record<string, unknown> | null;
+  quantity: number;
+  received_from: "target" | "offered_item";
+  destination: "collection" | "inventory" | null;
+  claimed_at: string | null;
+  created_at: string;
+};
+
 type OfferDraftItem = {
   localId: string;
   selectedCard: CatalogCard | null;
@@ -574,6 +590,87 @@ function collectionLabel(
 
   return (
     [item.condition, item.finish]
+      .filter(Boolean)
+      .join(" • ") || "Raw"
+  );
+}
+
+function receiptText(
+  item: TradeReceivedItem,
+  key: string
+) {
+  const value = item.snapshot?.[key];
+  return typeof value === "string" && value.trim()
+    ? value.trim()
+    : null;
+}
+
+function receiptCardName(
+  item: TradeReceivedItem
+) {
+  return (
+    receiptText(item, "card_name") ||
+    "Unknown Collectible"
+  );
+}
+
+function receiptCardSubtitle(
+  item: TradeReceivedItem
+) {
+  return [
+    receiptText(item, "set_name"),
+    receiptText(item, "card_number")
+      ? `#${receiptText(item, "card_number")}`
+      : null,
+    receiptText(item, "finish") ||
+      receiptText(item, "parallel_name"),
+  ]
+    .filter(Boolean)
+    .join(" • ");
+}
+
+function receiptItemType(
+  item: TradeReceivedItem
+): "raw" | "graded" {
+  const itemType =
+    receiptText(item, "item_type") ||
+    receiptText(item, "listing_type");
+
+  if (
+    itemType === "graded" ||
+    receiptText(item, "grading_company") ||
+    receiptText(item, "grade")
+  ) {
+    return "graded";
+  }
+
+  return "raw";
+}
+
+function receiptOwnershipLabel(
+  item: TradeReceivedItem
+) {
+  const itemType =
+    receiptText(item, "item_type") ||
+    receiptText(item, "listing_type");
+
+  if (itemType === "graded") {
+    return (
+      [
+        receiptText(item, "grading_company"),
+        receiptText(item, "grade"),
+      ]
+        .filter(Boolean)
+        .join(" ") || "Slab"
+    );
+  }
+
+  return (
+    [
+      receiptText(item, "condition"),
+      receiptText(item, "finish") ||
+        receiptText(item, "parallel_name"),
+    ]
       .filter(Boolean)
       .join(" • ") || "Raw"
   );
@@ -1902,6 +1999,27 @@ export default function ConversationPage() {
   const [tradeCollectionLoading, setTradeCollectionLoading] =
     useState(false);
 
+  const [receivedItems, setReceivedItems] =
+    useState<TradeReceivedItem[]>([]);
+
+  const [receivedItemsLoading, setReceivedItemsLoading] =
+    useState(false);
+
+  const [claimingReceivedId, setClaimingReceivedId] =
+    useState<string | null>(null);
+
+  const [inventoryClaimId, setInventoryClaimId] =
+    useState<string | null>(null);
+
+  const [inventoryClaimPrice, setInventoryClaimPrice] =
+    useState("");
+
+  const [inventoryClaimCondition, setInventoryClaimCondition] =
+    useState("NM");
+
+  const [inventoryClaimError, setInventoryClaimError] =
+    useState("");
+
   const [showTradeBuilder, setShowTradeBuilder] =
     useState(false);
 
@@ -2194,7 +2312,7 @@ export default function ConversationPage() {
   useEffect(() => {
     let cancelled = false;
 
-    async function loadTradeInventory() {
+    async function doLoadTradeInventory() {
       if (!activeVendorId) {
         setTradeInventory([]);
         setTradeInventoryLoading(false);
@@ -2265,7 +2383,7 @@ export default function ConversationPage() {
       }
     }
 
-    loadTradeInventory();
+    doLoadTradeInventory();
 
     return () => {
       cancelled = true;
@@ -2275,7 +2393,7 @@ export default function ConversationPage() {
   useEffect(() => {
     let cancelled = false;
 
-    async function loadTradeCollection() {
+    async function doLoadTradeCollection() {
       if (!currentUserId) {
         setTradeCollection([]);
         return;
@@ -2316,11 +2434,329 @@ export default function ConversationPage() {
       }
     }
 
-    loadTradeCollection();
+    doLoadTradeCollection();
 
     return () => {
       cancelled = true;
     };
+  }, [currentUserId]);
+
+  async function loadTradeInventory() {
+    if (!activeVendorId) {
+      setTradeInventory([]);
+      return;
+    }
+
+    const {
+      data,
+      error,
+    } = await supabase
+      .from("inventory")
+      .select(`
+        id,
+        vendor_id,
+        card_id,
+        listing_type,
+        condition,
+        grading_company,
+        grade,
+        cert_number,
+        price,
+        quantity,
+        notes,
+        cards (
+          id,
+          external_id,
+          name,
+          set_name,
+          card_number,
+          image_url,
+          rarity,
+          category,
+          edition,
+          finish
+        )
+      `)
+      .eq("vendor_id", activeVendorId)
+      .gt("quantity", 0)
+      .order("created_at", {
+        ascending: false,
+      });
+
+    if (error) {
+      throw error;
+    }
+
+    setTradeInventory(
+      (data || []) as unknown as InventoryTradeItem[]
+    );
+  }
+
+  async function loadTradeCollection() {
+    if (!currentUserId) {
+      setTradeCollection([]);
+      return;
+    }
+
+    const {
+      data,
+      error,
+    } = await supabase.rpc(
+      "get_my_collection"
+    );
+
+    if (error) {
+      throw error;
+    }
+
+    setTradeCollection(
+      (data || []) as CollectionTradeItem[]
+    );
+  }
+
+  async function loadReceivedItems() {
+    if (!currentUserId) {
+      setReceivedItems([]);
+      return;
+    }
+
+    try {
+      setReceivedItemsLoading(true);
+
+      const {
+        data,
+        error,
+      } = await supabase
+        .from("trade_received_items")
+        .select(`
+          id,
+          trade_transaction_id,
+          trade_offer_id,
+          recipient_user_id,
+          recipient_vendor_id,
+          source_trade_offer_item_id,
+          card_id,
+          snapshot,
+          quantity,
+          received_from,
+          destination,
+          claimed_at,
+          created_at
+        `)
+        .eq("recipient_user_id", currentUserId)
+        .order("created_at", {
+          ascending: false,
+        });
+
+      if (error) {
+        throw error;
+      }
+
+      setReceivedItems(
+        (data || []) as TradeReceivedItem[]
+      );
+    } catch (err) {
+      console.error(
+        "Received items load error:",
+        err
+      );
+      setReceivedItems([]);
+    } finally {
+      setReceivedItemsLoading(false);
+    }
+  }
+
+  async function claimReceivedToCollection(
+    item: TradeReceivedItem
+  ) {
+    if (claimingReceivedId) return;
+
+    try {
+      setClaimingReceivedId(item.id);
+      setError("");
+
+      const personalValue =
+        Number(
+          item.snapshot?.personal_value ??
+            item.snapshot?.price ??
+            0
+        );
+
+      const {
+        error: claimError,
+      } = await supabase.rpc(
+        "claim_trade_received_item",
+        {
+          p_received_item_id:
+            item.id,
+          p_destination:
+            "collection",
+          p_personal_value:
+            Number.isFinite(personalValue) &&
+            personalValue >= 0
+              ? personalValue
+              : null,
+          p_vendor_id: null,
+          p_price: null,
+          p_condition:
+            receiptText(
+              item,
+              "condition"
+            ),
+          p_grading_company:
+            receiptText(
+              item,
+              "grading_company"
+            ),
+          p_grade:
+            receiptText(
+              item,
+              "grade"
+            ),
+          p_cert_number:
+            receiptText(
+              item,
+              "cert_number"
+            ),
+          p_notes: null,
+        }
+      );
+
+      if (claimError) {
+        throw claimError;
+      }
+
+      await Promise.all([
+        loadReceivedItems(),
+        loadTradeCollection(),
+      ]);
+    } catch (err: any) {
+      console.error(
+        "Claim received item to collection error:",
+        err
+      );
+
+      setError(
+        err?.message ||
+          "MintRadar could not add that received card to your collection."
+      );
+    } finally {
+      setClaimingReceivedId(null);
+    }
+  }
+
+  async function claimReceivedToInventory(
+    item: TradeReceivedItem
+  ) {
+    if (claimingReceivedId) return;
+
+    if (!activeVendorId) {
+      setInventoryClaimError(
+        "No active vendor account is available."
+      );
+      return;
+    }
+
+    const numericPrice =
+      Number(inventoryClaimPrice);
+
+    if (
+      !Number.isFinite(numericPrice) ||
+      numericPrice <= 0
+    ) {
+      setInventoryClaimError(
+        "Enter a valid listing price."
+      );
+      return;
+    }
+
+    try {
+      setClaimingReceivedId(item.id);
+      setInventoryClaimError("");
+      setError("");
+
+      const {
+        error: claimError,
+      } = await supabase.rpc(
+        "claim_trade_received_item",
+        {
+          p_received_item_id:
+            item.id,
+          p_destination:
+            "inventory",
+          p_personal_value: null,
+          p_vendor_id:
+            activeVendorId,
+          p_price:
+            numericPrice,
+          p_condition:
+            receiptItemType(item) === "raw"
+              ? inventoryClaimCondition
+              : null,
+          p_grading_company:
+            receiptText(
+              item,
+              "grading_company"
+            ),
+          p_grade:
+            receiptText(
+              item,
+              "grade"
+            ),
+          p_cert_number:
+            receiptText(
+              item,
+              "cert_number"
+            ),
+          p_notes: null,
+        }
+      );
+
+      if (claimError) {
+        throw claimError;
+      }
+
+      setInventoryClaimId(null);
+      setInventoryClaimPrice("");
+      setInventoryClaimCondition("NM");
+
+      await Promise.all([
+        loadReceivedItems(),
+        loadTradeInventory(),
+      ]);
+    } catch (err: any) {
+      const message =
+        err?.message ||
+        err?.details ||
+        err?.hint ||
+        (typeof err === "string"
+          ? err
+          : "MintRadar could not add that received card to inventory.");
+
+      console.error(
+        "Claim received item to inventory error:",
+        {
+          message: err?.message,
+          details: err?.details,
+          hint: err?.hint,
+          code: err?.code,
+          raw: err,
+        }
+      );
+
+      setInventoryClaimError(message);
+    } finally {
+      setClaimingReceivedId(null);
+    }
+  }
+
+  useEffect(() => {
+    if (!currentUserId) {
+      setReceivedItems([]);
+      return;
+    }
+
+    void loadReceivedItems();
   }, [currentUserId]);
 
   useEffect(() => {
@@ -3723,6 +4159,296 @@ export default function ConversationPage() {
             </div>
           )}
         </div>
+
+        <section className="mb-6 overflow-hidden rounded-3xl border border-emerald-400/20 bg-zinc-950">
+          <div className="border-b border-zinc-900 bg-emerald-400/[0.04] p-5">
+            <p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400">
+              📦 You Received
+            </p>
+
+            <p className="mt-2 text-sm text-zinc-500">
+              Claim cards from completed trades into your personal collection or vendor inventory.
+            </p>
+          </div>
+
+          <div className="p-5">
+            {receivedItemsLoading ? (
+              <p className="text-sm font-bold text-emerald-400">
+                Loading received cards...
+              </p>
+            ) : receivedItems.length === 0 ? (
+              <p className="text-sm text-zinc-600">
+                No received trade items yet.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {receivedItems
+                  .slice(0, 12)
+                  .map((item) => {
+                    const imageUrl =
+                      receiptText(
+                        item,
+                        "image_url"
+                      );
+
+                    const claimed =
+                      Boolean(
+                        item.claimed_at
+                      );
+
+                    return (
+                      <article
+                        key={item.id}
+                        className="rounded-2xl border border-zinc-900 bg-black p-4"
+                      >
+                        <div className="flex gap-4">
+                          <div className="flex h-28 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-zinc-900 bg-zinc-950">
+                            {imageUrl ? (
+                              <img
+                                src={imageUrl}
+                                alt={receiptCardName(
+                                  item
+                                )}
+                                className="h-full w-full object-contain"
+                              />
+                            ) : (
+                              <span className="px-2 text-center text-[9px] font-black uppercase tracking-wider text-zinc-700">
+                                No image
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div>
+                                <p className="text-lg font-black text-white">
+                                  {receiptCardName(
+                                    item
+                                  )}
+                                </p>
+
+                                <p className="mt-1 text-xs text-zinc-500">
+                                  {receiptCardSubtitle(
+                                    item
+                                  )}
+                                </p>
+                              </div>
+
+                              <span className="rounded-full border border-zinc-800 bg-zinc-950 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-zinc-500">
+                                Qty{" "}
+                                {
+                                  item.quantity
+                                }
+                              </span>
+                            </div>
+
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <span className="rounded-full border border-zinc-800 bg-zinc-950 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-zinc-500">
+                                {receiptOwnershipLabel(
+                                  item
+                                )}
+                              </span>
+
+                              <span className="rounded-full border border-zinc-800 bg-zinc-950 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-zinc-600">
+                                {item.received_from ===
+                                "target"
+                                  ? "Target Card"
+                                  : "Trade Item"}
+                              </span>
+                            </div>
+
+                            {claimed ? (
+                              <div className="mt-4 rounded-xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2.5 text-sm font-black text-emerald-300">
+                                ✓ Added to{" "}
+                                {item.destination ===
+                                "inventory"
+                                  ? "My Inventory"
+                                  : "My Collection"}
+                              </div>
+                            ) : (
+                              <>
+                                <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                                  <button
+                                    type="button"
+                                    disabled={
+                                      claimingReceivedId ===
+                                      item.id
+                                    }
+                                    onClick={() =>
+                                      claimReceivedToCollection(
+                                        item
+                                      )
+                                    }
+                                    className="rounded-xl bg-emerald-400 px-4 py-3 text-sm font-black text-black transition hover:bg-emerald-300 disabled:opacity-40"
+                                  >
+                                    {claimingReceivedId ===
+                                    item.id
+                                      ? "Adding..."
+                                      : "Add to My Collection"}
+                                  </button>
+
+                                  {activeVendorId && (
+                                    <button
+                                      type="button"
+                                      disabled={
+                                        claimingReceivedId ===
+                                        item.id
+                                      }
+                                      onClick={() => {
+                                        setInventoryClaimId(
+                                          item.id
+                                        );
+                                        setInventoryClaimPrice(
+                                          ""
+                                        );
+                                        setInventoryClaimCondition(
+                                          receiptText(
+                                            item,
+                                            "condition"
+                                          ) || "NM"
+                                        );
+                                        setInventoryClaimError(
+                                          ""
+                                        );
+                                      }}
+                                      className="rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm font-black text-white transition hover:border-emerald-400/40 hover:text-emerald-300 disabled:opacity-40"
+                                    >
+                                      Add to My Inventory
+                                    </button>
+                                  )}
+                                </div>
+
+                                {inventoryClaimId ===
+                                  item.id && (
+                                  <div className="mt-3 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
+                                    <p className="text-xs font-black uppercase tracking-[0.16em] text-zinc-600">
+                                      Inventory Listing Price
+                                    </p>
+
+                                    <div className="mt-2 flex items-center rounded-xl border border-zinc-800 bg-black focus-within:border-emerald-400/50">
+                                      <span className="pl-3 font-black text-zinc-600">
+                                        $
+                                      </span>
+
+                                      <input
+                                        type="number"
+                                        min="0.01"
+                                        step="0.01"
+                                        value={
+                                          inventoryClaimPrice
+                                        }
+                                        onChange={(
+                                          event
+                                        ) =>
+                                          setInventoryClaimPrice(
+                                            event
+                                              .target
+                                              .value
+                                          )
+                                        }
+                                        placeholder="0.00"
+                                        className="min-w-0 flex-1 bg-transparent px-2 py-3 font-black text-white outline-none placeholder:text-zinc-800"
+                                      />
+                                    </div>
+
+                                    {receiptItemType(item) === "raw" && (
+                                      <div className="mt-3">
+                                        <p className="text-xs font-black uppercase tracking-[0.16em] text-zinc-600">
+                                          Condition
+                                        </p>
+
+                                        <select
+                                          value={
+                                            inventoryClaimCondition
+                                          }
+                                          onChange={(event) =>
+                                            setInventoryClaimCondition(
+                                              event.target.value
+                                            )
+                                          }
+                                          className="mt-2 w-full rounded-xl border border-zinc-800 bg-black px-3 py-3 text-sm font-black text-white outline-none focus:border-emerald-400/50"
+                                        >
+                                          <option value="NM">
+                                            Near Mint
+                                          </option>
+                                          <option value="LP">
+                                            Lightly Played
+                                          </option>
+                                          <option value="MP">
+                                            Moderately Played
+                                          </option>
+                                          <option value="HP">
+                                            Heavily Played
+                                          </option>
+                                          <option value="DMG">
+                                            Damaged
+                                          </option>
+                                        </select>
+                                      </div>
+                                    )}
+
+                                    {inventoryClaimError && (
+                                      <p className="mt-2 text-sm text-red-300">
+                                        {
+                                          inventoryClaimError
+                                        }
+                                      </p>
+                                    )}
+
+                                    <div className="mt-3 grid grid-cols-2 gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setInventoryClaimId(
+                                            null
+                                          );
+                                          setInventoryClaimPrice(
+                                            ""
+                                          );
+                                          setInventoryClaimCondition(
+                                            "NM"
+                                          );
+                                          setInventoryClaimError(
+                                            ""
+                                          );
+                                        }}
+                                        className="rounded-xl border border-zinc-800 bg-black px-3 py-2.5 text-sm font-black text-zinc-500 transition hover:text-white"
+                                      >
+                                        Cancel
+                                      </button>
+
+                                      <button
+                                        type="button"
+                                        disabled={
+                                          claimingReceivedId ===
+                                          item.id
+                                        }
+                                        onClick={() =>
+                                          claimReceivedToInventory(
+                                            item
+                                          )
+                                        }
+                                        className="rounded-xl bg-emerald-400 px-3 py-2.5 text-sm font-black text-black transition hover:bg-emerald-300 disabled:opacity-40"
+                                      >
+                                        {claimingReceivedId ===
+                                        item.id
+                                          ? "Adding..."
+                                          : "Add Listing"}
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+              </div>
+            )}
+          </div>
+        </section>
 
         {showTradeBuilder && (
           <div className="border-t border-emerald-400/20 bg-zinc-950 p-3 sm:p-4">
