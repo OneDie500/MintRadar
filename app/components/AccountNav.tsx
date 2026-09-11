@@ -23,6 +23,7 @@ export default function AccountNav() {
     useState<string | null>(null);
   const [switchingVendorId, setSwitchingVendorId] =
     useState<string | null>(null);
+
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -46,13 +47,99 @@ export default function AccountNav() {
           return;
         }
 
-        const memberships =
+        // --------------------------------------------------
+        // 1) LOAD EXISTING VENDOR MEMBERSHIPS
+        // --------------------------------------------------
+
+        let memberships =
           await getVendorMemberships(
             supabase,
             user.id
           );
 
         if (!mounted) return;
+
+        // --------------------------------------------------
+        // 2) AUTO-PROVISION NEW INDEPENDENT VENDORS
+        //
+        // Vendor signup stores business information in Auth
+        // metadata. If the user has that vendor metadata but
+        // does not yet have a vendor_members relationship,
+        // finish their vendor setup automatically.
+        // --------------------------------------------------
+
+        if (memberships.length === 0) {
+          const metadata =
+            user.user_metadata || {};
+
+          const metadataBusinessName =
+            typeof metadata.business_name ===
+              "string" &&
+            metadata.business_name.trim()
+              ? metadata.business_name.trim()
+              : "";
+
+          const metadataInstagram =
+            typeof metadata.instagram ===
+              "string" &&
+            metadata.instagram.trim()
+              ? metadata.instagram.trim()
+              : null;
+
+          const metadataBio =
+            typeof metadata.bio === "string" &&
+            metadata.bio.trim()
+              ? metadata.bio.trim()
+              : null;
+
+          if (metadataBusinessName) {
+            const {
+              data: vendorId,
+              error: provisionError,
+            } = await supabase.rpc(
+              "create_vendor_account",
+              {
+                p_business_name:
+                  metadataBusinessName,
+                p_instagram:
+                  metadataInstagram,
+                p_bio:
+                  metadataBio,
+              }
+            );
+
+            if (provisionError) {
+              console.error(
+                "MintRadar vendor auto-provision error:",
+                {
+                  message:
+                    provisionError.message,
+                  details:
+                    provisionError.details,
+                  hint:
+                    provisionError.hint,
+                  code:
+                    provisionError.code,
+                }
+              );
+            } else if (vendorId) {
+              // Reload memberships after provisioning so the
+              // navigation immediately recognizes this user
+              // as a vendor.
+              memberships =
+                await getVendorMemberships(
+                  supabase,
+                  user.id
+                );
+            }
+          }
+        }
+
+        if (!mounted) return;
+
+        // --------------------------------------------------
+        // 3) CUSTOMER ACCOUNT
+        // --------------------------------------------------
 
         if (memberships.length === 0) {
           setAccountType("customer");
@@ -61,6 +148,10 @@ export default function AccountNav() {
           setLoading(false);
           return;
         }
+
+        // --------------------------------------------------
+        // 4) VENDOR ACCOUNT
+        // --------------------------------------------------
 
         const activeMembership =
           await getActiveVendorMembership(
@@ -73,7 +164,9 @@ export default function AccountNav() {
         setAccountType("vendor");
         setVendorMemberships(memberships);
         setActiveVendorId(
-          activeMembership?.vendor_id ?? null
+          activeMembership?.vendor_id ??
+            memberships[0]?.vendor_id ??
+            null
         );
         setLoading(false);
       } catch (error) {
@@ -91,12 +184,12 @@ export default function AccountNav() {
       }
     }
 
-    loadAccount();
+    void loadAccount();
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(() => {
-      loadAccount();
+      void loadAccount();
     });
 
     return () => {
