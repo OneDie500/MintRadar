@@ -1371,9 +1371,6 @@ export default function VendorDashboardPage() {
       );
     }
 
-    // P31S media is 14 × 40 mm.
-    // We preserve the existing MintRadar wrap-label concept:
-    // the first 14 × 20 mm half is printed; the second half stays blank.
     const canvas =
       document.createElement(
         "canvas"
@@ -1402,17 +1399,17 @@ export default function VendorDashboardPage() {
       canvas.height
     );
 
-    const frontWidth = 160;
-    const pad = 7;
-    const contentWidth =
-      frontWidth - pad * 2;
+    ctx.fillStyle = "#000000";
+    ctx.textBaseline = "top";
 
     const graded =
       isGraded(qrItem);
 
     const condition =
       graded
-        ? `${qrItem.grading_company || "Graded"} ${qrItem.grade || ""}`.trim()
+        ? `${qrItem.grading_company || "Graded"} ${
+            qrItem.grade || ""
+          }`.trim()
         : qrItem.condition ||
           "Raw";
 
@@ -1421,17 +1418,56 @@ export default function VendorDashboardPage() {
         qrItem.price ?? 0
       ).toFixed(2);
 
-    ctx.fillStyle = "#000000";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
+    // --------------------------------------------------
+    // FULL-WIDTH P31S LABEL
+    // --------------------------------------------------
+
+    const pad = 8;
+    const qrSize = 94;
+    const qrX = 8;
+    const qrY = 9;
+
+    const textX =
+      qrX + qrSize + 12;
+
+    const textWidth =
+      canvas.width -
+      textX -
+      pad;
+
+    // --------------------------------------------------
+    // QR CODE
+    // --------------------------------------------------
+
+    const qr =
+      await loadLabelImage(
+        qrDataUrl
+      );
+
+    ctx.drawImage(
+      qr,
+      qrX,
+      qrY,
+      qrSize,
+      qrSize
+    );
+
+    // --------------------------------------------------
+    // VENDOR NAME
+    // --------------------------------------------------
+
+    ctx.textAlign = "left";
+
+    const vendorText =
+      vendorName.toUpperCase();
 
     const vendorSize =
       fitCanvasText(
         ctx,
-        vendorName.toUpperCase(),
-        contentWidth,
-        13,
-        8,
+        vendorText,
+        textWidth,
+        18,
+        10,
         900
       );
 
@@ -1439,18 +1475,22 @@ export default function VendorDashboardPage() {
       `900 ${vendorSize}px Arial, Helvetica, sans-serif`;
 
     ctx.fillText(
-      vendorName.toUpperCase(),
-      frontWidth / 2,
-      4
+      vendorText,
+      textX,
+      7
     );
+
+    // --------------------------------------------------
+    // CONDITION / GRADE
+    // --------------------------------------------------
 
     const conditionSize =
       fitCanvasText(
         ctx,
         condition,
-        contentWidth,
-        11,
-        7,
+        textWidth,
+        15,
+        9,
         800
       );
 
@@ -1459,27 +1499,13 @@ export default function VendorDashboardPage() {
 
     ctx.fillText(
       condition,
-      frontWidth / 2,
-      20
+      textX,
+      34
     );
 
-    const qr =
-      await loadLabelImage(
-        qrDataUrl
-      );
-
-    const qrSize = 66;
-
-    ctx.drawImage(
-      qr,
-      Math.round(
-        (frontWidth - qrSize) /
-          2
-      ),
-      34,
-      qrSize,
-      qrSize
-    );
+    // --------------------------------------------------
+    // PRICE / SCAN MESSAGE
+    // --------------------------------------------------
 
     const bottomText =
       showPriceOnLabel
@@ -1490,9 +1516,11 @@ export default function VendorDashboardPage() {
       fitCanvasText(
         ctx,
         bottomText,
-        contentWidth,
+        textWidth,
+        showPriceOnLabel
+          ? 27
+          : 18,
         10,
-        7,
         900
       );
 
@@ -1501,18 +1529,34 @@ export default function VendorDashboardPage() {
 
     ctx.fillText(
       bottomText,
-      frontWidth / 2,
-      101
+      textX,
+      61
     );
 
-    // Visual fold marker kept extremely light in the bitmap.
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(
-      frontWidth,
-      0,
-      canvas.width -
-        frontWidth,
-      canvas.height
+    // --------------------------------------------------
+    // MINT RADAR BRANDING
+    // --------------------------------------------------
+
+    const branding =
+      "MINT RADAR";
+
+    const brandingSize =
+      fitCanvasText(
+        ctx,
+        branding,
+        textWidth,
+        11,
+        7,
+        800
+      );
+
+    ctx.font =
+      `800 ${brandingSize}px Arial, Helvetica, sans-serif`;
+
+    ctx.fillText(
+      branding,
+      textX,
+      94
     );
 
     return canvas;
