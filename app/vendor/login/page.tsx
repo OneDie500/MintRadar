@@ -7,29 +7,70 @@ import { supabase } from "../../../lib/supabase";
 
 type SetupMode = "create" | "repair" | null;
 
+function getSafeReturnTo() {
+  if (typeof window === "undefined") {
+    return "";
+  }
+
+  const searchParams =
+    new URLSearchParams(
+      window.location.search
+    );
+
+  const rawReturnTo =
+    searchParams.get("returnTo") || "";
+
+  if (
+    !rawReturnTo.startsWith("/") ||
+    rawReturnTo.startsWith("//")
+  ) {
+    return "";
+  }
+
+  return rawReturnTo;
+}
+
 export default function VendorLogin() {
   const router = useRouter();
 
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-
-  const [loading, setLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState("");
-
-  const [setupMode, setSetupMode] =
-    useState<SetupMode>(null);
-
-  const [pendingUserId, setPendingUserId] =
-    useState<string | null>(null);
-
-  const [pendingVendorId, setPendingVendorId] =
-    useState<string | null>(null);
-
-  const [businessName, setBusinessName] =
+  const [email, setEmail] =
     useState("");
 
-  const [instagram, setInstagram] =
+  const [password, setPassword] =
     useState("");
+
+  const [loading, setLoading] =
+    useState(false);
+
+  const [
+    errorMessage,
+    setErrorMessage,
+  ] = useState("");
+
+  const [
+    setupMode,
+    setSetupMode,
+  ] = useState<SetupMode>(null);
+
+  const [
+    pendingUserId,
+    setPendingUserId,
+  ] = useState<string | null>(null);
+
+  const [
+    pendingVendorId,
+    setPendingVendorId,
+  ] = useState<string | null>(null);
+
+  const [
+    businessName,
+    setBusinessName,
+  ] = useState("");
+
+  const [
+    instagram,
+    setInstagram,
+  ] = useState("");
 
   const [bio, setBio] =
     useState("");
@@ -43,7 +84,9 @@ export default function VendorLogin() {
       error: membershipError,
     } = await supabase
       .from("vendor_members")
-      .select("vendor_id, user_id, role")
+      .select(
+        "vendor_id, user_id, role"
+      )
       .eq("vendor_id", vendorId)
       .eq("user_id", userId)
       .maybeSingle();
@@ -52,10 +95,14 @@ export default function VendorLogin() {
       console.error(
         "Vendor membership verification error:",
         {
-          message: membershipError.message,
-          details: membershipError.details,
-          hint: membershipError.hint,
-          code: membershipError.code,
+          message:
+            membershipError.message,
+          details:
+            membershipError.details,
+          hint:
+            membershipError.hint,
+          code:
+            membershipError.code,
         }
       );
 
@@ -85,9 +132,12 @@ export default function VendorLogin() {
     } = await supabase.rpc(
       "create_vendor_account",
       {
-        p_business_name: submittedBusinessName,
-        p_instagram: submittedInstagram,
-        p_bio: submittedBio,
+        p_business_name:
+          submittedBusinessName,
+        p_instagram:
+          submittedInstagram,
+        p_bio:
+          submittedBio,
       }
     );
 
@@ -95,10 +145,14 @@ export default function VendorLogin() {
       console.error(
         "Vendor provisioning error:",
         {
-          message: provisionError.message,
-          details: provisionError.details,
-          hint: provisionError.hint,
-          code: provisionError.code,
+          message:
+            provisionError.message,
+          details:
+            provisionError.details,
+          hint:
+            provisionError.hint,
+          code:
+            provisionError.code,
         }
       );
 
@@ -132,6 +186,7 @@ export default function VendorLogin() {
       setErrorMessage(
         "Please enter your email."
       );
+
       return;
     }
 
@@ -139,6 +194,7 @@ export default function VendorLogin() {
       setErrorMessage(
         "Please enter your password."
       );
+
       return;
     }
 
@@ -153,17 +209,25 @@ export default function VendorLogin() {
         data,
         error: loginError,
       } =
-        await supabase.auth.signInWithPassword({
-          email: email.trim(),
-          password,
-        });
+        await supabase.auth
+          .signInWithPassword({
+            email:
+              email.trim(),
+            password,
+          });
 
       if (loginError) {
-        console.error("Login error:", {
-          message: loginError.message,
-          status: loginError.status,
-          name: loginError.name,
-        });
+        console.error(
+          "Login error:",
+          {
+            message:
+              loginError.message,
+            status:
+              loginError.status,
+            name:
+              loginError.name,
+          }
+        );
 
         setErrorMessage(
           loginError.message
@@ -172,38 +236,82 @@ export default function VendorLogin() {
         return;
       }
 
-      const user = data.user;
+      const user =
+        data.user;
 
       if (!user) {
         setErrorMessage(
           "Login succeeded, but no user account was returned."
         );
+
         return;
       }
 
-      setPendingUserId(user.id);
+      setPendingUserId(
+        user.id
+      );
 
       // --------------------------------------------------
-      // 2) CHECK FOR AN EXISTING VENDOR MEMBERSHIP FIRST
+      // 2) INVITATION RETURN FLOW
       //
-      // This is important.
+      // IMPORTANT:
       //
-      // Existing vendors should NOT depend on Auth metadata
-      // every time they log in.
+      // If this login came from a MintRadar vendor
+      // invitation, DO NOT provision an independent
+      // vendor account.
+      //
+      // Return directly to the invitation so the user can
+      // accept the existing vendor membership first.
+      // --------------------------------------------------
+
+      const returnTo =
+        getSafeReturnTo();
+
+      const isVendorInviteReturn =
+        returnTo.startsWith(
+          "/vendor/invite/"
+        );
+
+      if (
+        isVendorInviteReturn
+      ) {
+        router.replace(
+          returnTo
+        );
+
+        router.refresh();
+
+        return;
+      }
+
+      // --------------------------------------------------
+      // 3) CHECK FOR AN EXISTING VENDOR MEMBERSHIP FIRST
+      //
+      // Existing vendors should NOT depend on Auth
+      // metadata every time they log in.
       // --------------------------------------------------
 
       const {
-        data: existingMemberships,
-        error: membershipLookupError,
+        data:
+          existingMemberships,
+        error:
+          membershipLookupError,
       } = await supabase
-        .from("vendor_members")
+        .from(
+          "vendor_members"
+        )
         .select(
           "vendor_id, user_id, role"
         )
-        .eq("user_id", user.id)
+        .eq(
+          "user_id",
+          user.id
+        )
         .limit(1);
 
-      if (membershipLookupError) {
+      if (
+        membershipLookupError
+      ) {
         console.error(
           "Vendor membership lookup error:",
           {
@@ -226,12 +334,17 @@ export default function VendorLogin() {
       }
 
       const existingMembership =
-        existingMemberships?.[0] || null;
+        existingMemberships?.[0] ||
+        null;
 
-      if (existingMembership) {
+      if (
+        existingMembership
+      ) {
         const {
-          data: existingVendor,
-          error: vendorLookupError,
+          data:
+            existingVendor,
+          error:
+            vendorLookupError,
         } = await supabase
           .from("vendors")
           .select(
@@ -243,7 +356,9 @@ export default function VendorLogin() {
           )
           .maybeSingle();
 
-        if (vendorLookupError) {
+        if (
+          vendorLookupError
+        ) {
           console.error(
             "Vendor lookup error:",
             {
@@ -265,7 +380,9 @@ export default function VendorLogin() {
           return;
         }
 
-        if (!existingVendor) {
+        if (
+          !existingVendor
+        ) {
           setErrorMessage(
             "MintRadar found your vendor membership, but the vendor profile is missing."
           );
@@ -299,7 +416,8 @@ export default function VendorLogin() {
           userOwnsVendor
         ) {
           const metadata =
-            user.user_metadata || {};
+            user.user_metadata ||
+            {};
 
           const metadataBusinessName =
             typeof metadata.business_name ===
@@ -342,26 +460,33 @@ export default function VendorLogin() {
               ""
           );
 
-          setSetupMode("repair");
+          setSetupMode(
+            "repair"
+          );
 
           return;
         }
 
         // Existing valid vendor.
-        router.push("/vendor");
+
+        router.push(
+          "/vendor"
+        );
+
         router.refresh();
 
         return;
       }
 
       // --------------------------------------------------
-      // 3) NO EXISTING VENDOR
+      // 4) NO EXISTING VENDOR
       //
-      // Try the vendor signup metadata.
+      // Try vendor signup metadata.
       // --------------------------------------------------
 
       const metadata =
-        user.user_metadata || {};
+        user.user_metadata ||
+        {};
 
       const metadataBusinessName =
         typeof metadata.business_name ===
@@ -385,13 +510,17 @@ export default function VendorLogin() {
           : null;
 
       // --------------------------------------------------
-      // 4) NORMAL VENDOR SIGNUP FLOW
+      // 5) NORMAL INDEPENDENT VENDOR SIGNUP FLOW
       //
-      // Business name exists in metadata, so provision
-      // automatically.
+      // There was NO invitation return path.
+      //
+      // Business name exists in Auth metadata, so this is
+      // a normal independent vendor onboarding flow.
       // --------------------------------------------------
 
-      if (metadataBusinessName) {
+      if (
+        metadataBusinessName
+      ) {
         await provisionVendor(
           user.id,
           metadataBusinessName,
@@ -399,34 +528,55 @@ export default function VendorLogin() {
           metadataBio
         );
 
-        router.push("/vendor");
+        router.push(
+          "/vendor"
+        );
+
         router.refresh();
 
         return;
       }
 
       // --------------------------------------------------
-      // 5) NO VENDOR + NO BUSINESS NAME
+      // 6) NO VENDOR + NO BUSINESS NAME
       //
       // Do NOT silently create:
       // "New MintRadar Vendor"
       //
-      // Instead, ask the authenticated user to complete
-      // their vendor setup.
+      // Ask the authenticated user to complete setup.
       // --------------------------------------------------
 
-      setBusinessName("");
-      setInstagram("");
-      setBio("");
-      setPendingVendorId(null);
-      setSetupMode("create");
-    } catch (error: any) {
+      setBusinessName(
+        ""
+      );
+
+      setInstagram(
+        ""
+      );
+
+      setBio(
+        ""
+      );
+
+      setPendingVendorId(
+        null
+      );
+
+      setSetupMode(
+        "create"
+      );
+    } catch (
+      error: any
+    ) {
       console.error(
         "Unexpected vendor login error:",
         {
-          message: error?.message,
-          name: error?.name,
-          stack: error?.stack,
+          message:
+            error?.message,
+          name:
+            error?.name,
+          stack:
+            error?.stack,
         }
       );
 
@@ -435,7 +585,9 @@ export default function VendorLogin() {
           "Unable to log in. Please try again."
       );
     } finally {
-      setLoading(false);
+      setLoading(
+        false
+      );
     }
   }
 
@@ -446,17 +598,23 @@ export default function VendorLogin() {
 
     setErrorMessage("");
 
-    if (!pendingUserId) {
+    if (
+      !pendingUserId
+    ) {
       setErrorMessage(
         "Your login session could not be verified. Please log in again."
       );
+
       return;
     }
 
-    if (!businessName.trim()) {
+    if (
+      !businessName.trim()
+    ) {
       setErrorMessage(
         "Please enter your business name."
       );
+
       return;
     }
 
@@ -467,16 +625,21 @@ export default function VendorLogin() {
         businessName.trim();
 
       const cleanInstagram =
-        instagram.trim() || null;
+        instagram.trim() ||
+        null;
 
       const cleanBio =
-        bio.trim() || null;
+        bio.trim() ||
+        null;
 
       // --------------------------------------------------
       // CREATE NEW VENDOR
       // --------------------------------------------------
 
-      if (setupMode === "create") {
+      if (
+        setupMode ===
+        "create"
+      ) {
         await provisionVendor(
           pendingUserId,
           cleanBusinessName,
@@ -486,27 +649,36 @@ export default function VendorLogin() {
 
         // Also repair Auth metadata so future flows have
         // the vendor information available.
-        const {
-          error: metadataUpdateError,
-        } =
-          await supabase.auth.updateUser({
-            data: {
-              business_name:
-                cleanBusinessName,
-              instagram:
-                cleanInstagram,
-              bio: cleanBio,
-            },
-          });
 
-        if (metadataUpdateError) {
+        const {
+          error:
+            metadataUpdateError,
+        } =
+          await supabase.auth
+            .updateUser({
+              data: {
+                business_name:
+                  cleanBusinessName,
+                instagram:
+                  cleanInstagram,
+                bio:
+                  cleanBio,
+              },
+            });
+
+        if (
+          metadataUpdateError
+        ) {
           console.warn(
             "Vendor created, but Auth metadata could not be updated:",
             metadataUpdateError.message
           );
         }
 
-        router.push("/vendor");
+        router.push(
+          "/vendor"
+        );
+
         router.refresh();
 
         return;
@@ -517,12 +689,15 @@ export default function VendorLogin() {
       // --------------------------------------------------
 
       if (
-        setupMode === "repair" &&
+        setupMode ===
+          "repair" &&
         pendingVendorId
       ) {
         const {
-          data: updatedVendor,
-          error: vendorUpdateError,
+          data:
+            updatedVendor,
+          error:
+            vendorUpdateError,
         } = await supabase
           .from("vendors")
           .update({
@@ -530,7 +705,8 @@ export default function VendorLogin() {
               cleanBusinessName,
             instagram:
               cleanInstagram,
-            bio: cleanBio,
+            bio:
+              cleanBio,
           })
           .eq(
             "id",
@@ -540,10 +716,14 @@ export default function VendorLogin() {
             "user_id",
             pendingUserId
           )
-          .select("id")
+          .select(
+            "id"
+          )
           .maybeSingle();
 
-        if (vendorUpdateError) {
+        if (
+          vendorUpdateError
+        ) {
           console.error(
             "Vendor repair error:",
             {
@@ -565,7 +745,9 @@ export default function VendorLogin() {
           return;
         }
 
-        if (!updatedVendor) {
+        if (
+          !updatedVendor
+        ) {
           setErrorMessage(
             "MintRadar could not verify ownership of this vendor profile."
           );
@@ -574,26 +756,34 @@ export default function VendorLogin() {
         }
 
         const {
-          error: metadataUpdateError,
+          error:
+            metadataUpdateError,
         } =
-          await supabase.auth.updateUser({
-            data: {
-              business_name:
-                cleanBusinessName,
-              instagram:
-                cleanInstagram,
-              bio: cleanBio,
-            },
-          });
+          await supabase.auth
+            .updateUser({
+              data: {
+                business_name:
+                  cleanBusinessName,
+                instagram:
+                  cleanInstagram,
+                bio:
+                  cleanBio,
+              },
+            });
 
-        if (metadataUpdateError) {
+        if (
+          metadataUpdateError
+        ) {
           console.warn(
             "Vendor repaired, but Auth metadata could not be updated:",
             metadataUpdateError.message
           );
         }
 
-        router.push("/vendor");
+        router.push(
+          "/vendor"
+        );
+
         router.refresh();
 
         return;
@@ -602,13 +792,18 @@ export default function VendorLogin() {
       setErrorMessage(
         "MintRadar could not determine how to finish your vendor setup."
       );
-    } catch (error: any) {
+    } catch (
+      error: any
+    ) {
       console.error(
         "Unexpected vendor setup error:",
         {
-          message: error?.message,
-          name: error?.name,
-          stack: error?.stack,
+          message:
+            error?.message,
+          name:
+            error?.name,
+          stack:
+            error?.stack,
         }
       );
 
@@ -617,7 +812,9 @@ export default function VendorLogin() {
           "Unable to finish your vendor setup."
       );
     } finally {
-      setLoading(false);
+      setLoading(
+        false
+      );
     }
   }
 
@@ -635,20 +832,24 @@ export default function VendorLogin() {
             </p>
 
             <h1 className="text-4xl sm:text-5xl font-black tracking-tight">
-              {setupMode === "repair"
+              {setupMode ===
+              "repair"
                 ? "Finish Your Vendor Profile"
                 : "Complete Vendor Setup"}
             </h1>
 
             <p className="text-zinc-500 mt-3">
-              {setupMode === "repair"
+              {setupMode ===
+              "repair"
                 ? "We found your vendor account, but it still needs your real business information."
                 : "You're logged in. We just need your vendor information before opening the dashboard."}
             </p>
           </div>
 
           <form
-            onSubmit={handleVendorSetup}
+            onSubmit={
+              handleVendorSetup
+            }
             className="bg-zinc-950 border border-zinc-900 rounded-3xl p-6 sm:p-8"
           >
             <div className="space-y-5">
@@ -659,10 +860,15 @@ export default function VendorLogin() {
 
                 <input
                   type="text"
-                  value={businessName}
-                  onChange={(event) =>
+                  value={
+                    businessName
+                  }
+                  onChange={(
+                    event
+                  ) =>
                     setBusinessName(
-                      event.target.value
+                      event.target
+                        .value
                     )
                   }
                   placeholder="OnlySlabs"
@@ -681,10 +887,15 @@ export default function VendorLogin() {
 
                 <input
                   type="text"
-                  value={instagram}
-                  onChange={(event) =>
+                  value={
+                    instagram
+                  }
+                  onChange={(
+                    event
+                  ) =>
                     setInstagram(
-                      event.target.value
+                      event.target
+                        .value
                     )
                   }
                   placeholder="@yourbusiness"
@@ -703,9 +914,12 @@ export default function VendorLogin() {
 
                 <textarea
                   value={bio}
-                  onChange={(event) =>
+                  onChange={(
+                    event
+                  ) =>
                     setBio(
-                      event.target.value
+                      event.target
+                        .value
                     )
                   }
                   placeholder="Tell customers a little about your business."
@@ -716,13 +930,17 @@ export default function VendorLogin() {
 
               {errorMessage && (
                 <div className="bg-red-500/10 border border-red-500/30 text-red-300 rounded-xl p-4 text-sm">
-                  {errorMessage}
+                  {
+                    errorMessage
+                  }
                 </div>
               )}
 
               <button
                 type="submit"
-                disabled={loading}
+                disabled={
+                  loading
+                }
                 className="w-full bg-emerald-400 hover:bg-emerald-300 disabled:bg-zinc-700 disabled:text-zinc-400 text-black font-black rounded-xl px-5 py-4 transition"
               >
                 {loading
@@ -740,7 +958,8 @@ export default function VendorLogin() {
               href="/"
               className="text-zinc-600 text-sm hover:text-zinc-400 transition"
             >
-              ← Back to MintRadar
+              ← Back to
+              MintRadar
             </Link>
           </div>
         </div>
@@ -765,13 +984,16 @@ export default function VendorLogin() {
           </h1>
 
           <p className="text-zinc-500 mt-3">
-            Manage your inventory,
-            profile, and listings.
+            Manage your
+            inventory, profile,
+            and listings.
           </p>
         </div>
 
         <form
-          onSubmit={handleLogin}
+          onSubmit={
+            handleLogin
+          }
           className="bg-zinc-950 border border-zinc-900 rounded-3xl p-6 sm:p-8"
         >
           <div className="space-y-5">
@@ -783,9 +1005,12 @@ export default function VendorLogin() {
               <input
                 type="email"
                 value={email}
-                onChange={(event) =>
+                onChange={(
+                  event
+                ) =>
                   setEmail(
-                    event.target.value
+                    event.target
+                      .value
                   )
                 }
                 placeholder="vendor@example.com"
@@ -800,10 +1025,15 @@ export default function VendorLogin() {
 
               <input
                 type="password"
-                value={password}
-                onChange={(event) =>
+                value={
+                  password
+                }
+                onChange={(
+                  event
+                ) =>
                   setPassword(
-                    event.target.value
+                    event.target
+                      .value
                   )
                 }
                 placeholder="Enter your password"
@@ -813,13 +1043,17 @@ export default function VendorLogin() {
 
             {errorMessage && (
               <div className="bg-red-500/10 border border-red-500/30 text-red-300 rounded-xl p-4 text-sm">
-                {errorMessage}
+                {
+                  errorMessage
+                }
               </div>
             )}
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={
+                loading
+              }
               className="w-full bg-emerald-400 hover:bg-emerald-300 disabled:bg-zinc-700 disabled:text-zinc-400 text-black font-black rounded-xl px-5 py-4 transition"
             >
               {loading
@@ -831,14 +1065,16 @@ export default function VendorLogin() {
 
         <div className="text-center mt-6">
           <p className="text-zinc-500 text-sm">
-            Need a vendor account?
+            Need a vendor
+            account?
           </p>
 
           <Link
             href="/vendor/signup"
             className="inline-block text-emerald-400 font-bold mt-1 hover:text-emerald-300 transition"
           >
-            Create Vendor Account
+            Create Vendor
+            Account
           </Link>
         </div>
 
@@ -847,7 +1083,8 @@ export default function VendorLogin() {
             href="/"
             className="text-zinc-600 text-sm hover:text-zinc-400 transition"
           >
-            ← Back to MintRadar
+            ← Back to
+            MintRadar
           </Link>
         </div>
       </div>
