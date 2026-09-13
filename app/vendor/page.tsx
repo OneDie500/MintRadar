@@ -1895,7 +1895,6 @@ export default function VendorDashboardPage() {
             }
 
             .label {
-              position: relative;
               width: ${pageWidth};
               height: ${pageHeight};
               background: #fff;
@@ -1903,9 +1902,8 @@ export default function VendorDashboardPage() {
             }
 
             .content {
-              position: absolute;
-              top: 0;
-              left: 0;
+              width: 100%;
+              height: 100%;
               display: flex;
               align-items: center;
               justify-content: center;
@@ -1913,25 +1911,19 @@ export default function VendorDashboardPage() {
               ${
                 isVertical
                   ? `
-                    width: 15mm;
-                    height: 15mm;
                     flex-direction: column;
-                    padding: 0.45mm 0.45mm 0.65mm;
+                    padding: 0.75mm 0.65mm;
                   `
                   : `
-                    width: 15mm;
-                    height: 15mm;
-                    flex-direction: column;
-                    align-items: stretch;
-                    justify-content: flex-start;
-                    padding: 0.4mm 0.45mm 0.65mm;
+                    flex-direction: row;
+                    padding: 0.65mm 0.8mm;
+                    gap: 0.7mm;
                   `
               }
             }
 
-            .text {
+            .label-meta {
               min-width: 0;
-              overflow: hidden;
               ${
                 isVertical
                   ? `
@@ -1940,8 +1932,7 @@ export default function VendorDashboardPage() {
                     flex: 0 0 auto;
                   `
                   : `
-                    width: 100%;
-                    height: auto;
+                    flex: 1 1 auto;
                     text-align: left;
                   `
               }
@@ -1949,7 +1940,7 @@ export default function VendorDashboardPage() {
 
             .vendor {
               width: 100%;
-              font-size: 4.1pt;
+              font-size: ${isVertical ? "5pt" : "5.4pt"};
               line-height: 1;
               font-weight: 900;
               text-transform: uppercase;
@@ -1958,19 +1949,12 @@ export default function VendorDashboardPage() {
               text-overflow: ellipsis;
             }
 
-            .label-meta {
-              width: 100%;
-              min-width: 0;
-              text-align: center;
-              flex: 0 0 auto;
-            }
-
             .condition {
               width: 100%;
-              font-size: 3.7pt;
+              font-size: ${isVertical ? "4.2pt" : "4.6pt"};
               line-height: 1;
               font-weight: 800;
-              margin-top: 0.2mm;
+              margin-top: 0.45mm;
               white-space: nowrap;
               overflow: hidden;
               text-overflow: ellipsis;
@@ -1978,14 +1962,17 @@ export default function VendorDashboardPage() {
 
             .scan-price {
               width: 100%;
-              font-size: 3.4pt;
+              font-size: ${isVertical ? "4pt" : "4.6pt"};
               line-height: 1;
               font-weight: 900;
-              margin-top: 0.15mm;
-              flex: 0 0 auto;
+              margin-top: 0.5mm;
               letter-spacing: 0.01em;
               white-space: nowrap;
-              text-align: center;
+              ${
+                isVertical
+                  ? "text-align:center;"
+                  : "text-align:left;"
+              }
             }
 
             .qr-wrap {
@@ -1993,15 +1980,25 @@ export default function VendorDashboardPage() {
               display: flex;
               align-items: center;
               justify-content: center;
-              width: 9.6mm;
-              height: 9.6mm;
-              margin: 0.2mm auto 0.15mm;
+              ${
+                isVertical
+                  ? `
+                    width: 12.2mm;
+                    height: 12.2mm;
+                    margin: 0.65mm auto 0.45mm;
+                  `
+                  : `
+                    width: 13.2mm;
+                    height: 13.2mm;
+                    margin: 0;
+                  `
+              }
             }
 
             .qr {
               display: block;
-              width: 9.6mm;
-              height: 9.6mm;
+              width: 100%;
+              height: 100%;
               object-fit: contain;
               image-rendering: pixelated;
             }
@@ -2025,24 +2022,48 @@ export default function VendorDashboardPage() {
         <body>
           <div class="label">
             <div class="content">
-              <div class="label-meta">
-                <div class="vendor">${escapeHtml(vendorName)}</div>
-                <div class="condition">${escapeHtml(condition)}</div>
-              </div>
+              ${
+                isVertical
+                  ? `
+                    <div class="label-meta">
+                      <div class="vendor">${escapeHtml(vendorName)}</div>
+                      <div class="condition">${escapeHtml(condition)}</div>
+                    </div>
 
-              <div class="qr-wrap">
-                <img
-                  class="qr"
-                  src="${qrDataUrl}"
-                  alt="MintRadar listing QR code"
-                />
-              </div>
+                    <div class="qr-wrap">
+                      <img
+                        class="qr"
+                        src="${qrDataUrl}"
+                        alt="MintRadar listing QR code"
+                      />
+                    </div>
 
-              <div class="scan-price">${
-                showPriceOnLabel
-                  ? `$${escapeHtml(price)}`
-                  : "SCAN FOR PRICE"
-              }</div>
+                    <div class="scan-price">${
+                      showPriceOnLabel
+                        ? `$${escapeHtml(price)}`
+                        : "SCAN FOR PRICE"
+                    }</div>
+                  `
+                  : `
+                    <div class="qr-wrap">
+                      <img
+                        class="qr"
+                        src="${qrDataUrl}"
+                        alt="MintRadar listing QR code"
+                      />
+                    </div>
+
+                    <div class="label-meta">
+                      <div class="vendor">${escapeHtml(vendorName)}</div>
+                      <div class="condition">${escapeHtml(condition)}</div>
+                      <div class="scan-price">${
+                        showPriceOnLabel
+                          ? `$${escapeHtml(price)}`
+                          : "SCAN FOR PRICE"
+                      }</div>
+                    </div>
+                  `
+              }
             </div>
           </div>
 
@@ -3408,62 +3429,94 @@ export default function VendorDashboardPage() {
                       }`}
                     >
                       <div
-                        className={`absolute left-0 top-0 flex overflow-hidden text-black ${
+                        className={`absolute inset-0 flex overflow-hidden text-black ${
                           labelOrientation ===
                           "vertical"
-                            ? "h-1/2 w-full flex-col items-center px-2 pt-2 pb-2 text-center"
-                            : "h-full w-1/2 flex-col items-center px-2 py-2 text-center"
+                            ? "flex-col items-center px-3 py-3 text-center"
+                            : "flex-row items-center gap-3 px-3 py-2 text-left"
                         }`}
                       >
-                        <div className="w-full min-w-0 shrink-0">
-                          <p className="truncate text-[10px] font-black uppercase leading-none">
+                        {labelOrientation ===
+                        "horizontal" && (
+                          <div className="flex h-[126px] w-[126px] shrink-0 items-center justify-center">
+                            <img
+                              src={qrDataUrl}
+                              alt="Listing QR code"
+                              className="h-full w-full object-contain"
+                            />
+                          </div>
+                        )}
+
+                        <div
+                          className={`min-w-0 ${
+                            labelOrientation ===
+                            "vertical"
+                              ? "w-full shrink-0"
+                              : "flex-1"
+                          }`}
+                        >
+                          <p
+                            className={`truncate font-black uppercase leading-none ${
+                              labelOrientation ===
+                              "vertical"
+                                ? "text-[12px]"
+                                : "text-[13px]"
+                            }`}
+                          >
                             {vendorName}
                           </p>
 
-                          <p className="mt-1 truncate text-[9px] font-bold leading-none">
+                          <p
+                            className={`truncate font-bold leading-none ${
+                              labelOrientation ===
+                              "vertical"
+                                ? "mt-1 text-[10px]"
+                                : "mt-2 text-[11px]"
+                            }`}
+                          >
                             {isGraded(qrItem)
                               ? `${qrItem.grading_company || "Graded"} ${qrItem.grade || ""}`.trim()
                               : qrItem.condition ||
                                 "Raw"}
                           </p>
+
+                          {labelOrientation ===
+                            "horizontal" && (
+                              <p className="mt-3 whitespace-nowrap text-[12px] font-black uppercase leading-none">
+                                {showPriceOnLabel
+                                  ? `$${Number(
+                                      qrItem.price ?? 0
+                                    ).toFixed(2)}`
+                                  : "Scan for Price"}
+                              </p>
+                            )}
                         </div>
 
-                        <div
-                          className={`mt-1 flex aspect-square w-[68%] max-w-[108px] items-center justify-center ${
-                            labelOrientation ===
-                            "vertical"
-                              ? "flex-1"
-                              : "flex-1"
-                          }`}
-                        >
-                          <img
-                            src={qrDataUrl}
-                            alt="Listing QR code"
-                            className="h-full max-h-[108px] w-full max-w-[108px] object-contain"
-                          />
-                        </div>
+                        {labelOrientation ===
+                        "vertical" ? (
+                          <>
+                            <div className="mt-2 flex aspect-square w-[82%] max-w-[126px] flex-1 items-center justify-center">
+                              <img
+                                src={qrDataUrl}
+                                alt="Listing QR code"
+                                className="h-full max-h-[126px] w-full max-w-[126px] object-contain"
+                              />
+                            </div>
 
-                        <p className="mt-1 shrink-0 whitespace-nowrap text-[9px] font-black uppercase leading-none">
-                          {showPriceOnLabel
-                            ? `$${Number(
-                                qrItem.price ?? 0
-                              ).toFixed(2)}`
-                            : "Scan for Price"}
-                        </p>
+                            <p className="mt-2 shrink-0 whitespace-nowrap text-[11px] font-black uppercase leading-none">
+                              {showPriceOnLabel
+                                ? `$${Number(
+                                    qrItem.price ?? 0
+                                  ).toFixed(2)}`
+                                : "Scan for Price"}
+                            </p>
+                          </>
+                        ) : null}
                       </div>
-
-                      <div
-                        className={`pointer-events-none absolute border-zinc-200 ${
-                          labelOrientation ===
-                          "vertical"
-                            ? "left-0 top-1/2 w-full border-t border-dashed"
-                            : "left-1/2 top-0 h-full border-l border-dashed"
-                        }`}
-                      />
                     </div>
 
                     <p className="mt-4 text-center text-xs text-zinc-600">
-                      MintRadar wrap-label preview • P31S direct print scales this design to 14 × 40 mm with the front half printed and the back half left blank for wrapping
+                      Full-label preview • MintRadar now uses the entire label surface for a larger, easier-to-scan QR code.
                     </p>
                   </div>
 
@@ -3475,11 +3528,11 @@ export default function VendorDashboardPage() {
                         </p>
 
                         <p className="mt-1 text-sm font-black text-white">
-                          Polono P31S • 14 × 40 mm
+                          Polono P31S • Full-label Bluetooth print
                         </p>
 
                         <p className="mt-1 text-xs leading-5 text-zinc-600">
-                          Prints the same MintRadar QR label shown above, adapted to your P31S media.
+                          Uses the full printable label area with an enlarged MintRadar QR code.
                         </p>
                       </div>
 
