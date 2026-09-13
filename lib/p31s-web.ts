@@ -285,18 +285,17 @@ export class P31SWebPrinter {
     );
   }
 
-  private clearConnection() {
+  private clearCharacteristic() {
     this.writeCharacteristic =
       null;
   }
 
-  private async connectGatt() {
+  private async connectSelectedDevice() {
     if (
-      !this.device
-        ?.gatt
+      !this.device?.gatt
     ) {
       throw new Error(
-        "The selected Bluetooth device does not expose a GATT connection."
+        "The selected Bluetooth device does not support a GATT connection."
       );
     }
 
@@ -312,54 +311,67 @@ export class P31SWebPrinter {
       .gatt.connect();
   }
 
-  private async findWriteCharacteristic(
+  private async discoverPrinterService(
     server: any
   ) {
+    const service =
+      await server
+        .getPrimaryService(
+          P31S_SERVICE_UUID
+        );
+
+    const characteristic =
+      await service
+        .getCharacteristic(
+          P31S_WRITE_UUID
+        );
+
+    return characteristic;
+  }
+
+  private async establishPrinterConnection() {
     let lastError:
       any = null;
 
     // --------------------------------------------------
-    // P31S WAKE / SERVICE DISCOVERY RETRIES
+    // FULL CONNECTION CYCLES
     //
-    // Some P31S units complete the Bluetooth connection
-    // before their ff00 service is immediately ready.
-    // Give the printer time to wake up and retry service
-    // discovery automatically instead of making the user
-    // reconnect manually.
+    // First Bluetooth pairing can succeed before the
+    // printer's proprietary ff00 service is actually
+    // ready. Instead of making the user pick the P31S
+    // again, MintRadar automatically performs the
+    // second connection cycle using the SAME device.
     // --------------------------------------------------
 
-    const delays = [
-      500,
-      750,
-      1000,
-    ];
-
     for (
-      let attempt = 0;
-      attempt <
-      delays.length;
-      attempt += 1
+      let cycle = 0;
+      cycle < 3;
+      cycle += 1
     ) {
       try {
+        this.clearCharacteristic();
+
+        let server =
+          await this
+            .connectSelectedDevice();
+
+        // Cold-start delay.
         await sleep(
-          delays[
-            attempt
-          ]
+          cycle === 0
+            ? 900
+            : 1200
         );
 
-        const service =
-          await server
-            .getPrimaryService(
-              P31S_SERVICE_UUID
+        this.writeCharacteristic =
+          await this
+            .discoverPrinterService(
+              server
             );
 
-        const characteristic =
-          await service
-            .getCharacteristic(
-              P31S_WRITE_UUID
-            );
+        // Let the write channel settle before printing.
+        await sleep(350);
 
-        return characteristic;
+        return;
       } catch (
         error
       ) {
@@ -367,42 +379,42 @@ export class P31SWebPrinter {
           error;
 
         console.warn(
-          `P31S service discovery attempt ${
-            attempt + 1
+          `P31S connection cycle ${
+            cycle + 1
           } failed.`,
           error
         );
 
-        // If Chrome dropped the GATT connection
-        // during discovery, reconnect it before
-        // trying again.
+        this.clearCharacteristic();
+
+        // Force a complete GATT reset before the
+        // automatic retry.
         if (
-          !this.device
-            ?.gatt
+          this.device?.gatt
             ?.connected
         ) {
           try {
-            server =
-              await this.device
-                .gatt
-                .connect();
-          } catch (
-            reconnectError
-          ) {
-            lastError =
-              reconnectError;
+            this.device
+              .gatt
+              .disconnect();
+          } catch {
+            // Ignore disconnect errors.
           }
         }
+
+        // Printer / Chrome BLE stack needs a moment
+        // after disconnect before reconnecting.
+        await sleep(900);
       }
     }
 
     console.error(
-      "P31S service discovery failed after retries:",
+      "P31S connection failed after automatic retries:",
       lastError
     );
 
     throw new Error(
-      "MintRadar connected to the Bluetooth device, but the P31S print service was not ready. Make sure the printer is powered on and try again."
+      "MintRadar found the Bluetooth device but could not open the P31S print service. Make sure the printer is powered on and nearby, then try again."
     );
   }
 
@@ -416,10 +428,7 @@ export class P31SWebPrinter {
       );
     }
 
-    // --------------------------------------------------
-    // ALREADY CONNECTED
-    // --------------------------------------------------
-
+    // Already completely connected.
     if (
       this.connected
     ) {
@@ -430,13 +439,38 @@ export class P31SWebPrinter {
       );
     }
 
-    this.clearConnection();
+    // --------------------------------------------------
+    // REUSE PREVIOUSLY SELECTED DEVICE
+    //
+    // If the first connection attempt woke the P31S
+    // but service discovery failed, DO NOT show the
+    // Bluetooth picker again. Reuse the same device.
+    // --------------------------------------------------
+
+    if (
+      this.device
+    ) {
+      try {
+        await this
+          .establishPrinterConnection();
+
+        return (
+          this.device
+            ?.name ||
+          "P31S"
+        );
+      } catch {
+        // If reusing the cached device genuinely fails,
+        // fall through and allow a fresh device choice.
+        this.device =
+          null;
+
+        this.clearCharacteristic();
+      }
+    }
 
     // --------------------------------------------------
-    // DISCOVERY MODE
-    //
-    // We don't depend on the advertised name because
-    // some P31S units advertise under another BLE name.
+    // FIRST DEVICE SELECTION
     // --------------------------------------------------
 
     this.device =
@@ -459,8 +493,6 @@ export class P31SWebPrinter {
       );
     }
 
-    // Clear the cached write characteristic if the
-    // printer disconnects.
     if (
       typeof this.device
         .addEventListener ===
@@ -470,29 +502,14 @@ export class P31SWebPrinter {
         .addEventListener(
           "gattserverdisconnected",
           () => {
-            this.clearConnection();
+            this.clearCharacteristic();
           }
         );
     }
 
     try {
-      let server =
-        await this
-          .connectGatt();
-
-      // Give BLE a short moment to settle before we
-      // ask for the proprietary P31S service.
-      await sleep(350);
-
-      this.writeCharacteristic =
-        await this
-          .findWriteCharacteristic(
-            server
-          );
-
-      // One final short pause before the first command.
-      // This is especially useful on a cold printer.
-      await sleep(250);
+      await this
+        .establishPrinterConnection();
 
       return (
         this.device
@@ -502,7 +519,7 @@ export class P31SWebPrinter {
     } catch (
       error: any
     ) {
-      this.clearConnection();
+      this.clearCharacteristic();
 
       console.error(
         "P31S connection error:",
@@ -521,12 +538,19 @@ export class P31SWebPrinter {
       this.device?.gatt
         ?.connected
     ) {
-      this.device
-        .gatt
-        .disconnect();
+      try {
+        this.device
+          .gatt
+          .disconnect();
+      } catch {
+        // Ignore disconnect errors.
+      }
     }
 
-    this.clearConnection();
+    this.clearCharacteristic();
+
+    // Explicit disconnect means forget the device too.
+    this.device = null;
   }
 
   private async send(
@@ -587,7 +611,6 @@ export class P31SWebPrinter {
       );
     }
 
-    // Small wake command.
     await this.send(
       new Uint8Array([
         0x1b,
