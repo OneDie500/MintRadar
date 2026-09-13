@@ -1494,7 +1494,7 @@ export default function VendorDashboardPage() {
     // leaving 10 px of bottom clearance on the 112 px bitmap.
     const qrSize = 100;
     const qrX = 4;
-    const qrY = 2;
+    const qrY = 8;
 
     ctx.drawImage(
       qr,
@@ -1577,7 +1577,7 @@ export default function VendorDashboardPage() {
         ctx.drawImage(
           logo,
           textX,
-          7,
+          13,
           logoWidth,
           logoHeight
         );
@@ -1608,7 +1608,7 @@ export default function VendorDashboardPage() {
         ctx.fillText(
           vendorText,
           textX,
-          8
+          14
         );
       }
     } else {
@@ -1631,7 +1631,7 @@ export default function VendorDashboardPage() {
       ctx.fillText(
         vendorText,
         textX,
-        8
+        14
       );
     }
 
@@ -1655,7 +1655,7 @@ export default function VendorDashboardPage() {
     ctx.fillText(
       condition,
       textX,
-      35
+      41
     );
 
     // --------------------------------------------------
@@ -1685,7 +1685,7 @@ export default function VendorDashboardPage() {
     ctx.fillText(
       bottomText,
       textX,
-      62
+      68
     );
 
     return canvas;
