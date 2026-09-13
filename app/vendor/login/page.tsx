@@ -971,6 +971,16 @@ export default function VendorLogin() {
   // NORMAL LOGIN SCREEN
   // ----------------------------------------------------
 
+  const signupReturnTo =
+    getSafeReturnTo();
+
+  const signupHref =
+    signupReturnTo
+      ? `/vendor/signup?returnTo=${encodeURIComponent(
+          signupReturnTo
+        )}`
+      : "/vendor/signup";
+
   return (
     <main className="min-h-screen bg-black text-white flex items-center justify-center px-5 py-12">
       <div className="w-full max-w-md">
@@ -1070,7 +1080,7 @@ export default function VendorLogin() {
           </p>
 
           <Link
-            href="/vendor/signup"
+            href={signupHref}
             className="inline-block text-emerald-400 font-bold mt-1 hover:text-emerald-300 transition"
           >
             Create Vendor
