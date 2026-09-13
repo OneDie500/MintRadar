@@ -1522,30 +1522,118 @@ export default function VendorDashboardPage() {
     ctx.textAlign = "left";
 
     // --------------------------------------------------
-    // VENDOR NAME
+    // VENDOR BRANDING
     // --------------------------------------------------
 
-    const vendorText =
-      vendorName.toUpperCase();
+    const normalizedVendorName =
+      vendorName
+        .trim()
+        .toLowerCase();
 
-    const vendorSize =
-      fitCanvasText(
-        ctx,
+    if (
+      normalizedVendorName ===
+      "onlyslabs"
+    ) {
+      try {
+        const logo =
+          await loadLabelImage(
+            "/onlyslabs-label-logo.png"
+          );
+
+        const maxLogoWidth =
+          Math.min(
+            textWidth,
+            176
+          );
+
+        const maxLogoHeight = 22;
+
+        const logoScale =
+          Math.min(
+            maxLogoWidth /
+              logo.naturalWidth,
+            maxLogoHeight /
+              logo.naturalHeight
+          );
+
+        const logoWidth =
+          Math.max(
+            1,
+            Math.round(
+              logo.naturalWidth *
+                logoScale
+            )
+          );
+
+        const logoHeight =
+          Math.max(
+            1,
+            Math.round(
+              logo.naturalHeight *
+                logoScale
+            )
+          );
+
+        ctx.drawImage(
+          logo,
+          textX,
+          7,
+          logoWidth,
+          logoHeight
+        );
+      } catch (
+        logoError
+      ) {
+        console.warn(
+          "OnlySlabs label logo could not be loaded. Falling back to text.",
+          logoError
+        );
+
+        const vendorText =
+          vendorName.toUpperCase();
+
+        const vendorSize =
+          fitCanvasText(
+            ctx,
+            vendorText,
+            textWidth,
+            18,
+            10,
+            900
+          );
+
+        ctx.font =
+          `900 ${vendorSize}px Arial, Helvetica, sans-serif`;
+
+        ctx.fillText(
+          vendorText,
+          textX,
+          8
+        );
+      }
+    } else {
+      const vendorText =
+        vendorName.toUpperCase();
+
+      const vendorSize =
+        fitCanvasText(
+          ctx,
+          vendorText,
+          textWidth,
+          18,
+          10,
+          900
+        );
+
+      ctx.font =
+        `900 ${vendorSize}px Arial, Helvetica, sans-serif`;
+
+      ctx.fillText(
         vendorText,
-        textWidth,
-        18,
-        10,
-        900
+        textX,
+        8
       );
-
-    ctx.font =
-      `900 ${vendorSize}px Arial, Helvetica, sans-serif`;
-
-    ctx.fillText(
-      vendorText,
-      textX,
-      8
-    );
+    }
 
     // --------------------------------------------------
     // CONDITION / GRADE
@@ -1744,27 +1832,113 @@ export default function VendorDashboardPage() {
 
     const textWidth = 132;
 
-    const vendorText =
-      vendorName.toUpperCase();
+    const normalizedVendorName =
+      vendorName
+        .trim()
+        .toLowerCase();
 
-    const vendorSize =
-      fitCanvasText(
-        ctx,
+    if (
+      normalizedVendorName ===
+      "onlyslabs"
+    ) {
+      try {
+        const logo =
+          await loadLabelImage(
+            "/onlyslabs-label-logo.png"
+          );
+
+        const maxLogoWidth = 132;
+        const maxLogoHeight = 25;
+
+        const logoScale =
+          Math.min(
+            maxLogoWidth /
+              logo.naturalWidth,
+            maxLogoHeight /
+              logo.naturalHeight
+          );
+
+        const logoWidth =
+          Math.max(
+            1,
+            Math.round(
+              logo.naturalWidth *
+                logoScale
+            )
+          );
+
+        const logoHeight =
+          Math.max(
+            1,
+            Math.round(
+              logo.naturalHeight *
+                logoScale
+            )
+          );
+
+        ctx.drawImage(
+          logo,
+          Math.round(
+            centerX -
+              logoWidth / 2
+          ),
+          8,
+          logoWidth,
+          logoHeight
+        );
+      } catch (
+        logoError
+      ) {
+        console.warn(
+          "OnlySlabs label logo could not be loaded. Falling back to text.",
+          logoError
+        );
+
+        const vendorText =
+          vendorName.toUpperCase();
+
+        const vendorSize =
+          fitCanvasText(
+            ctx,
+            vendorText,
+            textWidth,
+            20,
+            11,
+            900
+          );
+
+        ctx.font =
+          `900 ${vendorSize}px Arial, Helvetica, sans-serif`;
+
+        ctx.fillText(
+          vendorText,
+          centerX,
+          10
+        );
+      }
+    } else {
+      const vendorText =
+        vendorName.toUpperCase();
+
+      const vendorSize =
+        fitCanvasText(
+          ctx,
+          vendorText,
+          textWidth,
+          20,
+          11,
+          900
+        );
+
+      ctx.font =
+        `900 ${vendorSize}px Arial, Helvetica, sans-serif`;
+
+      ctx.fillText(
         vendorText,
-        textWidth,
-        20,
-        11,
-        900
+        centerX,
+        10
       );
-
-    ctx.font =
-      `900 ${vendorSize}px Arial, Helvetica, sans-serif`;
-
-    ctx.fillText(
-      vendorText,
-      centerX,
-      10
-    );
+    }
 
     const conditionSize =
       fitCanvasText(
