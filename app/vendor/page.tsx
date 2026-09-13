@@ -1494,7 +1494,7 @@ export default function VendorDashboardPage() {
     // leaving 10 px of bottom clearance on the 112 px bitmap.
     const qrSize = 100;
     const qrX = 4;
-    const qrY = 8;
+    const qrY = 2;
 
     ctx.drawImage(
       qr,
