@@ -12,6 +12,11 @@ import {
   P31SWebPrinter,
   supportsWebBluetooth,
 } from "../../lib/p31s-web";
+import {
+  identifyD11H,
+  printD11HImage,
+  supportsNiimbotWebBluetooth,
+} from "../../lib/niimbot-web";
 
 type Card = {
   id: string;
@@ -507,6 +512,26 @@ export default function VendorDashboardPage() {
     setP31sStatus,
   ] = useState("");
 
+  const [
+    niimbotSupported,
+    setNiimbotSupported,
+  ] = useState(false);
+
+  const [
+    niimbotConnected,
+    setNiimbotConnected,
+  ] = useState(false);
+
+  const [
+    niimbotBusy,
+    setNiimbotBusy,
+  ] = useState(false);
+
+  const [
+    niimbotStatus,
+    setNiimbotStatus,
+  ] = useState("");
+
   const [editItem, setEditItem] =
     useState<InventoryItem | null>(null);
 
@@ -550,6 +575,10 @@ export default function VendorDashboardPage() {
   useEffect(() => {
     setP31sSupported(
       supportsWebBluetooth()
+    );
+
+    setNiimbotSupported(
+      supportsNiimbotWebBluetooth()
     );
 
     const savedOrientation =
@@ -1274,6 +1303,7 @@ export default function VendorDashboardPage() {
     setQrLoading(true);
     setShowPriceOnLabel(false);
     setP31sStatus("");
+    setNiimbotStatus("");
 
     try {
       const listingUrl =
@@ -1637,6 +1667,160 @@ export default function VendorDashboardPage() {
       );
     } finally {
       setP31sBusy(false);
+    }
+  }
+
+  async function buildD11HLabelCanvas() {
+    if (!qrItem || !qrDataUrl) {
+      throw new Error("Open a MintRadar label first.");
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 144;
+    canvas.height = 354;
+
+    const ctx = canvas.getContext("2d");
+
+    if (!ctx) {
+      throw new Error(
+        "MintRadar could not create the D11_H label image."
+      );
+    }
+
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#000000";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+
+    const graded = isGraded(qrItem);
+    const condition = graded
+      ? `${qrItem.grading_company || "Graded"} ${
+          qrItem.grade || ""
+        }`.trim()
+      : qrItem.condition || "Raw";
+
+    const price = Number(qrItem.price ?? 0).toFixed(2);
+    const centerX = canvas.width / 2;
+    const textWidth = 132;
+
+    const vendorText = vendorName.toUpperCase();
+    const vendorSize = fitCanvasText(
+      ctx,
+      vendorText,
+      textWidth,
+      20,
+      11,
+      900
+    );
+
+    ctx.font = `900 ${vendorSize}px Arial, Helvetica, sans-serif`;
+    ctx.fillText(vendorText, centerX, 10);
+
+    const conditionSize = fitCanvasText(
+      ctx,
+      condition,
+      textWidth,
+      18,
+      10,
+      800
+    );
+
+    ctx.font = `800 ${conditionSize}px Arial, Helvetica, sans-serif`;
+    ctx.fillText(condition, centerX, 39);
+
+    const qr = await loadLabelImage(qrDataUrl);
+    const qrSize = 132;
+    const qrX = Math.floor((canvas.width - qrSize) / 2);
+    const qrY = 72;
+
+    ctx.drawImage(qr, qrX, qrY, qrSize, qrSize);
+
+    const bottomText = showPriceOnLabel
+      ? `$${price}`
+      : "SCAN FOR PRICE";
+
+    const bottomSize = fitCanvasText(
+      ctx,
+      bottomText,
+      textWidth,
+      showPriceOnLabel ? 30 : 20,
+      11,
+      900
+    );
+
+    ctx.font = `900 ${bottomSize}px Arial, Helvetica, sans-serif`;
+    ctx.fillText(bottomText, centerX, 222);
+
+    ctx.font = "900 17px Arial, Helvetica, sans-serif";
+    ctx.fillText("MINT RADAR", centerX, 278);
+
+    ctx.font = "700 11px Arial, Helvetica, sans-serif";
+    ctx.fillText("LIVE LISTING", centerX, 305);
+
+    return canvas;
+  }
+
+  async function connectD11H() {
+    if (!niimbotSupported) {
+      setNiimbotStatus(
+        "Web Bluetooth is not available in this browser/device."
+      );
+      return;
+    }
+
+    setNiimbotBusy(true);
+    setNiimbotStatus("");
+
+    try {
+      const printer = await identifyD11H();
+      setNiimbotConnected(true);
+      setNiimbotStatus(
+        `Connected to ${printer?.label || "Niimbot D11_H"}.`
+      );
+    } catch (error: any) {
+      console.error("D11_H connect error:", error);
+      setNiimbotConnected(false);
+      setNiimbotStatus(
+        error?.message ||
+          "MintRadar could not connect to the Niimbot D11_H."
+      );
+    } finally {
+      setNiimbotBusy(false);
+    }
+  }
+
+  async function printQrLabelD11H() {
+    setNiimbotBusy(true);
+    setNiimbotStatus("");
+
+    try {
+      if (!niimbotConnected) {
+        const printer = await identifyD11H();
+        setNiimbotConnected(true);
+        setNiimbotStatus(
+          `Connected to ${printer?.label || "Niimbot D11_H"}. Sending label...`
+        );
+      }
+
+      const canvas = await buildD11HLabelCanvas();
+      const imageDataUrl = canvas.toDataURL("image/png");
+
+      await printD11HImage(imageDataUrl);
+
+      setNiimbotConnected(true);
+      setNiimbotStatus(
+        "MintRadar label sent to the Niimbot D11_H."
+      );
+    } catch (error: any) {
+      console.error("D11_H label print error:", error);
+      setNiimbotStatus(
+        error?.message ||
+          "MintRadar could not print this label to the D11_H."
+      );
+    } finally {
+      setNiimbotBusy(false);
     }
   }
 
@@ -3359,6 +3543,76 @@ export default function VendorDashboardPage() {
                     {p31sStatus && (
                       <p className="mt-3 text-xs font-bold leading-5 text-zinc-500">
                         {p31sStatus}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="mt-5 rounded-2xl border border-zinc-800 bg-black p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">
+                          Direct Bluetooth
+                        </p>
+
+                        <p className="mt-1 text-sm font-black text-white">
+                          Niimbot D11_H • 15 × 30 mm
+                        </p>
+
+                        <p className="mt-1 text-xs leading-5 text-zinc-600">
+                          Uses the full D11_H printable area with a large QR code for easier scanning.
+                        </p>
+                      </div>
+
+                      <span
+                        className={`w-fit rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-wider ${
+                          niimbotConnected
+                            ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
+                            : "border-zinc-800 bg-zinc-950 text-zinc-600"
+                        }`}
+                      >
+                        {niimbotConnected
+                          ? "Connected"
+                          : "Not Connected"}
+                      </span>
+                    </div>
+
+                    {!niimbotSupported && (
+                      <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs font-bold leading-5 text-amber-200">
+                        This browser/device does not expose Web Bluetooth. Open MintRadar over HTTPS in a supported Bluetooth browser/device to test the D11_H.
+                      </div>
+                    )}
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {!niimbotConnected && (
+                        <button
+                          type="button"
+                          onClick={() => void connectD11H()}
+                          disabled={niimbotBusy || !niimbotSupported}
+                          className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {niimbotBusy
+                            ? "Connecting..."
+                            : "Connect D11_H"}
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => void printQrLabelD11H()}
+                        disabled={niimbotBusy || !niimbotSupported}
+                        className="rounded-xl bg-emerald-400 px-4 py-3 text-sm font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {niimbotBusy
+                          ? "Working..."
+                          : niimbotConnected
+                            ? "Print to D11_H"
+                            : "Connect & Print"}
+                      </button>
+                    </div>
+
+                    {niimbotStatus && (
+                      <p className="mt-3 text-xs font-bold leading-5 text-zinc-500">
+                        {niimbotStatus}
                       </p>
                     )}
                   </div>
