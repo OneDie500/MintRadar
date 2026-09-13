@@ -17,6 +17,7 @@ import {
   printD11HImage,
   supportsNiimbotWebBluetooth,
 } from "../../lib/niimbot-web";
+import { encodeListingId } from "../../lib/listing-short-code";
 
 type Card = {
   id: string;
@@ -1306,8 +1307,13 @@ export default function VendorDashboardPage() {
     setNiimbotStatus("");
 
     try {
+      const shortCode =
+        encodeListingId(
+          item.id
+        );
+
       const listingUrl =
-        `${window.location.origin}/listing/${item.id}`;
+        `${window.location.origin}/l/${shortCode}`;
 
       const dataUrl =
         await QRCode.toDataURL(
@@ -1460,8 +1466,13 @@ export default function VendorDashboardPage() {
     // with medium error correction and its own quiet zone.
     // --------------------------------------------------
 
+    const shortCode =
+      encodeListingId(
+        qrItem.id
+      );
+
     const listingUrl =
-      `${window.location.origin}/listing/${qrItem.id}`;
+      `${window.location.origin}/l/${shortCode}`;
 
     const p31sQrDataUrl =
       await QRCode.toDataURL(
@@ -1675,11 +1686,23 @@ export default function VendorDashboardPage() {
       throw new Error("Open a MintRadar label first.");
     }
 
-    const canvas = document.createElement("canvas");
-    canvas.width = 144;
-    canvas.height = 354;
+    // --------------------------------------------------
+    // NIIMBOT D11_H • 12 × 40 MM STOCK
+    // --------------------------------------------------
+    //
+    // D11_H has a measured 144 px printhead.
+    // 12 mm stock is ~142 px wide at 300 dpi.
+    // 40 mm feed length is ~472 px.
+    // --------------------------------------------------
 
-    const ctx = canvas.getContext("2d");
+    const canvas =
+      document.createElement("canvas");
+
+    canvas.width = 142;
+    canvas.height = 472;
+
+    const ctx =
+      canvas.getContext("2d");
 
     if (!ctx) {
       throw new Error(
@@ -1687,77 +1710,145 @@ export default function VendorDashboardPage() {
       );
     }
 
-    ctx.imageSmoothingEnabled = false;
+    ctx.imageSmoothingEnabled =
+      false;
+
     ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillRect(
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
+
     ctx.fillStyle = "#000000";
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
 
-    const graded = isGraded(qrItem);
-    const condition = graded
-      ? `${qrItem.grading_company || "Graded"} ${
-          qrItem.grade || ""
-        }`.trim()
-      : qrItem.condition || "Raw";
+    const graded =
+      isGraded(qrItem);
 
-    const price = Number(qrItem.price ?? 0).toFixed(2);
-    const centerX = canvas.width / 2;
+    const condition =
+      graded
+        ? `${qrItem.grading_company || "Graded"} ${
+            qrItem.grade || ""
+          }`.trim()
+        : qrItem.condition || "Raw";
+
+    const price =
+      Number(qrItem.price ?? 0)
+        .toFixed(2);
+
+    const centerX =
+      canvas.width / 2;
+
     const textWidth = 132;
 
-    const vendorText = vendorName.toUpperCase();
-    const vendorSize = fitCanvasText(
-      ctx,
+    const vendorText =
+      vendorName.toUpperCase();
+
+    const vendorSize =
+      fitCanvasText(
+        ctx,
+        vendorText,
+        textWidth,
+        20,
+        11,
+        900
+      );
+
+    ctx.font =
+      `900 ${vendorSize}px Arial, Helvetica, sans-serif`;
+
+    ctx.fillText(
       vendorText,
-      textWidth,
-      20,
-      11,
-      900
+      centerX,
+      10
     );
 
-    ctx.font = `900 ${vendorSize}px Arial, Helvetica, sans-serif`;
-    ctx.fillText(vendorText, centerX, 10);
+    const conditionSize =
+      fitCanvasText(
+        ctx,
+        condition,
+        textWidth,
+        18,
+        10,
+        800
+      );
 
-    const conditionSize = fitCanvasText(
-      ctx,
+    ctx.font =
+      `800 ${conditionSize}px Arial, Helvetica, sans-serif`;
+
+    ctx.fillText(
       condition,
-      textWidth,
-      18,
-      10,
-      800
+      centerX,
+      42
     );
 
-    ctx.font = `800 ${conditionSize}px Arial, Helvetica, sans-serif`;
-    ctx.fillText(condition, centerX, 39);
+    const qr =
+      await loadLabelImage(
+        qrDataUrl
+      );
 
-    const qr = await loadLabelImage(qrDataUrl);
-    const qrSize = 132;
-    const qrX = Math.floor((canvas.width - qrSize) / 2);
-    const qrY = 72;
+    const qrSize = 136;
+    const qrX =
+      Math.floor(
+        (canvas.width - qrSize) /
+          2
+      );
+    const qrY = 82;
 
-    ctx.drawImage(qr, qrX, qrY, qrSize, qrSize);
+    ctx.drawImage(
+      qr,
+      qrX,
+      qrY,
+      qrSize,
+      qrSize
+    );
 
-    const bottomText = showPriceOnLabel
-      ? `$${price}`
-      : "SCAN FOR PRICE";
+    const bottomText =
+      showPriceOnLabel
+        ? `$${price}`
+        : "SCAN FOR PRICE";
 
-    const bottomSize = fitCanvasText(
-      ctx,
+    const bottomSize =
+      fitCanvasText(
+        ctx,
+        bottomText,
+        textWidth,
+        showPriceOnLabel
+          ? 30
+          : 20,
+        11,
+        900
+      );
+
+    ctx.font =
+      `900 ${bottomSize}px Arial, Helvetica, sans-serif`;
+
+    ctx.fillText(
       bottomText,
-      textWidth,
-      showPriceOnLabel ? 30 : 20,
-      11,
-      900
+      centerX,
+      236
     );
 
-    ctx.font = `900 ${bottomSize}px Arial, Helvetica, sans-serif`;
-    ctx.fillText(bottomText, centerX, 222);
+    ctx.font =
+      "900 17px Arial, Helvetica, sans-serif";
 
-    ctx.font = "900 17px Arial, Helvetica, sans-serif";
-    ctx.fillText("MINT RADAR", centerX, 278);
+    ctx.fillText(
+      "MINT RADAR",
+      centerX,
+      316
+    );
 
-    ctx.font = "700 11px Arial, Helvetica, sans-serif";
-    ctx.fillText("LIVE LISTING", centerX, 305);
+    ctx.font =
+      "700 11px Arial, Helvetica, sans-serif";
+
+    ctx.fillText(
+      "LIVE LISTING",
+      centerX,
+      344
+    );
 
     return canvas;
   }
@@ -3608,7 +3699,7 @@ export default function VendorDashboardPage() {
                         </p>
 
                         <p className="mt-1 text-sm font-black text-white">
-                          Niimbot D11_H • 15 × 30 mm
+                          Niimbot D11_H • 12 × 40 mm
                         </p>
 
                         <p className="mt-1 text-xs leading-5 text-zinc-600">

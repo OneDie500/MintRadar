@@ -1,7 +1,9 @@
 export const NIIMBOT_D11H_MODEL = {
   id: 528,
   name: "D11_H",
-  name_prefixes: [],
+  name_prefixes: [
+    "D11",
+  ],
   task: "v4",
   dpi: 300,
   density: 3,
@@ -10,31 +12,66 @@ export const NIIMBOT_D11H_MODEL = {
 };
 
 export const NIIMBOT_D11H_SIZE = {
-  id: "T15x30",
-  w_px: 144,
-  h_px: 354,
-  offset_y_px: 0,
+  id: "T12x40",
+  code: "T12*40",
+  label:
+    "12 × 40 mm (D11_H)",
+
+  w_mm: 12,
+  h_mm: 40,
+
+  // D11_H reports a 144 px printhead.
+  // 12 mm stock is approximately 142 px at 300 dpi.
+  w_px: 142,
+
+  // 40 mm at approximately 11.8 px/mm.
+  h_px: 472,
+
+  margin: 6,
+
+  // The package's validated 12 mm D11_H stock uses
+  // a -6 px registration offset. We carry that forward
+  // for the same 12 mm media width.
+  offset_y_px: -6,
+
+  dpi: 300,
 };
 
 type BluetoothLike = {
   requestDevice: (
-    options: Record<string, unknown>
+    options: Record<
+      string,
+      unknown
+    >
   ) => Promise<any>;
 };
 
 type NiimbotGlobal = {
-  isSupported: () => boolean;
+  isSupported: () =>
+    boolean;
 
   identify: (
-    model: Record<string, unknown>
+    model: Record<
+      string,
+      unknown
+    >
   ) => Promise<any>;
 
   printImage: (
     image: string,
     options: {
-      model: Record<string, unknown>;
-      size: Record<string, unknown>;
+      model: Record<
+        string,
+        unknown
+      >;
+
+      size: Record<
+        string,
+        unknown
+      >;
+
       copies?: number;
+
       onProgress?: (
         status: unknown
       ) => void;
@@ -42,17 +79,27 @@ type NiimbotGlobal = {
   ) => Promise<any>;
 
   printer?: {
-    modelId?: number | null;
-    protocolVersion?: number | null;
-    label?: string | null;
-    task?: string | null;
-    dpi?: number | null;
+    modelId?:
+      number | null;
+
+    protocolVersion?:
+      number | null;
+
+    label?:
+      string | null;
+
+    task?:
+      string | null;
+
+    dpi?:
+      number | null;
   };
 };
 
 declare global {
   interface Window {
-    Niimbot?: NiimbotGlobal;
+    Niimbot?:
+      NiimbotGlobal;
   }
 }
 
@@ -60,7 +107,9 @@ let driverPromise:
   | Promise<NiimbotGlobal>
   | null = null;
 
-function getBluetooth(): BluetoothLike | null {
+function getBluetooth():
+  | BluetoothLike
+  | null {
   if (
     typeof navigator ===
     "undefined"
@@ -70,10 +119,14 @@ function getBluetooth(): BluetoothLike | null {
 
   const nav =
     navigator as Navigator & {
-      bluetooth?: BluetoothLike;
+      bluetooth?:
+        BluetoothLike;
     };
 
-  return nav.bluetooth || null;
+  return (
+    nav.bluetooth ||
+    null
+  );
 }
 
 function getDriverUrl() {
@@ -228,7 +281,8 @@ export async function identifyD11H() {
   );
 
   const detectedModelId =
-    driver.printer?.modelId;
+    driver.printer
+      ?.modelId;
 
   if (
     detectedModelId &&
