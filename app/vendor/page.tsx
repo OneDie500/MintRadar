@@ -1393,8 +1393,7 @@ export default function VendorDashboardPage() {
 
   async function buildP31SLabelCanvas() {
     if (
-      !qrItem ||
-      !qrDataUrl
+      !qrItem
     ) {
       throw new Error(
         "Open a MintRadar label first."
@@ -1449,61 +1448,71 @@ export default function VendorDashboardPage() {
       ).toFixed(2);
 
     // --------------------------------------------------
-    // FULL-WIDTH P31S LABEL
+    // P31S 13 × 38 MM CALIBRATED LABEL
+    // --------------------------------------------------
+    //
+    // Important:
+    // The general preview QR is generated large at high error correction.
+    // Shrinking that image into a tiny thermal bitmap can make QR modules
+    // uneven and hard for a phone camera to resolve.
+    //
+    // For the P31S we generate a dedicated QR at its native print size,
+    // with medium error correction and its own quiet zone.
+    // --------------------------------------------------
+
+    const listingUrl =
+      `${window.location.origin}/listing/${qrItem.id}`;
+
+    const p31sQrDataUrl =
+      await QRCode.toDataURL(
+        listingUrl,
+        {
+          width: 100,
+          margin: 2,
+          errorCorrectionLevel: "M",
+        }
+      );
+
+    const qr =
+      await loadLabelImage(
+        p31sQrDataUrl
+      );
+
+    // Keep the entire QR well inside the printer's real 13 mm safe area.
+    // 100 px is larger than the previous readable area, but ends at y=102,
+    // leaving 10 px of bottom clearance on the 112 px bitmap.
+    const qrSize = 100;
+    const qrX = 4;
+    const qrY = 2;
+
+    ctx.drawImage(
+      qr,
+      qrX,
+      qrY,
+      qrSize,
+      qrSize
+    );
+
+    // --------------------------------------------------
+    // TEXT COLUMN
     // --------------------------------------------------
 
     const pad = 8;
 
-    // P31S calibrated layout for 13 x 38 mm stock.
-    // Use a larger QR, but keep a clean white quiet zone inside the
-    // bitmap so the QR itself never touches the printer's edge.
-    const qrBoxSize = 104;
-    const qrQuietZone = 4;
-    const qrSize = qrBoxSize - qrQuietZone * 2;
-    const qrX = 4;
-    const qrY = 4;
-
     const textX =
-      qrX + qrBoxSize + 10;
+      qrX + qrSize + 10;
 
     const textWidth =
       canvas.width -
       textX -
       pad;
 
-    // --------------------------------------------------
-    // QR CODE
-    // --------------------------------------------------
-
-    const qr =
-      await loadLabelImage(
-        qrDataUrl
-      );
-
-    // Explicit white QR box preserves a readable quiet zone.
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(
-      qrX,
-      qrY,
-      qrBoxSize,
-      qrBoxSize
-    );
-
-    ctx.drawImage(
-      qr,
-      qrX + qrQuietZone,
-      qrY + qrQuietZone,
-      qrSize,
-      qrSize
-    );
-
     ctx.fillStyle = "#000000";
+    ctx.textAlign = "left";
 
     // --------------------------------------------------
     // VENDOR NAME
     // --------------------------------------------------
-
-    ctx.textAlign = "left";
 
     const vendorText =
       vendorName.toUpperCase();
@@ -1524,7 +1533,7 @@ export default function VendorDashboardPage() {
     ctx.fillText(
       vendorText,
       textX,
-      7
+      8
     );
 
     // --------------------------------------------------
@@ -1547,7 +1556,7 @@ export default function VendorDashboardPage() {
     ctx.fillText(
       condition,
       textX,
-      34
+      35
     );
 
     // --------------------------------------------------
@@ -1565,8 +1574,8 @@ export default function VendorDashboardPage() {
         bottomText,
         textWidth,
         showPriceOnLabel
-          ? 27
-          : 18,
+          ? 25
+          : 17,
         10,
         900
       );
@@ -1577,7 +1586,7 @@ export default function VendorDashboardPage() {
     ctx.fillText(
       bottomText,
       textX,
-      57
+      62
     );
 
     return canvas;
