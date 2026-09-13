@@ -1454,16 +1454,17 @@ export default function VendorDashboardPage() {
 
     const pad = 8;
 
-    // P31S safe area for 13 mm-wide stock.
-    // The previous 94 px QR sat too close to the physical edge and
-    // could be clipped by the printer. 88 px keeps the QR large while
-    // leaving enough top/bottom breathing room for real 13 mm media.
-    const qrSize = 88;
-    const qrX = 8;
-    const qrY = 6;
+    // P31S calibrated layout for 13 x 38 mm stock.
+    // Use a larger QR, but keep a clean white quiet zone inside the
+    // bitmap so the QR itself never touches the printer's edge.
+    const qrBoxSize = 104;
+    const qrQuietZone = 4;
+    const qrSize = qrBoxSize - qrQuietZone * 2;
+    const qrX = 4;
+    const qrY = 4;
 
     const textX =
-      qrX + qrSize + 12;
+      qrX + qrBoxSize + 10;
 
     const textWidth =
       canvas.width -
@@ -1479,13 +1480,24 @@ export default function VendorDashboardPage() {
         qrDataUrl
       );
 
-    ctx.drawImage(
-      qr,
+    // Explicit white QR box preserves a readable quiet zone.
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(
       qrX,
       qrY,
+      qrBoxSize,
+      qrBoxSize
+    );
+
+    ctx.drawImage(
+      qr,
+      qrX + qrQuietZone,
+      qrY + qrQuietZone,
       qrSize,
       qrSize
     );
+
+    ctx.fillStyle = "#000000";
 
     // --------------------------------------------------
     // VENDOR NAME
@@ -1565,33 +1577,7 @@ export default function VendorDashboardPage() {
     ctx.fillText(
       bottomText,
       textX,
-      61
-    );
-
-    // --------------------------------------------------
-    // MINT RADAR BRANDING
-    // --------------------------------------------------
-
-    const branding =
-      "MINT RADAR";
-
-    const brandingSize =
-      fitCanvasText(
-        ctx,
-        branding,
-        textWidth,
-        11,
-        7,
-        800
-      );
-
-    ctx.font =
-      `800 ${brandingSize}px Arial, Helvetica, sans-serif`;
-
-    ctx.fillText(
-      branding,
-      textX,
-      94
+      57
     );
 
     return canvas;
