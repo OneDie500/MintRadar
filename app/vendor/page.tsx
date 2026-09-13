@@ -1760,6 +1760,8 @@ export default function VendorDashboardPage() {
         error
       );
 
+      setP31sConnected(false);
+
       setP31sStatus(
         error?.message ||
           "MintRadar could not print this label to the P31S."
