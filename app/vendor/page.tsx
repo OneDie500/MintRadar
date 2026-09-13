@@ -1453,9 +1453,14 @@ export default function VendorDashboardPage() {
     // --------------------------------------------------
 
     const pad = 8;
-    const qrSize = 94;
+
+    // P31S safe area for 13 mm-wide stock.
+    // The previous 94 px QR sat too close to the physical edge and
+    // could be clipped by the printer. 88 px keeps the QR large while
+    // leaving enough top/bottom breathing room for real 13 mm media.
+    const qrSize = 88;
     const qrX = 8;
-    const qrY = 9;
+    const qrY = 6;
 
     const textX =
       qrX + qrSize + 12;
