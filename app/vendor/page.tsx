@@ -475,6 +475,11 @@ export default function VendorDashboardPage() {
   const [deletingId, setDeletingId] =
     useState<string | null>(null);
 
+  const [
+    deletingAllInventory,
+    setDeletingAllInventory,
+  ] = useState(false);
+
   const [qrItem, setQrItem] =
     useState<InventoryItem | null>(null);
 
@@ -1133,6 +1138,68 @@ export default function VendorDashboardPage() {
     }
 
     setSavingId(null);
+  }
+
+  // -----------------------------------------
+  // DELETE ALL INVENTORY
+  // -----------------------------------------
+
+  async function deleteAllInventory() {
+    if (
+      deletingAllInventory ||
+      !vendorId ||
+      inventory.length === 0
+    ) {
+      return;
+    }
+
+    const confirmation =
+      window.prompt(
+        `This will permanently delete all ${inventory.length} ${
+          inventory.length === 1 ? "listing" : "listings"
+        } from ${vendorName}.\n\nThis only affects the currently active vendor.\n\nType DELETE ALL to continue.`
+      );
+
+    if (confirmation !== "DELETE ALL") {
+      return;
+    }
+
+    try {
+      setDeletingAllInventory(true);
+      setError("");
+
+      const {
+        error: deleteError,
+      } = await supabase
+        .from("inventory")
+        .delete()
+        .eq(
+          "vendor_id",
+          vendorId
+        );
+
+      if (deleteError) {
+        throw deleteError;
+      }
+
+      setInventory([]);
+
+      window.alert(
+        `${vendorName} inventory has been deleted.`
+      );
+    } catch (err: any) {
+      console.error(
+        "Delete all inventory error:",
+        err
+      );
+
+      setError(
+        err?.message ||
+          "MintRadar could not delete this vendor's inventory."
+      );
+    } finally {
+      setDeletingAllInventory(false);
+    }
   }
 
   // -----------------------------------------
@@ -2567,7 +2634,7 @@ export default function VendorDashboardPage() {
               </div>
             </div>
 
-            <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-3 lg:w-auto [&>button]:flex [&>button]:h-full [&>button]:w-full [&>button]:items-center [&>button]:justify-center [&>button]:whitespace-nowrap">
+            <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4 lg:w-auto [&>button]:flex [&>button]:h-full [&>button]:w-full [&>button]:items-center [&>button]:justify-center [&>button]:whitespace-nowrap">
               <TradeAnalyzer
                 inventory={inventory}
               />
@@ -2578,6 +2645,20 @@ export default function VendorDashboardPage() {
               >
                 Import CSV
               </Link>
+
+              <button
+                type="button"
+                onClick={deleteAllInventory}
+                disabled={
+                  deletingAllInventory ||
+                  inventory.length === 0
+                }
+                className="rounded-xl border border-red-400/30 bg-red-400/10 px-6 py-4 text-center font-black text-red-300 transition hover:bg-red-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {deletingAllInventory
+                  ? "Deleting..."
+                  : "Delete All Inventory"}
+              </button>
 
               <Link
                 href="/vendor/add"

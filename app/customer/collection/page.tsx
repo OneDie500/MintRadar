@@ -530,6 +530,9 @@ export default function CustomerCollectionPage() {
   const [removingId, setRemovingId] =
     useState<string | null>(null);
 
+  const [deletingCollection, setDeletingCollection] =
+    useState(false);
+
   const [draft, setDraft] =
     useState<CollectionDraft>({
       itemType: "raw",
@@ -1237,6 +1240,77 @@ export default function CustomerCollectionPage() {
     }
   }
 
+  async function deleteCollection() {
+    if (
+      deletingCollection ||
+      items.length === 0
+    ) {
+      return;
+    }
+
+    const confirmation =
+      window.prompt(
+        `This will permanently delete all ${items.length} collection ${
+          items.length === 1 ? "entry" : "entries"
+        }, including zero-quantity history.\n\nType DELETE ALL to continue.`
+      );
+
+    if (confirmation !== "DELETE ALL") {
+      return;
+    }
+
+    try {
+      setDeletingCollection(true);
+      setError("");
+      setSuccess("");
+
+      // Use the same protected RPC already used for individual
+      // collection removal so the delete remains scoped to the
+      // signed-in customer's own collection.
+      for (const item of items) {
+        const {
+          error: removeError,
+        } = await supabase.rpc(
+          "remove_collection_item",
+          {
+            p_collection_item_id:
+              item.id,
+          }
+        );
+
+        if (removeError) {
+          throw removeError;
+        }
+      }
+
+      setItems([]);
+      setEditingId(null);
+      setSuccess(
+        "Your collection has been deleted."
+      );
+    } catch (err: any) {
+      console.error(
+        "Delete collection error:",
+        err
+      );
+
+      // Reload so the UI accurately reflects any entries
+      // that were deleted before a partial failure.
+      try {
+        await loadCollection();
+      } catch {
+        // Keep the original deletion error visible.
+      }
+
+      setError(
+        err?.message ||
+          "MintRadar could not delete your collection."
+      );
+    } finally {
+      setDeletingCollection(false);
+    }
+  }
+
   async function removeItem(
     item: CollectionItem
   ) {
@@ -1357,13 +1431,29 @@ export default function CustomerCollectionPage() {
               </p>
             </div>
 
-            <button
-              type="button"
-              onClick={openAdd}
-              className="w-fit rounded-xl bg-emerald-400 px-5 py-3 font-black text-black transition hover:bg-emerald-300"
-            >
-              + Add Card
-            </button>
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={deleteCollection}
+                disabled={
+                  deletingCollection ||
+                  items.length === 0
+                }
+                className="w-fit rounded-xl border border-red-400/30 bg-red-400/10 px-5 py-3 font-black text-red-300 transition hover:bg-red-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {deletingCollection
+                  ? "Deleting..."
+                  : "Delete Collection"}
+              </button>
+
+              <button
+                type="button"
+                onClick={openAdd}
+                className="w-fit rounded-xl bg-emerald-400 px-5 py-3 font-black text-black transition hover:bg-emerald-300"
+              >
+                + Add Card
+              </button>
+            </div>
           </div>
         </header>
 
