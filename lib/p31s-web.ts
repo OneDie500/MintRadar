@@ -401,7 +401,7 @@ export class P31SWebPrinter {
       this.forgetDevice();
 
       throw new Error(
-        "The P31S did not expose its print service on this attempt. Tap Connect & Print again and select the P31S once more."
+        "P31S is awake and ready. Tap Connect & Print again to print."
       );
     }
   }
