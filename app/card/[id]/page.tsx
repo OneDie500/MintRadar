@@ -103,6 +103,11 @@ export default function CardDetailPage() {
   const [card, setCard] =
     useState<Card | null>(null);
 
+  const [resolvedImageUrl, setResolvedImageUrl] =
+    useState<string | null>(null);
+  const [imageResolutionKey, setImageResolutionKey] =
+    useState<string>("");
+
   const [loading, setLoading] =
     useState(true);
 
@@ -237,6 +242,9 @@ export default function CardDetailPage() {
                   ) > 0
               ),
           });
+          setResolvedImageUrl(
+            typedCard.image_url || null
+          );
         }
       } catch (err: any) {
         console.error(
@@ -255,6 +263,356 @@ export default function CardDetailPage() {
 
     loadCard();
   }, [id]);
+
+  useEffect(() => {
+    if (!card) {
+      return;
+    }
+
+    const normalizedCategory =
+      (card.category || "")
+        .trim()
+        .toLowerCase();
+
+    if (
+      normalizedCategory !== "pokemon" ||
+      !card.name
+    ) {
+      return;
+    }
+
+    // Snapshot the narrowed card for nested helper functions.
+    // TypeScript does not preserve React-state narrowing inside closures.
+    const activeCard = card;
+
+    const resolutionKey = [
+      activeCard.id,
+      activeCard.name,
+      activeCard.set_name || "",
+      activeCard.card_number || "",
+      activeCard.image_url || "",
+    ].join("|");
+
+    if (
+      resolvedImageUrl ||
+      imageResolutionKey === resolutionKey
+    ) {
+      return;
+    }
+
+    setImageResolutionKey(
+      resolutionKey
+    );
+
+    let cancelled = false;
+    const controller =
+      new AbortController();
+
+    const normalize = (
+      value?: string | null
+    ) =>
+      (value || "")
+        .toLowerCase()
+        .normalize("NFKD")
+        .replace(
+          /[\u0300-\u036f]/g,
+          ""
+        )
+        .replace(
+          /[^a-z0-9]+/g,
+          " "
+        )
+        .trim();
+
+    const normalizeNumber = (
+      value?: string | null
+    ) =>
+      (value || "")
+        .trim()
+        .replace(/^#/, "")
+        .split("/")[0]
+        .replace(/\s+/g, "")
+        .toUpperCase()
+        .replace(
+          /^([A-Z]+)0+(\d+)$/,
+          "$1$2"
+        )
+        .replace(
+          /^0+(\d+)$/,
+          "$1"
+        );
+
+    function scoreCatalogCandidate(
+      candidate: any
+    ) {
+      const wantedName =
+        normalize(activeCard.name);
+      const actualName =
+        normalize(candidate?.name);
+
+      if (
+        !wantedName ||
+        !actualName
+      ) {
+        return -10000;
+      }
+
+      let score = 0;
+
+      if (
+        wantedName === actualName
+      ) {
+        score += 1000;
+      } else if (
+        wantedName.includes(
+          actualName
+        ) ||
+        actualName.includes(
+          wantedName
+        )
+      ) {
+        score += 250;
+      } else {
+        return -10000;
+      }
+
+      const wantedNumber =
+        normalizeNumber(
+          activeCard.card_number
+        );
+      const actualNumber =
+        normalizeNumber(
+          candidate?.card_number ??
+            candidate?.cardNumber
+        );
+
+      if (
+        wantedNumber &&
+        actualNumber
+      ) {
+        if (
+          wantedNumber ===
+          actualNumber
+        ) {
+          score += 800;
+        } else {
+          score -= 700;
+        }
+      }
+
+      const wantedSet =
+        normalize(activeCard.set_name);
+      const actualSet =
+        normalize(
+          candidate?.set_name ??
+            candidate?.setName
+        );
+
+      if (
+        wantedSet &&
+        actualSet
+      ) {
+        if (
+          wantedSet === actualSet
+        ) {
+          score += 500;
+        } else if (
+          wantedSet.includes(
+            actualSet
+          ) ||
+          actualSet.includes(
+            wantedSet
+          )
+        ) {
+          score += 250;
+        } else {
+          const wantedWords =
+            new Set(
+              wantedSet.split(" ")
+            );
+          const actualWords =
+            actualSet.split(" ");
+
+          const overlap =
+            actualWords.filter(
+              (word: string) =>
+                word.length > 2 &&
+                wantedWords.has(word)
+            ).length;
+
+          score += overlap * 60;
+        }
+      }
+
+      const imageUrl =
+        candidate?.image_url ??
+        candidate?.imageUrl;
+
+      if (imageUrl) {
+        score += 100;
+      }
+
+      return score;
+    }
+
+    async function resolveCardImage() {
+      try {
+        // ROUND 6:
+        // MintRadar's own catalog is now the first recovery source.
+        // This keeps the card page aligned with the image/search record
+        // the homepage already knows about.
+        const searchParts = [
+          activeCard.name || "",
+          normalizeNumber(
+            activeCard.card_number
+          ),
+        ].filter(Boolean);
+
+        const catalogResponse =
+          await fetch(
+            `/api/catalog/search?q=${encodeURIComponent(
+              searchParts.join(" ")
+            )}`,
+            {
+              cache: "no-store",
+              signal:
+                controller.signal,
+            }
+          );
+
+        if (
+          catalogResponse.ok &&
+          !cancelled
+        ) {
+          const payload =
+            await catalogResponse.json();
+
+          const candidates =
+            Array.isArray(
+              payload?.results
+            )
+              ? payload.results
+              : [];
+
+          const ranked =
+            candidates
+              .map(
+                (candidate: any) => ({
+                  candidate,
+                  score:
+                    scoreCatalogCandidate(
+                      candidate
+                    ),
+                })
+              )
+              .filter(
+                ({
+                  candidate,
+                  score,
+                }: any) =>
+                  score >= 1000 &&
+                  Boolean(
+                    candidate?.image_url ??
+                      candidate?.imageUrl
+                  )
+              )
+              .sort(
+                (a: any, b: any) =>
+                  b.score - a.score
+              );
+
+          const catalogImage =
+            ranked[0]?.candidate
+              ?.image_url ??
+            ranked[0]?.candidate
+              ?.imageUrl ??
+            null;
+
+          if (
+            catalogImage &&
+            !cancelled
+          ) {
+            setResolvedImageUrl(
+              String(catalogImage)
+            );
+            return;
+          }
+        }
+
+        // Only if MintRadar's catalog cannot supply a confident image
+        // do we ask the Pokémon fallback provider.
+        const params =
+          new URLSearchParams({
+            name: activeCard.name || "",
+          });
+
+        if (activeCard.set_name) {
+          params.set(
+            "setName",
+            activeCard.set_name
+          );
+        }
+
+        if (activeCard.card_number) {
+          params.set(
+            "cardNumber",
+            activeCard.card_number
+          );
+        }
+
+        const fallbackResponse =
+          await fetch(
+            `/api/catalog/pokemon-image-fallback?${params.toString()}`,
+            {
+              cache: "no-store",
+              signal:
+                controller.signal,
+            }
+          );
+
+        if (
+          !fallbackResponse.ok
+        ) {
+          return;
+        }
+
+        const fallbackPayload =
+          await fallbackResponse.json();
+
+        if (
+          !cancelled &&
+          fallbackPayload?.ok &&
+          fallbackPayload?.imageUrl
+        ) {
+          setResolvedImageUrl(
+            String(
+              fallbackPayload.imageUrl
+            )
+          );
+        }
+      } catch (error: any) {
+        if (
+          error?.name !== "AbortError"
+        ) {
+          console.warn(
+            "Card detail canonical image resolution skipped:",
+            error
+          );
+        }
+      }
+    }
+
+    void resolveCardImage();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [
+    card,
+    resolvedImageUrl,
+    imageResolutionKey,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1278,20 +1636,21 @@ export default function CardDetailPage() {
 
             <div className="aspect-[3/4] bg-black rounded-2xl overflow-hidden">
 
-              {card.image_url ? (
-                <img
-                  src={card.image_url}
-                  alt={
-                    card.name ||
-                    "Card"
-                  }
-                  className="w-full h-full object-contain"
-                />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-zinc-700">
-                  No Image
-                </div>
-              )}
+              {resolvedImageUrl ? (
+                  <img
+                    src={resolvedImageUrl}
+                    alt={card.name || "Card"}
+                    className="w-full h-full object-contain"
+                    onError={() => {
+                      setResolvedImageUrl(null);
+                      setImageResolutionKey("");
+                    }}
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-zinc-700">
+                    No Image
+                  </div>
+                )}
 
             </div>
 
@@ -1632,6 +1991,7 @@ export default function CardDetailPage() {
                           key={item.id}
                           item={item}
                           card={card}
+                          resolvedImageUrl={resolvedImageUrl}
                           isSaved={
                             item.id
                               ? savedListingIds.has(
@@ -1714,6 +2074,7 @@ export default function CardDetailPage() {
                           key={item.id}
                           item={item}
                           card={card}
+                          resolvedImageUrl={resolvedImageUrl}
                           isSaved={
                             item.id
                               ? savedListingIds.has(
@@ -2040,6 +2401,7 @@ export default function CardDetailPage() {
 function GradedListingCard({
   item,
   card,
+  resolvedImageUrl,
   isSaved,
   saveLoading,
   onSaveListing,
@@ -2052,6 +2414,7 @@ function GradedListingCard({
 }: {
   item: InventoryItem;
   card: Card;
+  resolvedImageUrl: string | null;
   isSaved: boolean;
   saveLoading: boolean;
   onSaveListing: () => void;
@@ -2107,20 +2470,17 @@ function GradedListingCard({
 
         <div className="aspect-[3/4] bg-black border border-zinc-900 rounded-2xl overflow-hidden">
 
-          {card.image_url ? (
-            <img
-              src={card.image_url}
-              alt={
-                card.name ||
-                "Card"
-              }
-              className="w-full h-full object-contain"
-            />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center text-zinc-700">
-              No Image
-            </div>
-          )}
+          {resolvedImageUrl ? (
+                  <img
+                    src={resolvedImageUrl}
+                    alt={card.name || "Card"}
+                    className="w-full h-full object-contain"
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-zinc-700">
+                    No Image
+                  </div>
+                )}
 
         </div>
 
@@ -2287,6 +2647,7 @@ function GradedListingCard({
 function RawListingCard({
   item,
   card,
+  resolvedImageUrl,
   isSaved,
   saveLoading,
   onSaveListing,
@@ -2299,6 +2660,7 @@ function RawListingCard({
 }: {
   item: InventoryItem;
   card: Card;
+  resolvedImageUrl: string | null;
   isSaved: boolean;
   saveLoading: boolean;
   onSaveListing: () => void;
@@ -2337,20 +2699,17 @@ function RawListingCard({
 
         <div className="aspect-[3/4] bg-black border border-zinc-900 rounded-2xl overflow-hidden">
 
-          {card.image_url ? (
-            <img
-              src={card.image_url}
-              alt={
-                card.name ||
-                "Card"
-              }
-              className="w-full h-full object-contain"
-            />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center text-zinc-700">
-              No Image
-            </div>
-          )}
+          {resolvedImageUrl ? (
+                  <img
+                    src={resolvedImageUrl}
+                    alt={card.name || "Card"}
+                    className="w-full h-full object-contain"
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-zinc-700">
+                    No Image
+                  </div>
+                )}
 
         </div>
 

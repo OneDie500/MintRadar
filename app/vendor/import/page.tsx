@@ -1428,46 +1428,352 @@ function itemLabel(
   return row.condition || "Raw";
 }
 
-function cardMatchFilter(
-  row: NormalizedRow
+function normalizeImportCardNumber(
+  value: string
 ) {
-  return {
-    name: row.name.trim(),
-    setName: row.setName.trim(),
-    cardNumber:
-      row.cardNumber.trim(),
-    category:
-      row.category.trim(),
-  };
+  return value
+    .trim()
+    .replace(/^#/, "")
+    .split("/")[0]
+    .trim();
+}
+
+function compactImportCardNumber(
+  value: string
+) {
+  return normalizeImportCardNumber(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function normalizeSetForMatch(
+  value: string
+) {
+  return normalizeKey(value)
+    .replace(/&/g, " and ")
+    .replace(/\bpokemon\b/g, " ")
+    .replace(/\btrading card game\b/g, " ")
+    .replace(/\bbase set\b/g, " ")
+    .replace(/\btrainer gallery\b/g, " ")
+    .replace(/\bgalarian gallery\b/g, " ")
+    .replace(/\bshiny vault\b/g, " ")
+    .replace(/\bpromo cards?\b/g, " promo ")
+    .replace(/\bblack star\b/g, " promo ")
+    .replace(/\bsv\b/g, " scarlet violet ")
+    .replace(/\bswsh\b/g, " sword shield ")
+    .replace(/\bsun moon\b/g, " sun and moon ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenSet(
+  value: string
+) {
+  return new Set(
+    normalizeSetForMatch(value)
+      .split(" ")
+      .filter(
+        (word) =>
+          word.length > 1
+      )
+  );
+}
+
+function setSimilarityScore(
+  left: string,
+  right: string
+) {
+  const a = normalizeSetForMatch(left);
+  const b = normalizeSetForMatch(right);
+
+  if (!a || !b) {
+    return 0;
+  }
+
+  if (a === b) {
+    return 500;
+  }
+
+  if (
+    a.includes(b) ||
+    b.includes(a)
+  ) {
+    return 360;
+  }
+
+  const aWords = tokenSet(a);
+  const bWords = tokenSet(b);
+
+  if (
+    aWords.size === 0 ||
+    bWords.size === 0
+  ) {
+    return 0;
+  }
+
+  let overlap = 0;
+
+  for (const word of aWords) {
+    if (bWords.has(word)) {
+      overlap += 1;
+    }
+  }
+
+  const denominator =
+    Math.max(
+      aWords.size,
+      bWords.size
+    );
+
+  const ratio =
+    overlap / denominator;
+
+  if (ratio >= 0.8) {
+    return 300;
+  }
+
+  if (ratio >= 0.6) {
+    return 220;
+  }
+
+  if (ratio >= 0.4) {
+    return 130;
+  }
+
+  return overlap > 0
+    ? 50
+    : 0;
+}
+
+function candidateImageUrl(
+  candidate: any
+) {
+  return (
+    candidate?.image_url ||
+    candidate?.image ||
+    candidate?.images?.large ||
+    candidate?.images?.small ||
+    null
+  );
+}
+
+function candidateSetName(
+  candidate: any
+) {
+  return String(
+    candidate?.set_name ||
+      candidate?.set ||
+      candidate?.setName ||
+      candidate?.release_name ||
+      ""
+  );
+}
+
+function candidateCardNumber(
+  candidate: any
+) {
+  return String(
+    candidate?.card_number ||
+      candidate?.number ||
+      candidate?.cardNumber ||
+      ""
+  );
+}
+
+function scoreImportedCardCandidate(
+  row: NormalizedRow,
+  candidate: any
+) {
+  const rowName =
+    normalizeKey(row.name);
+
+  const candidateName =
+    normalizeKey(
+      candidate?.name || ""
+    );
+
+  if (
+    !rowName ||
+    !candidateName
+  ) {
+    return -1;
+  }
+
+  let score = 0;
+
+  if (candidateName === rowName) {
+    score += 1200;
+  } else if (
+    candidateName.includes(rowName) ||
+    rowName.includes(candidateName)
+  ) {
+    score += 700;
+  } else {
+    return -1;
+  }
+
+  const rowNumber =
+    compactImportCardNumber(
+      row.cardNumber || ""
+    );
+
+  const candidateNumber =
+    compactImportCardNumber(
+      candidateCardNumber(candidate)
+    );
+
+  if (
+    rowNumber &&
+    candidateNumber
+  ) {
+    if (
+      candidateNumber === rowNumber
+    ) {
+      score += 700;
+    } else {
+      // If both sides have explicit numbers and they disagree,
+      // this should almost never win over a matching-number card.
+      score -= 550;
+    }
+  }
+
+  score += setSimilarityScore(
+    row.setName || "",
+    candidateSetName(candidate)
+  );
+
+  if (candidateImageUrl(candidate)) {
+    score += 50;
+  }
+
+  if (
+    candidate?.external_id &&
+    candidate?.data_source &&
+    !String(
+      candidate.data_source
+    ).includes("_import")
+  ) {
+    score += 75;
+  }
+
+  return score;
+}
+
+function bestConfidentImportCandidate(
+  row: NormalizedRow,
+  candidates: any[],
+  requireImage = false
+) {
+  const ranked =
+    candidates
+      .map((candidate: any) => ({
+        candidate,
+        score:
+          scoreImportedCardCandidate(
+            row,
+            candidate
+          ),
+      }))
+      .filter(
+        ({ candidate, score }) =>
+          score >= 1200 &&
+          (!requireImage ||
+            Boolean(
+              candidateImageUrl(
+                candidate
+              )
+            ))
+      )
+      .sort(
+        (a, b) =>
+          b.score - a.score
+      );
+
+  if (ranked.length === 0) {
+    return null;
+  }
+
+  const best = ranked[0];
+  const second = ranked[1];
+
+  // For a name-only-ish result with several equally plausible printings,
+  // leave it blank rather than attaching the wrong artwork.
+  if (
+    second &&
+    best.score < 1800 &&
+    best.score - second.score < 120
+  ) {
+    return null;
+  }
+
+  return best.candidate;
 }
 
 async function findExistingCard(
   row: NormalizedRow
 ) {
-  const filter =
-    cardMatchFilter(row);
+  const category =
+    (row.category || "")
+      .trim()
+      .toLowerCase();
+
+  if (category === "pokemon") {
+    const {
+      data,
+      error,
+    } = await supabase
+      .from("cards")
+      .select(
+        "id,name,set_name,card_number,image_url,external_id,data_source"
+      )
+      .ilike(
+        "name",
+        row.name.trim()
+      )
+      .eq(
+        "category",
+        "Pokemon"
+      )
+      .limit(150);
+
+    if (error) {
+      throw error;
+    }
+
+    const best =
+      bestConfidentImportCandidate(
+        row,
+        Array.isArray(data)
+          ? data
+          : []
+      );
+
+    if (best) {
+      return best;
+    }
+  }
 
   let query = supabase
     .from("cards")
     .select(
-      "id, image_url, external_id, data_source"
+      "id,name,set_name,card_number,image_url,external_id,data_source"
     )
     .ilike(
       "name",
-      filter.name
+      row.name.trim()
     );
 
-  if (filter.setName) {
+  if (row.setName.trim()) {
     query = query.ilike(
       "set_name",
-      filter.setName
+      row.setName.trim()
     );
   }
 
-  if (filter.cardNumber) {
+  if (row.cardNumber.trim()) {
     query = query.ilike(
       "card_number",
-      filter.cardNumber
+      row.cardNumber.trim()
     );
   }
 
@@ -1489,7 +1795,6 @@ async function findExistingCard(
     return null;
   }
 
-  // Prefer a local card that already has provider identity.
   const providerCard =
     rows.find(
       (candidate: any) =>
@@ -1506,40 +1811,137 @@ async function findExistingCard(
   );
 }
 
-async function resolveImportImage(
+async function fetchPokemonCatalogCandidates(
+  query: string
+) {
+  try {
+    const response = await fetch(
+      `/api/catalog/search?q=${encodeURIComponent(
+        query
+      )}`,
+      {
+        cache: "no-store",
+      }
+    );
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const payload =
+      await response.json();
+
+    return Array.isArray(
+      payload?.results
+    )
+      ? payload.results
+      : [];
+  } catch (error) {
+    console.warn(
+      `Local Pokémon catalog lookup skipped for "${query}":`,
+      error
+    );
+    return [];
+  }
+}
+
+async function searchLocalPokemonImage(
   row: NormalizedRow
 ): Promise<string | null> {
-  if (row.imageUrl) {
-    return row.imageUrl;
+  const normalizedNumber =
+    normalizeImportCardNumber(
+      row.cardNumber || ""
+    );
+
+  const queries = [
+    [row.name, normalizedNumber]
+      .filter(Boolean)
+      .join(" "),
+    [row.name, row.setName]
+      .filter(Boolean)
+      .join(" "),
+    row.name,
+  ].filter(Boolean);
+
+  const seen =
+    new Set<string>();
+
+  const allCandidates: any[] = [];
+
+  for (const query of queries) {
+    const key =
+      query
+        .trim()
+        .toLowerCase();
+
+    if (!key || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+
+    const candidates =
+      await fetchPokemonCatalogCandidates(
+        query
+      );
+
+    allCandidates.push(
+      ...candidates
+    );
+
+    const best =
+      bestConfidentImportCandidate(
+        row,
+        allCandidates,
+        true
+      );
+
+    if (best) {
+      const image =
+        candidateImageUrl(best);
+
+      if (image) {
+        return String(image);
+      }
+    }
   }
 
-  const category = (
-    row.category || ""
-  )
-    .trim()
-    .toLowerCase();
+  return null;
+}
 
-  if (category !== "pokemon") {
-    return null;
+async function requestPokemonFallbackImage(
+  row: NormalizedRow,
+  options?: {
+    setName?: string;
+    cardNumber?: string;
   }
-
+): Promise<string | null> {
   try {
     const params =
       new URLSearchParams({
         name: row.name,
       });
 
-    if (row.setName) {
+    const setName =
+      options?.setName ?? row.setName;
+
+    const cardNumber =
+      options?.cardNumber ??
+      normalizeImportCardNumber(
+        row.cardNumber || ""
+      );
+
+    if (setName) {
       params.set(
         "setName",
-        row.setName
+        setName
       );
     }
 
-    if (row.cardNumber) {
+    if (cardNumber) {
       params.set(
         "cardNumber",
-        row.cardNumber
+        cardNumber
       );
     }
 
@@ -1550,11 +1952,14 @@ async function resolveImportImage(
       }
     );
 
+    if (!response.ok) {
+      return null;
+    }
+
     const payload =
       await response.json();
 
     if (
-      response.ok &&
       payload?.ok &&
       payload?.imageUrl
     ) {
@@ -1564,9 +1969,101 @@ async function resolveImportImage(
     }
   } catch (error) {
     console.warn(
-      `CSV image enrichment skipped for ${row.name}:`,
+      `Pokémon image fallback skipped for ${row.name}:`,
       error
     );
+  }
+
+  return null;
+}
+
+async function resolveImportImage(
+  row: NormalizedRow
+): Promise<string | null> {
+  if (row.imageUrl) {
+    return row.imageUrl;
+  }
+
+  const category =
+    (row.category || "")
+      .trim()
+      .toLowerCase();
+
+  if (category !== "pokemon") {
+    return null;
+  }
+
+  // Round 2:
+  // 1) Search MintRadar's canonical catalog using multiple interpretations.
+  // 2) Normalize collector numbers such as 166/236 -> 166.
+  // 3) Try the external fallback with progressively broader but still
+  //    confidence-checked combinations.
+  const localImage =
+    await searchLocalPokemonImage(
+      row
+    );
+
+  if (localImage) {
+    return localImage;
+  }
+
+  const originalNumber =
+    (row.cardNumber || "")
+      .trim();
+
+  const normalizedNumber =
+    normalizeImportCardNumber(
+      originalNumber
+    );
+
+  const fallbackAttempts = [
+    {
+      setName: row.setName,
+      cardNumber:
+        normalizedNumber,
+    },
+    {
+      setName: row.setName,
+      cardNumber:
+        originalNumber,
+    },
+    {
+      setName: "",
+      cardNumber:
+        normalizedNumber,
+    },
+    {
+      setName: row.setName,
+      cardNumber: "",
+    },
+  ];
+
+  const seen =
+    new Set<string>();
+
+  for (
+    const attempt of
+    fallbackAttempts
+  ) {
+    const key =
+      `${attempt.setName}|${attempt.cardNumber}`
+        .toLowerCase();
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+
+    const image =
+      await requestPokemonFallbackImage(
+        row,
+        attempt
+      );
+
+    if (image) {
+      return image;
+    }
   }
 
   return null;
@@ -1652,8 +2149,6 @@ async function getOrCreateCard(
     await findExistingCard(row);
 
   if (existing?.id) {
-    // Preserve an existing catalog image. If it is missing,
-    // use the CSV image first, then MintRadar's Pokémon resolver.
     if (!existing.image_url) {
       const resolvedImageUrl =
         await resolveImportImage(
@@ -1950,20 +2445,51 @@ export default function VendorImportPage() {
       ownedVendorIds,
     ]);
 
+  // Keep destination resolution deterministic across desktop/mobile.
+  // Personal Collection is the guaranteed fallback, so Step 4 can never
+  // silently lose its destination while the CSV remains valid.
   const selectedDestination =
-    useMemo(
-      () =>
+    useMemo<ImportDestination>(() => {
+      const matched =
         destinations.find(
           (destination) =>
             destination.id ===
             destinationKey
-        ) ||
-        destinations[0],
-      [
-        destinations,
-        destinationKey,
-      ]
-    );
+        );
+
+      if (matched) {
+        return matched;
+      }
+
+      return {
+        kind: "collection",
+        id: "personal-collection",
+        label: "Personal Collection",
+        subtitle:
+          "Your private MintRadar collection",
+      };
+    }, [
+      destinations,
+      destinationKey,
+    ]);
+
+  useEffect(() => {
+    const destinationStillExists =
+      destinations.some(
+        (destination) =>
+          destination.id ===
+          destinationKey
+      );
+
+    if (!destinationStillExists) {
+      setDestinationKey(
+        "personal-collection"
+      );
+    }
+  }, [
+    destinations,
+    destinationKey,
+  ]);
 
 
   const normalizedRows =
@@ -2073,13 +2599,6 @@ export default function VendorImportPage() {
     if (!userId) {
       setPageError(
         "Your account could not be verified."
-      );
-      return;
-    }
-
-    if (!selectedDestination) {
-      setPageError(
-        "Choose where these cards should be imported."
       );
       return;
     }
@@ -2910,8 +3429,7 @@ export default function VendorImportPage() {
                 disabled={
                   importing ||
                   validRows.length ===
-                    0 ||
-                  !selectedDestination
+                    0
                 }
                 className="mt-5 w-full rounded-xl bg-emerald-400 px-5 py-4 font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
               >

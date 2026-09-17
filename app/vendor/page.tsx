@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import TradeAnalyzer from "../components/TradeAnalyzer";
+import BuyingAnalyzer from "../components/BuyingAnalyzer";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase";
 import { getActiveVendorMembership } from "../../lib/active-vendor";
@@ -2638,6 +2639,8 @@ export default function VendorDashboardPage() {
               <TradeAnalyzer
                 inventory={inventory}
               />
+
+              <BuyingAnalyzer />
 
               <Link
                 href="/vendor/import"

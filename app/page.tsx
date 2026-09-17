@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
@@ -320,6 +320,7 @@ export default function Home() {
   const [wishlistIds, setWishlistIds] = useState<Set<string>>(new Set());
   const [wishlistBusy, setWishlistBusy] = useState<string | null>(null);
   const [wishlistMessage, setWishlistMessage] = useState("");
+  const catalogSearchRequestId = useRef(0);
 
   // -----------------------------------------
   // LOAD CARDS + LIVE LISTINGS
@@ -446,15 +447,24 @@ export default function Home() {
 
   useEffect(() => {
     const query = searchTerm.trim();
+    const requestId = ++catalogSearchRequestId.current;
+    const controller = new AbortController();
 
     if (query.length < 2) {
       setCatalogResults([]);
       setCatalogError("");
       setCatalogLoading(false);
-      return;
+
+      return () => {
+        controller.abort();
+      };
     }
 
     const timer = window.setTimeout(async () => {
+      if (requestId !== catalogSearchRequestId.current) {
+        return;
+      }
+
       setCatalogLoading(true);
       setCatalogError("");
 
@@ -476,15 +486,20 @@ export default function Home() {
             : [];
 
         if (selectedRoutes.length === 0) {
-          setCatalogResults([]);
-          setCatalogLoading(false);
+          if (requestId === catalogSearchRequestId.current) {
+            setCatalogResults([]);
+            setCatalogLoading(false);
+          }
           return;
         }
 
         const responses = await Promise.allSettled(
           selectedRoutes.map(async (route) => {
             const response = await fetch(
-              `${route}?q=${encodeURIComponent(query)}`
+              `${route}?q=${encodeURIComponent(query)}`,
+              {
+                signal: controller.signal,
+              }
             );
 
             if (!response.ok) {
@@ -492,11 +507,21 @@ export default function Home() {
             }
 
             const payload = await response.json();
+
             return Array.isArray(payload?.results)
               ? payload.results
               : [];
           })
         );
+
+        // A newer keystroke/category change has already started another
+        // search. Never let this older response replace newer results.
+        if (
+          controller.signal.aborted ||
+          requestId !== catalogSearchRequestId.current
+        ) {
+          return;
+        }
 
         const merged = responses.flatMap((response) =>
           response.status === "fulfilled"
@@ -550,7 +575,9 @@ export default function Home() {
           );
         });
 
-        setCatalogResults(Array.from(unique.values()).slice(0, 60));
+        setCatalogResults(
+          Array.from(unique.values()).slice(0, 60)
+        );
 
         if (
           responses.every(
@@ -562,17 +589,32 @@ export default function Home() {
           );
         }
       } catch (error) {
+        if (
+          controller.signal.aborted ||
+          requestId !== catalogSearchRequestId.current
+        ) {
+          return;
+        }
+
         console.error("Universal catalog search error:", error);
         setCatalogResults([]);
         setCatalogError(
           "Catalog search is temporarily unavailable."
         );
       } finally {
-        setCatalogLoading(false);
+        if (
+          !controller.signal.aborted &&
+          requestId === catalogSearchRequestId.current
+        ) {
+          setCatalogLoading(false);
+        }
       }
     }, 350);
 
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [searchTerm, activeCategory]);
 
   async function addToWishlist(card: CatalogCard) {

@@ -81,6 +81,61 @@ function getSupabaseClient() {
   );
 }
 
+
+async function enrichMissingPokemonImages(
+  request: NextRequest,
+  cards: NormalizedCard[]
+): Promise<NormalizedCard[]> {
+  const origin = request.nextUrl.origin;
+
+  return Promise.all(
+    cards.map(async (card) => {
+      if (card.image_url || !card.name) {
+        return card;
+      }
+
+      try {
+        const params = new URLSearchParams({
+          name: card.name,
+        });
+
+        if (card.set_name) {
+          params.set("setName", card.set_name);
+        }
+
+        if (card.card_number) {
+          params.set("cardNumber", card.card_number);
+        }
+
+        const response = await fetch(
+          `${origin}/api/catalog/pokemon-image-fallback?${params.toString()}`,
+          { cache: "no-store" }
+        );
+
+        if (!response.ok) {
+          return card;
+        }
+
+        const payload = await response.json();
+
+        if (payload?.ok && payload?.imageUrl) {
+          return {
+            ...card,
+            image_url: String(payload.imageUrl),
+          };
+        }
+      } catch (error) {
+        console.warn(
+          "Catalog image enrichment skipped:",
+          error
+        );
+      }
+
+      return card;
+    })
+  );
+}
+
 export async function GET(
   request: NextRequest
 ) {
@@ -158,10 +213,23 @@ export async function GET(
           cardTextWithinSet
         );
     } else {
-      matchingCards =
+      const directMatches =
         await searchCardsByName(
           supabase,
           query
+        );
+
+      const numericSetMatches =
+        await searchNumericSetInterpretations(
+          supabase,
+          query,
+          setCandidates
+        );
+
+      matchingCards =
+        mergeCardRows(
+          directMatches,
+          numericSetMatches
         );
     }
 
@@ -181,11 +249,21 @@ export async function GET(
         normalizeCard
       );
 
+    // ROUND 7:
+    // Fill only missing catalog images using MintRadar's existing
+    // Pokémon fallback. Existing catalog images remain untouched here;
+    // broken URLs are handled by the browser/card resolver path.
+    const enrichedResults =
+      await enrichMissingPokemonImages(
+        request,
+        results
+      );
+
     return NextResponse.json({
       query,
       page,
       pageSize: PAGE_SIZE,
-      count: results.length,
+      count: enrichedResults.length,
       hasMore:
         end < matchingCards.length,
 
@@ -217,7 +295,7 @@ export async function GET(
               cardText: query,
             },
 
-      results,
+      results: enrichedResults,
     });
   } catch (error) {
     console.error(
@@ -428,6 +506,41 @@ async function searchCardsByName(
     return [];
   }
 
+  // Treat a standalone numeric / collector-number token as a card
+  // number instead of forcing every token into the card name.
+  //
+  // Examples:
+  //   "Gastly 177"       -> name: Gastly, number: 177
+  //   "Gastly #177"      -> name: Gastly, number: 177
+  //   "177 Gastly"       -> name: Gastly, number: 177
+  //   "Gastly 177/162"   -> name: Gastly, number: 177
+  //
+  // We only do this when there is at least one non-number token so
+  // normal card-name searching remains the primary behavior.
+  const numberTokens =
+    words.filter((word) =>
+      /^\d+(?:[a-z]+)?$/.test(word)
+    );
+
+  const nameWords =
+    words.filter(
+      (word) =>
+        !numberTokens.includes(word)
+    );
+
+  const cardNumber =
+    nameWords.length > 0 &&
+    numberTokens.length > 0
+      ? numberTokens[
+          numberTokens.length - 1
+        ]
+      : null;
+
+  const effectiveNameWords =
+    cardNumber
+      ? nameWords
+      : words;
+
   let request =
     supabase
       .from("cards")
@@ -443,12 +556,25 @@ async function searchCardsByName(
         "Pokemon"
       );
 
-  for (const word of words) {
+  for (
+    const word of
+    effectiveNameWords
+  ) {
     request =
       request.ilike(
         "name",
         `%${escapeLikePattern(
           word
+        )}%`
+      );
+  }
+
+  if (cardNumber) {
+    request =
+      request.ilike(
+        "card_number",
+        `${escapeLikePattern(
+          cardNumber
         )}%`
       );
   }
@@ -463,6 +589,10 @@ async function searchCardsByName(
         "set_name",
         { ascending: true }
       )
+      .order(
+        "card_number",
+        { ascending: true }
+      )
       .limit(1000);
 
   if (error) {
@@ -472,6 +602,135 @@ async function searchCardsByName(
   }
 
   return (data ?? []) as CardRow[];
+}
+
+async function searchNumericSetInterpretations(
+  supabase: ReturnType<
+    typeof getSupabaseClient
+  >,
+  query: string,
+  setCandidates: SetCandidate[]
+): Promise<CardRow[]> {
+  const normalizedQuery =
+    normalizeText(query);
+
+  const queryWords =
+    normalizedQuery
+      .split(" ")
+      .filter(Boolean);
+
+  const numericTokens =
+    queryWords.filter((word) =>
+      /^\d+$/.test(word)
+    );
+
+  if (numericTokens.length === 0) {
+    return [];
+  }
+
+  // A number beside a card name can legitimately mean either a
+  // collector number or a numeric set name/code. Search both rather
+  // than forcing one interpretation.
+  //
+  // Examples:
+  //   "Gastly 177"    -> normal search can find Gastly #177
+  //   "Charizard 151" -> numeric-set search can find Charizard in 151
+  const candidateSets =
+    setCandidates.filter(
+      (candidate) => {
+        const setName =
+          normalizeText(
+            candidate.set.name || ""
+          );
+
+        const setCode =
+          normalizeText(
+            candidate.set.code || ""
+          );
+
+        return numericTokens.some(
+          (token) =>
+            setName === token ||
+            setCode === token
+        );
+      }
+    );
+
+  if (candidateSets.length === 0) {
+    return [];
+  }
+
+  const matches =
+    await Promise.all(
+      candidateSets
+        .slice(0, 5)
+        .map(async (candidate) => {
+          const setName =
+            normalizeText(
+              candidate.set.name || ""
+            );
+
+          const setCode =
+            normalizeText(
+              candidate.set.code || ""
+            );
+
+          const numericSetTokens =
+            new Set(
+              numericTokens.filter(
+                (token) =>
+                  setName === token ||
+                  setCode === token
+              )
+            );
+
+          const cardText =
+            queryWords
+              .filter(
+                (word) =>
+                  !numericSetTokens.has(word) &&
+                  !STOP_WORDS.has(word)
+              )
+              .join(" ")
+              .trim();
+
+          if (!cardText) {
+            return [];
+          }
+
+          return searchWithinSet(
+            supabase,
+            candidate.set,
+            cardText
+          );
+        })
+    );
+
+  return mergeCardRows(
+    ...matches
+  );
+}
+
+function mergeCardRows(
+  ...groups: CardRow[][]
+): CardRow[] {
+  const unique =
+    new Map<string, CardRow>();
+
+  for (const group of groups) {
+    for (const card of group) {
+      const key =
+        `${card.data_source || ""}:${card.external_id}`;
+
+      if (!unique.has(key)) {
+        unique.set(key, card);
+      }
+    }
+  }
+
+  return Array.from(
+    unique.values()
+  );
 }
 
 function normalizeCard(
