@@ -11,6 +11,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase";
 import {
   getActiveVendorMembership,
+  getVendorMemberships,
   type ActiveVendorMembership,
 } from "../../../lib/active-vendor";
 
@@ -63,6 +64,21 @@ type NormalizedRow = {
   errors: string[];
   warnings: string[];
 };
+
+type ImportDestination =
+  | {
+      kind: "collection";
+      id: "personal-collection";
+      label: "Personal Collection";
+      subtitle: "Your private MintRadar collection";
+    }
+  | {
+      kind: "vendor";
+      id: string;
+      label: string;
+      subtitle: "Your Vendor" | "Shared Vendor";
+      membership: ActiveVendorMembership;
+    };
 
 type ImportResult = {
   rowNumber: number;
@@ -1684,6 +1700,32 @@ export default function VendorImportPage() {
     );
 
   const [
+    userId,
+    setUserId,
+  ] = useState("");
+
+  const [
+    vendorMemberships,
+    setVendorMemberships,
+  ] = useState<
+    ActiveVendorMembership[]
+  >([]);
+
+  const [
+    ownedVendorIds,
+    setOwnedVendorIds,
+  ] = useState<Set<string>>(
+    new Set()
+  );
+
+  const [
+    destinationKey,
+    setDestinationKey,
+  ] = useState(
+    "personal-collection"
+  );
+
+  const [
     authLoading,
     setAuthLoading,
   ] = useState(true);
@@ -1739,7 +1781,7 @@ export default function VendorImportPage() {
   ] = useState("");
 
   useEffect(() => {
-    async function loadVendor() {
+    async function loadDestinations() {
       try {
         setAuthLoading(true);
         setPageError("");
@@ -1761,41 +1803,168 @@ export default function VendorImportPage() {
           return;
         }
 
-        const activeMembership =
-          await getActiveVendorMembership(
+        setUserId(session.user.id);
+
+        const [
+          activeMembership,
+          memberships,
+        ] = await Promise.all([
+          getActiveVendorMembership(
             supabase,
             session.user.id
-          );
-
-        if (!activeMembership) {
-          setMembership(null);
-          setPageError(
-            "This account is not connected to a vendor."
-          );
-          return;
-        }
+          ),
+          getVendorMemberships(
+            supabase,
+            session.user.id
+          ),
+        ]);
 
         setMembership(
           activeMembership
         );
+
+        setVendorMemberships(
+          memberships
+        );
+
+        if (
+          memberships.length > 0
+        ) {
+          const vendorIds =
+            memberships.map(
+              (item) =>
+                item.vendor_id
+            );
+
+          const {
+            data: ownedVendors,
+            error: ownedVendorError,
+          } = await supabase
+            .from("vendors")
+            .select("id")
+            .in("id", vendorIds)
+            .eq(
+              "user_id",
+              session.user.id
+            );
+
+          if (ownedVendorError) {
+            console.warn(
+              "Could not classify owned vendors:",
+              ownedVendorError
+            );
+          }
+
+          setOwnedVendorIds(
+            new Set(
+              (
+                ownedVendors || []
+              ).map(
+                (vendor: any) =>
+                  String(vendor.id)
+              )
+            )
+          );
+        } else {
+          setOwnedVendorIds(
+            new Set()
+          );
+        }
+
+        // Keep the import page safe and explicit:
+        // default to the user's private collection every visit.
+        setDestinationKey(
+          "personal-collection"
+        );
       } catch (error: any) {
         console.error(
-          "CSV import membership error:",
+          "CSV import destination error:",
           error
         );
 
         setMembership(null);
+        setVendorMemberships([]);
+        setOwnedVendorIds(
+          new Set()
+        );
         setPageError(
           error?.message ||
-            "MintRadar could not verify your active vendor."
+            "MintRadar could not verify your import destinations."
         );
       } finally {
         setAuthLoading(false);
       }
     }
 
-    void loadVendor();
+    void loadDestinations();
   }, [router]);
+
+  const destinations =
+    useMemo<
+      ImportDestination[]
+    >(() => {
+      const collection:
+        ImportDestination = {
+        kind: "collection",
+        id: "personal-collection",
+        label:
+          "Personal Collection",
+        subtitle:
+          "Your private MintRadar collection",
+      };
+
+      const vendors =
+        vendorMemberships.map(
+          (
+            vendorMembership
+          ): ImportDestination => {
+            const owned =
+              ownedVendorIds.has(
+                vendorMembership.vendor_id
+              );
+
+            return {
+              kind: "vendor",
+              id:
+                vendorMembership.vendor_id,
+              label:
+                vendorMembership.vendor
+                  ?.business_name
+                  ?.trim() ||
+                "MintRadar Vendor",
+              subtitle: owned
+                ? "Your Vendor"
+                : "Shared Vendor",
+              membership:
+                vendorMembership,
+            };
+          }
+        );
+
+      return [
+        collection,
+        ...vendors,
+      ];
+    }, [
+      vendorMemberships,
+      ownedVendorIds,
+    ]);
+
+  const selectedDestination =
+    useMemo(
+      () =>
+        destinations.find(
+          (destination) =>
+            destination.id ===
+            destinationKey
+        ) ||
+        destinations[0],
+      [
+        destinations,
+        destinationKey,
+      ]
+    );
+
 
   const normalizedRows =
     useMemo(
@@ -1901,11 +2070,28 @@ export default function VendorImportPage() {
   }
 
   async function importRows() {
+    if (!userId) {
+      setPageError(
+        "Your account could not be verified."
+      );
+      return;
+    }
+
+    if (!selectedDestination) {
+      setPageError(
+        "Choose where these cards should be imported."
+      );
+      return;
+    }
+
     if (
-      !membership?.vendor_id
+      selectedDestination.kind ===
+        "vendor" &&
+      !selectedDestination
+        .membership?.vendor_id
     ) {
       setPageError(
-        "Vendor account could not be verified."
+        "That vendor destination could not be verified."
       );
       return;
     }
@@ -1940,11 +2126,6 @@ export default function VendorImportPage() {
         validRows[index];
 
       try {
-        const cardId =
-          await getOrCreateCard(
-            row
-          );
-
         const notes =
           buildNotes({
             notes: row.notes,
@@ -1954,58 +2135,164 @@ export default function VendorImportPage() {
               row.portfolioName,
           });
 
-        const {
-          error:
-            inventoryError,
-        } = await supabase
-          .from("inventory")
-          .insert({
-            vendor_id:
-              membership.vendor_id,
-            card_id: cardId,
+        if (
+          selectedDestination.kind ===
+          "collection"
+        ) {
+          const resolvedImageUrl =
+            await resolveImportImage(
+              row
+            );
 
-            listing_type:
-              row.listingType,
+          const snapshot = {
+            card_name:
+              row.name || null,
+            set_name:
+              row.setName ||
+              null,
+            set_id: null,
+            card_number:
+              row.cardNumber ||
+              null,
+            image_url:
+              resolvedImageUrl ||
+              null,
+            category:
+              row.category ||
+              null,
+            rarity:
+              row.rarity || null,
+            edition:
+              row.edition || null,
+            finish:
+              row.finish || null,
+            illustrator: null,
+            year: null,
+            manufacturer: null,
+            release_name: null,
+            parallel_name:
+              row.finish || null,
+            sport: null,
+            print_run: null,
+            rookie: null,
+            external_id:
+              row.sourceExternalId ||
+              row.sourceSecondaryId ||
+              null,
+            data_source:
+              `${row.source}_import`,
+          };
 
-            condition:
-              row.listingType ===
-              "raw"
-                ? row.condition ||
-                  "NM"
-                : null,
+          const {
+            error:
+              collectionError,
+          } = await supabase.rpc(
+            "add_collection_item",
+            {
+              p_card_id: null,
+              p_snapshot:
+                snapshot,
+              p_item_type:
+                row.listingType,
+              p_quantity:
+                row.quantity,
+              p_condition:
+                row.listingType ===
+                "raw"
+                  ? row.condition ||
+                    "NM"
+                  : null,
+              p_grading_company:
+                row.listingType ===
+                "graded"
+                  ? row.gradingCompany ||
+                    null
+                  : null,
+              p_grade:
+                row.listingType ===
+                "graded"
+                  ? row.grade ||
+                    null
+                  : null,
+              p_cert_number:
+                row.listingType ===
+                "graded"
+                  ? row.certNumber ||
+                    null
+                  : null,
+              p_personal_value:
+                row.marketPrice,
+              p_notes:
+                notes || null,
+              p_source:
+                "csv_import",
+            }
+          );
 
-            grading_company:
-              row.listingType ===
-              "graded"
-                ? row.gradingCompany ||
-                  null
-                : null,
+          if (collectionError) {
+            throw collectionError;
+          }
+        } else {
+          const cardId =
+            await getOrCreateCard(
+              row
+            );
 
-            grade:
-              row.listingType ===
-              "graded"
-                ? row.grade ||
-                  null
-                : null,
+          const {
+            error:
+              inventoryError,
+          } = await supabase
+            .from("inventory")
+            .insert({
+              vendor_id:
+                selectedDestination
+                  .membership
+                  .vendor_id,
+              card_id: cardId,
 
-            cert_number:
-              row.listingType ===
-              "graded"
-                ? row.certNumber ||
-                  null
-                : null,
+              listing_type:
+                row.listingType,
 
-            price: null,
+              condition:
+                row.listingType ===
+                "raw"
+                  ? row.condition ||
+                    "NM"
+                  : null,
 
-            quantity:
-              row.quantity,
+              grading_company:
+                row.listingType ===
+                "graded"
+                  ? row.gradingCompany ||
+                    null
+                  : null,
 
-            notes:
-              notes || null,
-          });
+              grade:
+                row.listingType ===
+                "graded"
+                  ? row.grade ||
+                    null
+                  : null,
 
-        if (inventoryError) {
-          throw inventoryError;
+              cert_number:
+                row.listingType ===
+                "graded"
+                  ? row.certNumber ||
+                    null
+                  : null,
+
+              price: null,
+
+              quantity:
+                row.quantity,
+
+              notes:
+                notes || null,
+            });
+
+          if (inventoryError) {
+            throw inventoryError;
+          }
         }
 
         importResults.push({
@@ -2013,7 +2300,7 @@ export default function VendorImportPage() {
             row.rowNumber,
           ok: true,
           message:
-            `${row.name} imported.`,
+            `${row.name} imported to ${selectedDestination.label}.`,
         });
       } catch (error: any) {
         console.error(
@@ -2044,6 +2331,7 @@ export default function VendorImportPage() {
     );
     setImporting(false);
   }
+
 
   const successfulImports =
     results.filter(
@@ -2133,14 +2421,127 @@ export default function VendorImportPage() {
             {successfulImports >
               0 && (
               <Link
-                href="/vendor"
+                href={
+                  selectedDestination
+                    ?.kind ===
+                  "collection"
+                    ? "/customer/collection"
+                    : "/vendor"
+                }
                 className="mt-3 inline-block text-sm font-black underline"
               >
-                View imported inventory →
+                {selectedDestination
+                  ?.kind ===
+                "collection"
+                  ? "View collection →"
+                  : "View imported inventory →"}
               </Link>
             )}
           </div>
         )}
+
+        {/* DESTINATION */}
+
+        <section className="mb-6 rounded-3xl border border-emerald-400/20 bg-zinc-950 p-5 sm:p-6">
+          <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">
+            Import Destination
+          </p>
+
+          <h2 className="mt-2 text-2xl font-black">
+            Where are these cards going?
+          </h2>
+
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-zinc-600">
+            Choose your personal collection, your own vendor inventory, or any shared vendor you have access to. This destination stays locked through validation and import.
+          </p>
+
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {destinations.map(
+              (destination) => {
+                const selected =
+                  selectedDestination
+                    ?.id ===
+                  destination.id;
+
+                return (
+                  <button
+                    key={
+                      destination.id
+                    }
+                    type="button"
+                    disabled={
+                      importing
+                    }
+                    onClick={() => {
+                      setDestinationKey(
+                        destination.id
+                      );
+                      setResults([]);
+                      setPageError("");
+                    }}
+                    className={`rounded-2xl border p-4 text-left transition ${
+                      selected
+                        ? "border-emerald-400 bg-emerald-400/10"
+                        : "border-zinc-800 bg-black hover:border-zinc-700"
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p
+                          className={`font-black ${
+                            selected
+                              ? "text-emerald-300"
+                              : "text-white"
+                          }`}
+                        >
+                          {
+                            destination.label
+                          }
+                        </p>
+
+                        <p className="mt-1 text-xs font-bold uppercase tracking-wider text-zinc-600">
+                          {
+                            destination.subtitle
+                          }
+                        </p>
+                      </div>
+
+                      <span
+                        className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] font-black ${
+                          selected
+                            ? "border-emerald-400 bg-emerald-400 text-black"
+                            : "border-zinc-700 text-transparent"
+                        }`}
+                      >
+                        ✓
+                      </span>
+                    </div>
+                  </button>
+                );
+              }
+            )}
+          </div>
+
+          {selectedDestination && (
+            <div className="mt-5 rounded-2xl border border-emerald-400/30 bg-emerald-400/10 p-4">
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-400">
+                Selected Destination
+              </p>
+
+              <p className="mt-1 text-lg font-black text-white">
+                {
+                  selectedDestination.label
+                }
+              </p>
+
+              <p className="mt-1 text-xs text-zinc-500">
+                {
+                  selectedDestination.subtitle
+                }
+              </p>
+            </div>
+          )}
+        </section>
 
         {/* UPLOAD */}
 
@@ -2473,26 +2874,30 @@ export default function VendorImportPage() {
               </p>
 
               <h2 className="mt-2 text-2xl font-black">
-                Import to Vendor Inventory
+                Confirm Import Destination
               </h2>
 
               <p className="mt-2 max-w-3xl text-sm leading-6 text-zinc-500">
-                MintRadar will try to match each row to a card you already have in the database first. If there is no match, it creates an imported catalog record and then creates the vendor inventory listing with no price. Vendors can comp and price items later.
+                Review the destination one last time before importing. Vendor imports match or create catalog records and add inventory with no sale price. Personal Collection imports create private collection entries and preserve the CSV market value as your personal value when available.
               </p>
 
-              {membership?.vendor_id && (
+              {selectedDestination && (
                 <div className="mt-5 rounded-2xl border border-emerald-400/30 bg-emerald-400/10 p-4">
                   <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-400">
                     Importing To
                   </p>
 
                   <p className="mt-1 text-lg font-black text-white">
-                    {membership.vendor?.business_name?.trim() ||
-                      "MintRadar Vendor"}
+                    {
+                      selectedDestination.label
+                    }
                   </p>
 
                   <p className="mt-1 text-xs text-zinc-500">
-                    CSV rows will be added only to this active vendor&apos;s inventory.
+                    {
+                      selectedDestination.subtitle
+                    }{" "}
+                    • {validRows.length} valid rows • {totalImportQuantity} total items
                   </p>
                 </div>
               )}
@@ -2506,7 +2911,7 @@ export default function VendorImportPage() {
                   importing ||
                   validRows.length ===
                     0 ||
-                  !membership?.vendor_id
+                  !selectedDestination
                 }
                 className="mt-5 w-full rounded-xl bg-emerald-400 px-5 py-4 font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
               >
