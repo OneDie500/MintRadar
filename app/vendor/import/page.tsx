@@ -1490,9 +1490,78 @@ async function findExistingCard(
   );
 }
 
+async function resolveImportImage(
+  row: NormalizedRow
+): Promise<string | null> {
+  if (row.imageUrl) {
+    return row.imageUrl;
+  }
+
+  const category = (
+    row.category || ""
+  )
+    .trim()
+    .toLowerCase();
+
+  if (category !== "pokemon") {
+    return null;
+  }
+
+  try {
+    const params =
+      new URLSearchParams({
+        name: row.name,
+      });
+
+    if (row.setName) {
+      params.set(
+        "setName",
+        row.setName
+      );
+    }
+
+    if (row.cardNumber) {
+      params.set(
+        "cardNumber",
+        row.cardNumber
+      );
+    }
+
+    const response = await fetch(
+      `/api/catalog/pokemon-image-fallback?${params.toString()}`,
+      {
+        cache: "no-store",
+      }
+    );
+
+    const payload =
+      await response.json();
+
+    if (
+      response.ok &&
+      payload?.ok &&
+      payload?.imageUrl
+    ) {
+      return String(
+        payload.imageUrl
+      );
+    }
+  } catch (error) {
+    console.warn(
+      `CSV image enrichment skipped for ${row.name}:`,
+      error
+    );
+  }
+
+  return null;
+}
+
 async function createImportedCard(
   row: NormalizedRow
 ) {
+  const resolvedImageUrl =
+    await resolveImportImage(row);
+
   const fallbackExternalId =
     row.sourceExternalId ||
     [
@@ -1532,7 +1601,7 @@ async function createImportedCard(
       card_number:
         row.cardNumber || null,
       image_url:
-        row.imageUrl || null,
+        resolvedImageUrl || null,
       category:
         row.category || "Other",
       rarity:
@@ -1567,21 +1636,34 @@ async function getOrCreateCard(
     await findExistingCard(row);
 
   if (existing?.id) {
-    // Fill missing image when the CSV has one.
-    if (
-      row.imageUrl &&
-      !existing.image_url
-    ) {
-      await supabase
-        .from("cards")
-        .update({
-          image_url:
-            row.imageUrl,
-        })
-        .eq(
-          "id",
-          existing.id
+    // Preserve an existing catalog image. If it is missing,
+    // use the CSV image first, then MintRadar's Pokémon resolver.
+    if (!existing.image_url) {
+      const resolvedImageUrl =
+        await resolveImportImage(
+          row
         );
+
+      if (resolvedImageUrl) {
+        const { error: imageUpdateError } =
+          await supabase
+            .from("cards")
+            .update({
+              image_url:
+                resolvedImageUrl,
+            })
+            .eq(
+              "id",
+              existing.id
+            );
+
+        if (imageUpdateError) {
+          console.warn(
+            `CSV image save skipped for ${row.name}:`,
+            imageUpdateError
+          );
+        }
+      }
     }
 
     return existing.id as string;
