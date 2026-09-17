@@ -9,6 +9,10 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase";
+import {
+  getActiveVendorMembership,
+  type ActiveVendorMembership,
+} from "../../../lib/active-vendor";
 
 type SourcePreset =
   | "tcgplayer"
@@ -20,10 +24,6 @@ type ListingType =
   | "raw"
   | "graded"
   | "sealed";
-
-type Membership = {
-  vendor_id: string;
-};
 
 type CsvRow = Record<string, string>;
 
@@ -1597,7 +1597,7 @@ export default function VendorImportPage() {
     membership,
     setMembership,
   ] =
-    useState<Membership | null>(
+    useState<ActiveVendorMembership | null>(
       null
     );
 
@@ -1658,49 +1658,58 @@ export default function VendorImportPage() {
 
   useEffect(() => {
     async function loadVendor() {
-      const {
-        data: { session },
-      } =
-        await supabase.auth.getSession();
+      try {
+        setAuthLoading(true);
+        setPageError("");
 
-      if (!session) {
-        router.replace(
-          "/vendor/login"
+        const {
+          data: { session },
+          error: sessionError,
+        } =
+          await supabase.auth.getSession();
+
+        if (sessionError) {
+          throw sessionError;
+        }
+
+        if (!session) {
+          router.replace(
+            "/vendor/login"
+          );
+          return;
+        }
+
+        const activeMembership =
+          await getActiveVendorMembership(
+            supabase,
+            session.user.id
+          );
+
+        if (!activeMembership) {
+          setMembership(null);
+          setPageError(
+            "This account is not connected to a vendor."
+          );
+          return;
+        }
+
+        setMembership(
+          activeMembership
         );
-        return;
-      }
-
-      const {
-        data,
-        error,
-      } = await supabase
-        .from("vendor_members")
-        .select("vendor_id")
-        .eq(
-          "user_id",
-          session.user.id
-        )
-        .maybeSingle();
-
-      if (error) {
+      } catch (error: any) {
         console.error(
           "CSV import membership error:",
           error
         );
-      }
 
-      if (!data?.vendor_id) {
+        setMembership(null);
         setPageError(
-          "This account is not connected to a vendor."
+          error?.message ||
+            "MintRadar could not verify your active vendor."
         );
-      } else {
-        setMembership({
-          vendor_id:
-            data.vendor_id,
-        });
+      } finally {
+        setAuthLoading(false);
       }
-
-      setAuthLoading(false);
     }
 
     void loadVendor();
@@ -2388,6 +2397,23 @@ export default function VendorImportPage() {
               <p className="mt-2 max-w-3xl text-sm leading-6 text-zinc-500">
                 MintRadar will try to match each row to a card you already have in the database first. If there is no match, it creates an imported catalog record and then creates the vendor inventory listing with no price. Vendors can comp and price items later.
               </p>
+
+              {membership?.vendor_id && (
+                <div className="mt-5 rounded-2xl border border-emerald-400/30 bg-emerald-400/10 p-4">
+                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-400">
+                    Importing To
+                  </p>
+
+                  <p className="mt-1 text-lg font-black text-white">
+                    {membership.vendor?.business_name?.trim() ||
+                      "MintRadar Vendor"}
+                  </p>
+
+                  <p className="mt-1 text-xs text-zinc-500">
+                    CSV rows will be added only to this active vendor&apos;s inventory.
+                  </p>
+                </div>
+              )}
 
               <button
                 type="button"
