@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../../../lib/supabase";
@@ -105,8 +105,14 @@ export default function CardDetailPage() {
 
   const [resolvedImageUrl, setResolvedImageUrl] =
     useState<string | null>(null);
-  const [imageResolutionKey, setImageResolutionKey] =
-    useState<string>("");
+
+  // Keep resolver bookkeeping out of React state. The previous state-based
+  // key caused the effect to clean itself up and abort its own fetch as soon
+  // as setImageResolutionKey() ran.
+  const imageResolutionKeyRef =
+    useRef<string>("");
+  const rejectedImageUrlRef =
+    useRef<string>("");
 
   const [loading, setLoading] =
     useState(true);
@@ -242,6 +248,8 @@ export default function CardDetailPage() {
                   ) > 0
               ),
           });
+          imageResolutionKeyRef.current = "";
+          rejectedImageUrlRef.current = "";
           setResolvedImageUrl(
             typedCard.image_url || null
           );
@@ -293,16 +301,24 @@ export default function CardDetailPage() {
       activeCard.image_url || "",
     ].join("|");
 
+    // If we already have an image that the browser has not rejected,
+    // there is nothing to recover.
     if (
-      resolvedImageUrl ||
-      imageResolutionKey === resolutionKey
+      resolvedImageUrl &&
+      resolvedImageUrl !== rejectedImageUrlRef.current
     ) {
       return;
     }
 
-    setImageResolutionKey(
-      resolutionKey
-    );
+    // Do not repeat the same completed/in-flight recovery for this card.
+    if (
+      imageResolutionKeyRef.current === resolutionKey
+    ) {
+      return;
+    }
+
+    imageResolutionKeyRef.current =
+      resolutionKey;
 
     let cancelled = false;
     const controller =
@@ -461,8 +477,22 @@ export default function CardDetailPage() {
         // MintRadar's own catalog is now the first recovery source.
         // This keeps the card page aligned with the image/search record
         // the homepage already knows about.
+        // Search the canonical/base card name rather than forcing a
+        // variant descriptor into the catalog query. Imported inventory can
+        // contain names such as "Jolteon (Poke Ball Pattern)", while the
+        // canonical catalog record is simply "Jolteon".
+        const catalogSearchName =
+          (activeCard.name || "")
+            .replace(
+              /\s*\([^)]*\)\s*$/,
+              ""
+            )
+            .trim() ||
+          activeCard.name ||
+          "";
+
         const searchParts = [
-          activeCard.name || "",
+          catalogSearchName,
           normalizeNumber(
             activeCard.card_number
           ),
@@ -611,7 +641,6 @@ export default function CardDetailPage() {
   }, [
     card,
     resolvedImageUrl,
-    imageResolutionKey,
   ]);
 
   useEffect(() => {
@@ -1642,8 +1671,10 @@ export default function CardDetailPage() {
                     alt={card.name || "Card"}
                     className="w-full h-full object-contain"
                     onError={() => {
+                      rejectedImageUrlRef.current =
+                        resolvedImageUrl || "";
+                      imageResolutionKeyRef.current = "";
                       setResolvedImageUrl(null);
-                      setImageResolutionKey("");
                     }}
                   />
                 ) : (
