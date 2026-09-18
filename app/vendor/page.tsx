@@ -10,9 +10,8 @@ import { supabase } from "../../lib/supabase";
 import { getActiveVendorMembership } from "../../lib/active-vendor";
 import QRCode from "qrcode";
 import {
-  P31SWebPrinter,
-  supportsWebBluetooth,
-} from "../../lib/p31s-web";
+  mintRadarPrintService,
+} from "../../lib/printing/print-service";
 import {
   identifyD11H,
   printD11HImage,
@@ -84,9 +83,6 @@ type Vendor = {
   id: string;
   business_name?: string | null;
 };
-
-const p31sPrinter =
-  new P31SWebPrinter();
 
 function saleMoney(
   value: number | string | null | undefined
@@ -580,9 +576,29 @@ export default function VendorDashboardPage() {
   // -----------------------------------------
 
   useEffect(() => {
-    setP31sSupported(
-      supportsWebBluetooth()
-    );
+    let active = true;
+
+    async function detectP31SPrinting() {
+      if (mintRadarPrintService.native) {
+        const supported =
+          await mintRadarPrintService.isNativePrintingSupported();
+
+        if (active) {
+          setP31sSupported(supported);
+        }
+
+        return;
+      }
+
+      if (active) {
+        setP31sSupported(
+          mintRadarPrintService.preferredTransport ===
+            "web-bluetooth"
+        );
+      }
+    }
+
+    void detectP31SPrinting();
 
     setNiimbotSupported(
       supportsNiimbotWebBluetooth()
@@ -599,6 +615,10 @@ export default function VendorDashboardPage() {
     ) {
       setLabelOrientation(savedOrientation);
     }
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   function chooseLabelOrientation(
@@ -1762,7 +1782,9 @@ export default function VendorDashboardPage() {
   async function connectP31S() {
     if (!p31sSupported) {
       setP31sStatus(
-        "Web Bluetooth is not available in this browser/device."
+        mintRadarPrintService.native
+          ? "Native Bluetooth printing is not available in this MintRadar build."
+          : "Web Bluetooth is not available in this browser/device."
       );
       return;
     }
@@ -1771,12 +1793,17 @@ export default function VendorDashboardPage() {
     setP31sStatus("");
 
     try {
-      const deviceName =
-        await p31sPrinter.connect();
+      const connection =
+        await mintRadarPrintService.connect("p31s");
 
-      setP31sConnected(true);
+      setP31sConnected(
+        connection.connected
+      );
+
       setP31sStatus(
-        `Connected to ${deviceName}.`
+        `Connected to ${
+          connection.printerName || "P31S"
+        }.`
       );
     } catch (error: any) {
       console.error(
@@ -1800,21 +1827,31 @@ export default function VendorDashboardPage() {
 
     try {
       if (
-        !p31sPrinter.connected
+        !mintRadarPrintService.isConnected(
+          "p31s"
+        )
       ) {
-        const deviceName =
-          await p31sPrinter.connect();
+        const connection =
+          await mintRadarPrintService.connect(
+            "p31s"
+          );
 
-        setP31sConnected(true);
+        setP31sConnected(
+          connection.connected
+        );
+
         setP31sStatus(
-          `Connected to ${deviceName}. Sending label...`
+          `Connected to ${
+            connection.printerName || "P31S"
+          }. Sending label...`
         );
       }
 
       const canvas =
         await buildP31SLabelCanvas();
 
-      await p31sPrinter.printCanvas(
+      await mintRadarPrintService.printCanvas(
+        "p31s",
         canvas
       );
 
