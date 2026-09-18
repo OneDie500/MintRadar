@@ -1580,6 +1580,24 @@ export default function CardDetailPage() {
         isGraded(item)
     );
 
+  const normalizedCategory = (card.category || "").trim().toLowerCase();
+  const isSportsCard = normalizedCategory === "sports" || ["baseball", "basketball", "football", "hockey", "soccer"].some((sport) => normalizedCategory.includes(sport));
+  const compSearchTerm = [card.name, card.set_name, card.card_number ? `#${card.card_number}` : ""].filter(Boolean).join(" ");
+  const encodedCompSearch = encodeURIComponent(compSearchTerm);
+  const compLinks = isSportsCard
+    ? [
+        { label: "Card Ladder", description: "Sports card pricing & sales", href: "https://www.cardladder.com/" },
+        { label: "130point", description: "Recent marketplace sales", href: "https://130point.com/sales/" },
+        { label: "eBay Sold", description: "Completed sold listings", href: `https://www.ebay.com/sch/i.html?_nkw=${encodedCompSearch}&LH_Sold=1&LH_Complete=1` },
+      ]
+    : [
+        { label: "TCGplayer", description: "Marketplace pricing", href: `https://www.tcgplayer.com/search/all/product?q=${encodedCompSearch}&view=grid` },
+        { label: "PriceCharting", description: "Price guide & sold history", href: `https://www.pricecharting.com/search-products?type=prices&q=${encodedCompSearch}` },
+        { label: "Collectr", description: "Portfolio market data", href: "https://app.getcollectr.com/" },
+        { label: "130point", description: "Recent marketplace sales", href: "https://130point.com/sales/" },
+        { label: "eBay Sold", description: "Completed sold listings", href: `https://www.ebay.com/sch/i.html?_nkw=${encodedCompSearch}&LH_Sold=1&LH_Complete=1` },
+      ];
+
   return (
     <main className="min-h-screen bg-black text-white">
 
@@ -1808,6 +1826,48 @@ export default function CardDetailPage() {
 
         </section>
 
+        {/* MARKET RESEARCH */}
+        <section className="mt-10 rounded-3xl border border-zinc-900 bg-zinc-950 p-5 sm:p-6">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.22em] text-emerald-400">Market Research</p>
+              <h2 className="mt-2 text-2xl font-black sm:text-3xl">Check the comps.</h2>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500">Jump straight to the marketplaces and pricing tools collectors use to research this card.</p>
+            </div>
+            {isMarketAdmin && (
+              <button type="button" onClick={openMarketEditor} className="inline-flex items-center justify-center rounded-xl border border-zinc-800 bg-black px-4 py-3 text-sm font-black text-zinc-300 transition hover:border-emerald-400 hover:text-emerald-300">
+                ✏️ Edit MintRadar Comps
+              </button>
+            )}
+          </div>
+          <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            {compLinks.map((link) => (
+              <a key={link.label} href={link.href} target="_blank" rel="noreferrer" className="group rounded-2xl border border-zinc-800 bg-black p-4 transition hover:border-emerald-400/70 hover:bg-emerald-400/5">
+                <div className="flex items-start justify-between gap-3">
+                  <div><p className="font-black text-white transition group-hover:text-emerald-300">{link.label}</p><p className="mt-1 text-xs leading-5 text-zinc-600">{link.description}</p></div>
+                  <span className="text-zinc-700 transition group-hover:text-emerald-400">↗</span>
+                </div>
+              </a>
+            ))}
+          </div>
+          {(card.comps || []).length > 0 && (
+            <div className="mt-5 border-t border-zinc-900 pt-5">
+              <div className="flex flex-wrap items-center gap-2"><span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-emerald-300">MintRadar Verified</span><span className="text-xs text-zinc-600">{(card.comps || []).length} saved market source{(card.comps || []).length === 1 ? "" : "s"}</span></div>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                {(card.comps || []).map((comp, index) => (
+                  <div key={`${comp.source || "source"}-${index}`} className="rounded-2xl border border-zinc-900 bg-black p-4">
+                    <p className="text-xs font-bold uppercase tracking-[0.12em] text-zinc-600">{comp.source || "Market Source"}</p>
+                    <div className="mt-2 flex items-end gap-4">
+                      {comp.average != null && <div><p className="text-[10px] uppercase tracking-wider text-zinc-700">Market</p><p className="text-xl font-black text-emerald-400">${Number(comp.average).toFixed(2)}</p></div>}
+                      {comp.last_sold != null && <div><p className="text-[10px] uppercase tracking-wider text-zinc-700">Last Sold</p><p className="text-lg font-black text-white">${Number(comp.last_sold).toFixed(2)}</p></div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+
         {/* AVAILABLE NOW */}
 
         {messageError && (
@@ -1880,141 +1940,6 @@ export default function CardDetailPage() {
 
                   <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-5">
 
-
-        <section className="mb-8 overflow-hidden rounded-2xl border border-emerald-400/30 bg-zinc-950">
-          <div className="border-b border-zinc-800 bg-emerald-400/5 px-5 py-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-black uppercase tracking-[0.22em] text-emerald-400">
-                  📡 Market Radar
-                </p>
-                <h2 className="mt-1 text-2xl font-black text-white">
-                  Market Comps
-                </h2>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                {(card.comps || []).length > 0 && (
-                  <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-emerald-300">
-                    Manually Verified
-                  </span>
-                )}
-
-                {isMarketAdmin && (
-                  <button
-                    type="button"
-                    onClick={openMarketEditor}
-                    className="rounded-full border border-zinc-700 bg-zinc-900 px-3 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-zinc-200 transition hover:border-emerald-400/50 hover:text-emerald-300"
-                  >
-                    ✏️ Edit Market Comps
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {(card.comps || []).length === 0 ? (
-            <div className="px-5 py-8">
-              <p className="text-lg font-black text-zinc-200">
-                Market data coming soon.
-              </p>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500">
-                MintRadar has not added verified marketplace comps for this
-                card yet.
-              </p>
-            </div>
-          ) : (
-            <>
-              <div className="grid gap-px bg-zinc-800 sm:grid-cols-2 lg:grid-cols-4">
-                {(card.comps || []).map((comp, index) => {
-                  const marketValue =
-                    comp.average == null ? null : Number(comp.average);
-                  const lastSold =
-                    comp.last_sold == null ? null : Number(comp.last_sold);
-
-                  return (
-                    <div
-                      key={`${comp.source || "source"}-${index}`}
-                      className="bg-zinc-950 p-5"
-                    >
-                      <p className="text-xs font-bold uppercase tracking-[0.14em] text-zinc-500">
-                        {comp.source || "Market Source"}
-                      </p>
-
-                      <p className="mt-2 text-2xl font-black text-zinc-100">
-                        {marketValue != null && Number.isFinite(marketValue)
-                          ? `$${marketValue.toFixed(2)}`
-                          : "—"}
-                      </p>
-
-                      {lastSold != null && Number.isFinite(lastSold) && (
-                        <p className="mt-2 text-xs text-zinc-500">
-                          Last observed sale: ${lastSold.toFixed(2)}
-                        </p>
-                      )}
-
-                      {comp.updated_at && (
-                        <p className="mt-1 text-xs text-zinc-600">
-                          Updated{" "}
-                          {new Date(comp.updated_at).toLocaleDateString()}
-                        </p>
-                      )}
-
-                      {comp.source_url && (
-                        <a
-                          href={comp.source_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="mt-3 inline-block text-xs font-black text-emerald-400 transition hover:text-emerald-300"
-                        >
-                          View Source ↗
-                        </a>
-                      )}
-                    </div>
-                  );
-                })}
-
-                {(() => {
-                  const values = (card.comps || [])
-                    .map((comp) => Number(comp.average))
-                    .filter(
-                      (value) => Number.isFinite(value) && value > 0
-                    );
-
-                  const mintRadarMarket =
-                    values.length > 0
-                      ? values.reduce((sum, value) => sum + value, 0) /
-                        values.length
-                      : null;
-
-                  return (
-                    <div className="bg-emerald-400/10 p-5">
-                      <p className="text-xs font-black uppercase tracking-[0.14em] text-emerald-400">
-                        MintRadar Market
-                      </p>
-                      <p className="mt-2 text-2xl font-black text-emerald-300">
-                        {mintRadarMarket != null
-                          ? `$${mintRadarMarket.toFixed(2)}`
-                          : "—"}
-                      </p>
-                      <p className="mt-2 text-xs leading-5 text-zinc-500">
-                        Average of the verified market values currently
-                        available for this card.
-                      </p>
-                    </div>
-                  );
-                })()}
-              </div>
-
-              <div className="px-5 py-4 text-xs leading-5 text-zinc-500">
-                Marketplace comps are manually researched and entered into
-                MintRadar. Values may change after they are recorded. Use the
-                source link when available to review the referenced
-                marketplace page.
-              </div>
-            </>
-          )}
-        </section>
 
                     {gradedListings.map(
                       (item) => (
@@ -2165,108 +2090,6 @@ export default function CardDetailPage() {
 
             </div>
           )}
-
-        </section>
-
-        {/* MARKET SNAPSHOT */}
-
-        <section className="mt-12">
-
-          <p className="text-emerald-400 text-xs uppercase tracking-[0.2em] font-bold">
-            Market Snapshot
-          </p>
-
-          <h2 className="text-3xl font-black mt-2">
-            Recent Comps
-          </h2>
-
-          {card.comps &&
-          card.comps.length > 0 ? (
-            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4 mt-5">
-
-              {card.comps.map(
-                (comp, index) => (
-                  <div
-                    key={`${comp.source}-${index}`}
-                    className="bg-zinc-950 border border-zinc-900 rounded-2xl p-5"
-                  >
-
-                    <p className="text-zinc-500 text-sm">
-                      {comp.source ||
-                        "Market Source"}
-                    </p>
-
-                    {comp.last_sold != null && (
-                      <div className="mt-4">
-
-                        <p className="text-xs uppercase tracking-wider text-zinc-600">
-                          Last Sold
-                        </p>
-
-                        <p className="text-2xl font-black">
-                          $
-                          {Number(
-                            comp.last_sold
-                          ).toFixed(2)}
-                        </p>
-
-                      </div>
-                    )}
-
-                    {comp.average != null && (
-                      <div className="mt-4">
-
-                        <p className="text-xs uppercase tracking-wider text-zinc-600">
-                          Average
-                        </p>
-
-                        <p className="text-2xl font-black text-emerald-400">
-                          $
-                          {Number(
-                            comp.average
-                          ).toFixed(2)}
-                        </p>
-
-                      </div>
-                    )}
-
-                  </div>
-                )
-              )}
-
-            </div>
-          ) : (
-            <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-6 mt-5">
-
-              <p className="text-zinc-500">
-                Live market data will be
-                connected here later.
-              </p>
-
-            </div>
-          )}
-
-        </section>
-
-        {/* CTA */}
-
-        <section className="mt-12 mb-8 bg-emerald-400 text-black rounded-3xl p-7 sm:p-9">
-
-          <p className="text-xs uppercase tracking-[0.2em] font-black opacity-60">
-            MintRadar
-          </p>
-
-          <h2 className="text-3xl sm:text-4xl font-black mt-2">
-            Beat the line.
-          </h2>
-
-          <p className="font-medium mt-3 max-w-2xl">
-            Find the exact collectible
-            you want and see which
-            MintRadar vendors have it
-            before you ever reach their
-            table.
-          </p>
 
         </section>
 
@@ -2456,217 +2279,116 @@ function GradedListingCard({
   onMessageVendor: () => void;
   isOwnVendorListing: boolean;
 }) {
-  const gradingCompany =
-    item.grading_company ||
-    "Graded";
-
-  const grade =
-    item.grade ||
-    "—";
+  const gradingCompany = item.grading_company || "Graded";
+  const grade = item.grade || "—";
 
   return (
-    <div className="bg-zinc-950 border border-emerald-400/30 rounded-3xl overflow-hidden">
-
-      {/* GRADE HEADER */}
-
-      <div className="bg-emerald-400 text-black px-5 py-4 flex items-center justify-between gap-4">
-
-        <div>
-          <p className="text-[10px] uppercase tracking-[0.2em] font-black opacity-60">
-            Graded Card
-          </p>
-
-          <p className="text-2xl font-black">
-            {gradingCompany} {grade}
-          </p>
-        </div>
-
-        <div className="text-right">
-
-          <p className="text-[10px] uppercase tracking-[0.15em] font-black opacity-60">
-            Grade
-          </p>
-
-          <p className="text-3xl font-black leading-none">
-            {grade}
-          </p>
-
-        </div>
-
-      </div>
-
-      {/* CARD IMAGE */}
-
-      <div className="p-5">
-
-        <div className="aspect-[3/4] bg-black border border-zinc-900 rounded-2xl overflow-hidden">
-
-          {resolvedImageUrl ? (
-                  <img
-                    src={resolvedImageUrl}
-                    alt={card.name || "Card"}
-                    className="w-full h-full object-contain"
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-zinc-700">
-                    No Image
-                  </div>
-                )}
-
-        </div>
-
-        {/* CARD NAME */}
-
-        <div className="mt-5">
-
-          <h4 className="text-2xl font-black">
-            {card.name}
-          </h4>
-
-          <p className="text-zinc-500 text-sm mt-1">
-            {card.set_name}
-
-            {card.card_number
-              ? ` #${card.card_number}`
-              : ""}
-          </p>
-
-        </div>
-
-        {/* CERT */}
-
-        {item.cert_number && (
-          <div className="mt-4 bg-black border border-zinc-900 rounded-xl p-3">
-
-            <p className="text-[10px] uppercase tracking-[0.15em] text-zinc-600 font-bold">
-              Certification
-            </p>
-
-            <p className="font-bold mt-1">
-              #{item.cert_number}
-            </p>
-
-          </div>
-        )}
-
-        {/* VENDOR */}
-
-        <div className="mt-5 border-t border-zinc-900 pt-5">
-
-          <p className="text-xs uppercase tracking-[0.15em] text-zinc-600 font-bold">
+    <div className="rounded-2xl border border-emerald-400/25 bg-zinc-950 p-5">
+      <div className="flex items-start justify-between gap-4 border-b border-zinc-900 pb-4">
+        <div className="min-w-0 flex-1">
+          <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-600">
             Available From
           </p>
+          <h3 className="mt-1 text-xl font-black leading-snug text-white sm:text-2xl">
+            {item.vendors?.business_name || "MintRadar Seller"}
+          </h3>
+        </div>
+        <span className="shrink-0 rounded-full bg-emerald-400 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.1em] text-black">
+          {gradingCompany} {grade}
+        </span>
+      </div>
 
-          <p className="text-lg font-black mt-1">
-            {item.vendors
-              ?.business_name ||
-              "MintRadar Seller"}
-          </p>
+      <div className="mt-5 flex justify-center">
+        <div className="h-48 w-32 overflow-hidden rounded-xl border border-zinc-800 bg-black sm:h-52 sm:w-36">
+          {resolvedImageUrl ? (
+            <img
+              src={resolvedImageUrl}
+              alt={card.name || "Card"}
+              className="h-full w-full object-contain"
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center px-2 text-center text-xs text-zinc-700">
+              No Image
+            </div>
+          )}
+        </div>
+      </div>
 
+      <div className="mt-5 rounded-xl border border-zinc-900 bg-black/40 p-4">
+        <div className="flex items-end justify-between gap-4">
+          <div className="min-w-0 pr-3">
+            {(card.edition || card.finish) ? (
+              <p className="text-sm font-black leading-snug text-white sm:text-base">
+                {[card.edition, card.finish].filter(Boolean).join(" · ")}
+              </p>
+            ) : (
+              <p className="text-sm font-black text-zinc-500">Card Details</p>
+            )}
+            {item.cert_number && (
+              <p className="mt-2 text-xs text-zinc-500">Cert #{item.cert_number}</p>
+            )}
+          </div>
+
+          <div className="shrink-0 text-right">
+            <p className="text-3xl font-black leading-none text-emerald-400">
+              ${Number(item.price ?? 0).toFixed(2)}
+            </p>
+            <p className="mt-2 text-xs text-zinc-600">Qty {item.quantity ?? 0}</p>
+          </div>
         </div>
 
-        {/* NOTES */}
-
         {item.notes && (
-          <p className="text-zinc-500 text-sm mt-3">
+          <p className="mt-3 line-clamp-2 text-sm leading-5 text-zinc-500">
             {item.notes}
           </p>
         )}
+      </div>
 
-        {/* PRICE */}
-
-        <div className="flex items-end justify-between gap-4 mt-6">
-
-          <div>
-
-            <p className="text-xs uppercase tracking-[0.15em] text-zinc-600 font-bold">
-              Price
-            </p>
-
-            <p className="text-3xl font-black text-emerald-400 mt-1">
-              $
-              {Number(
-                item.price ?? 0
-              ).toFixed(2)}
-            </p>
-
-          </div>
-
-          <div className="text-right">
-
-            <p className="text-xs uppercase tracking-[0.15em] text-zinc-600">
-              Qty
-            </p>
-
-            <p className="font-black mt-1">
-              {item.quantity ?? 0}
-            </p>
-
-          </div>
-
-        </div>
-
-        <button
-          type="button"
-          onClick={onSaveListing}
-          disabled={saveLoading}
-          className={`w-full mt-5 rounded-xl px-4 py-3 font-black transition disabled:cursor-not-allowed disabled:opacity-60 ${
-            isSaved
-              ? "bg-emerald-400 text-black hover:bg-emerald-300"
-              : "bg-black border border-zinc-800 text-white hover:border-emerald-400 hover:text-emerald-400"
-          }`}
-        >
-          {saveLoading
-            ? "Saving..."
-            : isSaved
-              ? "♥ Listing Saved"
-              : "♡ Save This Listing"}
-        </button>
-
+      <div className="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
         <button
           type="button"
           onClick={onCartListing}
           disabled={cartLoading}
-          className={`w-full mt-3 rounded-xl px-4 py-3 font-black transition disabled:cursor-not-allowed disabled:opacity-60 ${
+          className={`rounded-xl px-4 py-3 text-sm font-black transition disabled:cursor-not-allowed disabled:opacity-60 ${
             isInCart
               ? "bg-white text-black hover:bg-zinc-200"
               : "bg-emerald-400 text-black hover:bg-emerald-300"
           }`}
         >
-          {cartLoading
-            ? "Updating Cart..."
-            : isInCart
-              ? "✓ In Cart · Remove"
-              : "🛒 Add to Cart"}
+          {cartLoading ? "Updating..." : isInCart ? "✓ In Cart" : "🛒 Add to Cart"}
+        </button>
+
+        <button
+          type="button"
+          onClick={onSaveListing}
+          disabled={saveLoading}
+          className={`rounded-xl px-4 py-3 text-sm font-black transition disabled:cursor-not-allowed disabled:opacity-60 ${
+            isSaved
+              ? "border border-emerald-400/40 bg-emerald-400/10 text-emerald-300"
+              : "border border-zinc-800 bg-black text-zinc-300 hover:border-emerald-400 hover:text-emerald-300"
+          }`}
+        >
+          {saveLoading ? "Saving..." : isSaved ? "♥ Saved" : "♡ Save"}
         </button>
 
         <button
           type="button"
           onClick={onMessageVendor}
-          disabled={
-            messageLoading ||
-            isOwnVendorListing
-          }
-          className="w-full mt-3 rounded-xl border border-emerald-400/30 bg-black px-4 py-3 font-black text-emerald-300 transition hover:border-emerald-400 hover:bg-emerald-400/10 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={messageLoading || isOwnVendorListing}
+          className="col-span-2 rounded-xl border border-zinc-800 bg-black px-4 py-3 text-sm font-black text-zinc-300 transition hover:border-emerald-400 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-1"
         >
-          {isOwnVendorListing
-            ? "Your Vendor Listing"
-            : messageLoading
-              ? "Opening Messages..."
-              : "💬 Message Vendor"}
+          {isOwnVendorListing ? "Your Listing" : messageLoading ? "Opening..." : "💬 Message"}
         </button>
-
-        {item.vendors?.show_phone &&
-          item.vendors.phone?.trim() && (
-          <a
-            href={`tel:${item.vendors.phone.trim()}`}
-            className="flex w-full mt-3 items-center justify-center rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 font-black text-white transition hover:border-emerald-400 hover:text-emerald-300"
-          >
-            📞 Call Vendor
-          </a>
-        )}
-
       </div>
+
+      {item.vendors?.show_phone && item.vendors.phone?.trim() && (
+        <a
+          href={`tel:${item.vendors.phone.trim()}`}
+          className="mt-2 flex w-full items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm font-black text-zinc-300 transition hover:border-emerald-400 hover:text-emerald-300"
+        >
+          📞 Call Vendor
+        </a>
+      )}
     </div>
   );
 }
@@ -2703,187 +2425,109 @@ function RawListingCard({
   isOwnVendorListing: boolean;
 }) {
   return (
-    <div className="bg-zinc-950 border border-zinc-900 rounded-3xl overflow-hidden">
-
-      {/* RAW HEADER */}
-
-      <div className="bg-zinc-900 px-5 py-4 flex items-center justify-between">
-
-        <div>
-
-          <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 font-black">
-            Raw Card
-          </p>
-
-          <p className="text-xl font-black mt-1">
-            {item.condition ||
-              "Raw"}
-          </p>
-
-        </div>
-
-      </div>
-
-      {/* IMAGE */}
-
-      <div className="p-5">
-
-        <div className="aspect-[3/4] bg-black border border-zinc-900 rounded-2xl overflow-hidden">
-
-          {resolvedImageUrl ? (
-                  <img
-                    src={resolvedImageUrl}
-                    alt={card.name || "Card"}
-                    className="w-full h-full object-contain"
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-zinc-700">
-                    No Image
-                  </div>
-                )}
-
-        </div>
-
-        <h4 className="text-2xl font-black mt-5">
-          {card.name}
-        </h4>
-
-        <p className="text-zinc-500 text-sm mt-1">
-          {card.set_name}
-
-          {card.card_number
-            ? ` #${card.card_number}`
-            : ""}
-        </p>
-
-        <div className="flex flex-wrap gap-2 mt-4">
-
-          {card.edition && (
-            <span className="bg-black border border-zinc-900 rounded-full px-3 py-1 text-xs text-zinc-400">
-              {card.edition}
-            </span>
-          )}
-
-          {card.finish && (
-            <span className="bg-black border border-zinc-900 rounded-full px-3 py-1 text-xs text-zinc-400">
-              {card.finish}
-            </span>
-          )}
-
-        </div>
-
-        <div className="mt-5 border-t border-zinc-900 pt-5">
-
-          <p className="text-xs uppercase tracking-[0.15em] text-zinc-600 font-bold">
+    <div className="rounded-2xl border border-zinc-900 bg-zinc-950 p-5">
+      <div className="flex items-start justify-between gap-4 border-b border-zinc-900 pb-4">
+        <div className="min-w-0 flex-1">
+          <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-600">
             Available From
           </p>
+          <h3 className="mt-1 text-xl font-black leading-snug text-white sm:text-2xl">
+            {item.vendors?.business_name || "MintRadar Seller"}
+          </h3>
+        </div>
+        <span className="shrink-0 rounded-full border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.1em] text-white">
+          {item.condition || "Raw"}
+        </span>
+      </div>
 
-          <p className="text-lg font-black mt-1">
-            {item.vendors
-              ?.business_name ||
-              "MintRadar Seller"}
-          </p>
+      <div className="mt-5 flex justify-center">
+        <div className="h-48 w-32 overflow-hidden rounded-xl border border-zinc-800 bg-black sm:h-52 sm:w-36">
+          {resolvedImageUrl ? (
+            <img
+              src={resolvedImageUrl}
+              alt={card.name || "Card"}
+              className="h-full w-full object-contain"
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center px-2 text-center text-xs text-zinc-700">
+              No Image
+            </div>
+          )}
+        </div>
+      </div>
 
+      <div className="mt-5 rounded-xl border border-zinc-900 bg-black/40 p-4">
+        <div className="flex items-end justify-between gap-4">
+          <div className="min-w-0 pr-3">
+            {(card.edition || card.finish) ? (
+              <p className="text-sm font-black leading-snug text-white sm:text-base">
+                {[card.edition, card.finish].filter(Boolean).join(" · ")}
+              </p>
+            ) : (
+              <p className="text-sm font-black text-zinc-500">Raw Card</p>
+            )}
+          </div>
+
+          <div className="shrink-0 text-right">
+            <p className="text-3xl font-black leading-none text-emerald-400">
+              ${Number(item.price ?? 0).toFixed(2)}
+            </p>
+            <p className="mt-2 text-xs text-zinc-600">Qty {item.quantity ?? 0}</p>
+          </div>
         </div>
 
         {item.notes && (
-          <p className="text-zinc-500 text-sm mt-3">
+          <p className="mt-3 line-clamp-2 text-sm leading-5 text-zinc-500">
             {item.notes}
           </p>
         )}
+      </div>
 
-        <div className="flex items-end justify-between gap-4 mt-6">
-
-          <div>
-
-            <p className="text-xs uppercase tracking-[0.15em] text-zinc-600 font-bold">
-              Price
-            </p>
-
-            <p className="text-3xl font-black text-emerald-400 mt-1">
-              $
-              {Number(
-                item.price ?? 0
-              ).toFixed(2)}
-            </p>
-
-          </div>
-
-          <div className="text-right">
-
-            <p className="text-xs uppercase tracking-[0.15em] text-zinc-600">
-              Qty
-            </p>
-
-            <p className="font-black mt-1">
-              {item.quantity ?? 0}
-            </p>
-
-          </div>
-
-        </div>
-
-        <button
-          type="button"
-          onClick={onSaveListing}
-          disabled={saveLoading}
-          className={`w-full mt-5 rounded-xl px-4 py-3 font-black transition disabled:cursor-not-allowed disabled:opacity-60 ${
-            isSaved
-              ? "bg-emerald-400 text-black hover:bg-emerald-300"
-              : "bg-black border border-zinc-800 text-white hover:border-emerald-400 hover:text-emerald-400"
-          }`}
-        >
-          {saveLoading
-            ? "Saving..."
-            : isSaved
-              ? "♥ Listing Saved"
-              : "♡ Save This Listing"}
-        </button>
-
+      <div className="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
         <button
           type="button"
           onClick={onCartListing}
           disabled={cartLoading}
-          className={`w-full mt-3 rounded-xl px-4 py-3 font-black transition disabled:cursor-not-allowed disabled:opacity-60 ${
+          className={`rounded-xl px-4 py-3 text-sm font-black transition disabled:cursor-not-allowed disabled:opacity-60 ${
             isInCart
               ? "bg-white text-black hover:bg-zinc-200"
               : "bg-emerald-400 text-black hover:bg-emerald-300"
           }`}
         >
-          {cartLoading
-            ? "Updating Cart..."
-            : isInCart
-              ? "✓ In Cart · Remove"
-              : "🛒 Add to Cart"}
+          {cartLoading ? "Updating..." : isInCart ? "✓ In Cart" : "🛒 Add to Cart"}
+        </button>
+
+        <button
+          type="button"
+          onClick={onSaveListing}
+          disabled={saveLoading}
+          className={`rounded-xl px-4 py-3 text-sm font-black transition disabled:cursor-not-allowed disabled:opacity-60 ${
+            isSaved
+              ? "border border-emerald-400/40 bg-emerald-400/10 text-emerald-300"
+              : "border border-zinc-800 bg-black text-zinc-300 hover:border-emerald-400 hover:text-emerald-300"
+          }`}
+        >
+          {saveLoading ? "Saving..." : isSaved ? "♥ Saved" : "♡ Save"}
         </button>
 
         <button
           type="button"
           onClick={onMessageVendor}
-          disabled={
-            messageLoading ||
-            isOwnVendorListing
-          }
-          className="w-full mt-3 rounded-xl border border-emerald-400/30 bg-black px-4 py-3 font-black text-emerald-300 transition hover:border-emerald-400 hover:bg-emerald-400/10 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={messageLoading || isOwnVendorListing}
+          className="col-span-2 rounded-xl border border-zinc-800 bg-black px-4 py-3 text-sm font-black text-zinc-300 transition hover:border-emerald-400 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-1"
         >
-          {isOwnVendorListing
-            ? "Your Vendor Listing"
-            : messageLoading
-              ? "Opening Messages..."
-              : "💬 Message Vendor"}
+          {isOwnVendorListing ? "Your Listing" : messageLoading ? "Opening..." : "💬 Message"}
         </button>
-
-        {item.vendors?.show_phone &&
-          item.vendors.phone?.trim() && (
-          <a
-            href={`tel:${item.vendors.phone.trim()}`}
-            className="flex w-full mt-3 items-center justify-center rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 font-black text-white transition hover:border-emerald-400 hover:text-emerald-300"
-          >
-            📞 Call Vendor
-          </a>
-        )}
-
       </div>
+
+      {item.vendors?.show_phone && item.vendors.phone?.trim() && (
+        <a
+          href={`tel:${item.vendors.phone.trim()}`}
+          className="mt-2 flex w-full items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm font-black text-zinc-300 transition hover:border-emerald-400 hover:text-emerald-300"
+        >
+          📞 Call Vendor
+        </a>
+      )}
     </div>
   );
 }
