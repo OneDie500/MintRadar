@@ -261,6 +261,27 @@ async function requestPokemonFallbackImage({
   return request;
 }
 
+function sameCatalogValue(
+  left?: string | null,
+  right?: string | null
+) {
+  const normalize = (value?: string | null) =>
+    (value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .replace(/\s+/g, " ");
+
+  const normalizedLeft = normalize(left);
+  const normalizedRight = normalize(right);
+
+  return (
+    Boolean(normalizedLeft) &&
+    normalizedLeft === normalizedRight
+  );
+}
+
 function CatalogCardImage({
   card,
   className,
@@ -2224,7 +2245,14 @@ export default function AddInventoryPage() {
                               </span>
                             )}
 
-                            {card.finish && (
+                            {card.finish &&
+                              !(
+                                card.category === "Sports" &&
+                                sameCatalogValue(
+                                  card.finish,
+                                  card.parallel_name
+                                )
+                              ) && (
                               <span className="text-xs bg-zinc-950 border border-zinc-900 rounded-lg px-2 py-1 text-zinc-500">
                                 {
                                   card.finish

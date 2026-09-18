@@ -27,6 +27,12 @@ type CardSightSearchResponse = {
   take?: number;
 };
 
+type CardSightSearchAttempt = {
+  query: string;
+  raw: CardSightSearchResponse;
+  rawResults: CardSightSearchResult[];
+};
+
 export async function GET(
   request: NextRequest
 ) {
@@ -91,83 +97,115 @@ export async function GET(
       (page - 1) *
       pageSize;
 
-    const params =
-      new URLSearchParams();
+    // -----------------------------------------
+    // CARDSIGHT PROGRESSIVE SEARCH
+    // -----------------------------------------
+    //
+    // CardSight can return zero results when a
+    // sports query becomes too specific even when
+    // it knows the exact card/parallel.
+    //
+    // Try the user's exact query first. If that
+    // produces no usable cards, progressively
+    // simplify the query while preserving the
+    // strongest identifying terms.
+    //
+    // Example:
+    // "Bo Nix Yellow Surge Refractor 125"
+    //   -> exact query
+    //   -> "Bo Nix Yellow Surge Refractor"
+    //   -> "Bo Nix Yellow Surge"
+    //   -> "Bo Nix"
+    // -----------------------------------------
 
-    params.set(
-      "q",
-      query
-    );
-
-    params.set(
-      "take",
-      String(pageSize)
-    );
-
-    params.set(
-      "skip",
-      String(skip)
-    );
-
-    params.set(
-      "type",
-      "card"
-    );
-
-    const url =
-      `https://api.cardsight.ai/v1/catalog/search?${params.toString()}`;
-
-    const response =
-      await fetch(
-        url,
-        {
-          cache:
-            "no-store",
-
-          headers: {
-            Accept:
-              "application/json",
-
-            "X-API-Key":
-              apiKey,
-
-            "User-Agent":
-              "MintRadar/0.1",
-          },
-        }
+    const searchQueries =
+      buildSportsSearchQueries(
+        query
       );
 
-    const raw:
-      CardSightSearchResponse =
-      await response.json();
+    let searchAttempt:
+      CardSightSearchAttempt | null =
+      null;
 
-    if (!response.ok) {
-      console.error(
-        "CardSight API error:",
-        response.status,
-        raw
-      );
+    for (
+      const candidateQuery
+      of searchQueries
+    ) {
+      const attempt =
+        await searchCardSight(
+          candidateQuery,
+          apiKey,
+          pageSize,
+          skip
+        );
 
-      return NextResponse.json(
-        {
-          error:
-            "Sports catalog search failed.",
-          results: [],
-          raw,
-        },
-        {
-          status:
-            response.status,
-        }
-      );
+      const usableResults =
+        attempt.rawResults.filter(
+          (card) => {
+            const validType =
+              !card.type ||
+              card.type ===
+                "card";
+
+            return (
+              validType &&
+              !isChecklistCard(
+                card
+              )
+            );
+          }
+        );
+
+      if (
+        usableResults.length >
+        0
+      ) {
+        searchAttempt =
+          attempt;
+        break;
+      }
+
+      // Keep the latest successful API response
+      // so a legitimate zero-result search still
+      // returns cleanly if every fallback misses.
+      searchAttempt =
+        attempt;
     }
 
+    if (!searchAttempt) {
+      return NextResponse.json({
+        query,
+        resolvedQuery:
+          query,
+        fallbackUsed:
+          false,
+        page,
+        pageSize,
+        count: 0,
+        total: 0,
+        hasMore:
+          false,
+        results: [],
+      });
+    }
+
+    const raw =
+      searchAttempt.raw;
+
     const rawResults =
-      Array.isArray(
-        raw?.results
-      )
-        ? raw.results
-        : [];
+      searchAttempt
+        .rawResults;
+
+    const resolvedQuery =
+      searchAttempt.query;
+
+    const fallbackUsed =
+      normalizeSearchText(
+        resolvedQuery
+      ) !==
+      normalizeSearchText(
+        query
+      );
 
     // -----------------------------------------
     // SPORTS RESULT QUALITY FILTER
@@ -351,6 +389,8 @@ export async function GET(
 
     return NextResponse.json({
       query,
+      resolvedQuery,
+      fallbackUsed,
       page,
       pageSize,
       count:
@@ -376,6 +416,303 @@ export async function GET(
       }
     );
   }
+}
+
+// =============================================
+// CARDSIGHT SEARCH HELPERS
+// =============================================
+
+async function searchCardSight(
+  query:
+    string,
+  apiKey:
+    string,
+  take:
+    number,
+  skip:
+    number
+): Promise<CardSightSearchAttempt> {
+  const params =
+    new URLSearchParams();
+
+  params.set(
+    "q",
+    query
+  );
+
+  params.set(
+    "take",
+    String(take)
+  );
+
+  params.set(
+    "skip",
+    String(skip)
+  );
+
+  params.set(
+    "type",
+    "card"
+  );
+
+  const url =
+    `https://api.cardsight.ai/v1/catalog/search?${params.toString()}`;
+
+  const response =
+    await fetch(
+      url,
+      {
+        cache:
+          "no-store",
+
+        headers: {
+          Accept:
+            "application/json",
+
+          "X-API-Key":
+            apiKey,
+
+          "User-Agent":
+            "MintRadar/0.1",
+        },
+      }
+    );
+
+  let raw:
+    CardSightSearchResponse;
+
+  try {
+    raw =
+      await response.json();
+  } catch {
+    raw = {
+      results: [],
+    };
+  }
+
+  if (!response.ok) {
+    console.error(
+      "CardSight API error:",
+      response.status,
+      raw
+    );
+
+    throw new Error(
+      `CardSight sports search failed with status ${response.status}.`
+    );
+  }
+
+  const rawResults =
+    Array.isArray(
+      raw?.results
+    )
+      ? raw.results
+      : [];
+
+  return {
+    query,
+    raw,
+    rawResults,
+  };
+}
+
+function buildSportsSearchQueries(
+  query:
+    string
+) {
+  const cleaned =
+    query
+      .trim()
+      .replace(
+        /\s+/g,
+        " "
+      );
+
+  if (!cleaned) {
+    return [];
+  }
+
+  const tokens =
+    cleaned
+      .split(" ")
+      .filter(Boolean);
+
+  const candidates:
+    string[] = [];
+
+  const addCandidate = (
+    value:
+      string
+  ) => {
+    const candidate =
+      value
+        .trim()
+        .replace(
+          /\s+/g,
+          " "
+        );
+
+    if (!candidate) {
+      return;
+    }
+
+    const normalized =
+      normalizeSearchText(
+        candidate
+      );
+
+    if (
+      !normalized ||
+      candidates.some(
+        (existing) =>
+          normalizeSearchText(
+            existing
+          ) ===
+          normalized
+      )
+    ) {
+      return;
+    }
+
+    candidates.push(
+      candidate
+    );
+  };
+
+  // Always respect the user's exact search first.
+  addCandidate(
+    cleaned
+  );
+
+  // Card numbers are useful for MintRadar's own
+  // ranking, but CardSight can become overly
+  // restrictive when they are included in a long
+  // free-text query. Try the same query without
+  // standalone numeric/card-number tokens.
+  if (
+    tokens.length >
+    2
+  ) {
+    addCandidate(
+      tokens
+        .filter(
+          (token) =>
+            !isLikelyCardNumberToken(
+              token
+            )
+        )
+        .join(" ")
+    );
+  }
+
+  // "Refractor" is often implied by the provider's
+  // parallel metadata. CardSight may index a
+  // parallel as "Yellow Surge" even when collectors
+  // naturally search "Yellow Surge Refractor".
+  if (
+    tokens.some(
+      (token) =>
+        normalizeSearchText(
+          token
+        ) ===
+        "refractor"
+    )
+  ) {
+    addCandidate(
+      tokens
+        .filter(
+          (token) =>
+            normalizeSearchText(
+              token
+            ) !==
+            "refractor"
+        )
+        .join(" ")
+    );
+  }
+
+  // If both a number and "Refractor" were present,
+  // remove both before widening further.
+  if (
+    tokens.length >
+    2
+  ) {
+    addCandidate(
+      tokens
+        .filter(
+          (token) => {
+            const normalized =
+              normalizeSearchText(
+                token
+              );
+
+            return (
+              normalized !==
+                "refractor" &&
+              !isLikelyCardNumberToken(
+                token
+              )
+            );
+          }
+        )
+        .join(" ")
+    );
+  }
+
+  // Progressive right-side reduction catches
+  // provider search quirks without immediately
+  // collapsing to a broad player-only search.
+  //
+  // Keep at least two tokens so "Bo Nix" remains
+  // intact rather than widening all the way to "Bo".
+  for (
+    let length =
+      tokens.length - 1;
+    length >= 2;
+    length -= 1
+  ) {
+    addCandidate(
+      tokens
+        .slice(
+          0,
+          length
+        )
+        .join(" ")
+    );
+  }
+
+  return candidates;
+}
+
+function isLikelyCardNumberToken(
+  token:
+    string
+) {
+  const normalized =
+    token
+      .trim()
+      .replace(
+        /^#/,
+        ""
+      );
+
+  if (!normalized) {
+    return false;
+  }
+
+  // Handles common collector numbers such as:
+  // 125, #125, RC12, 12A, 12/99.
+  return (
+    /^\d+$/.test(
+      normalized
+    ) ||
+    /^\d+\/\d+$/.test(
+      normalized
+    ) ||
+    /^(?=.*\d)[a-z0-9-]+$/i.test(
+      normalized
+    )
+  );
 }
 
 // =============================================
