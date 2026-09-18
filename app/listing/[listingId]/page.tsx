@@ -76,6 +76,16 @@ type MarketLink = {
 
 type ListingCard = NonNullable<Listing["cards"]>;
 
+type ListingImage = {
+  id: string;
+  inventory_id: string;
+  storage_path: string;
+  image_type: "front" | "back" | "detail";
+  position: number;
+  created_at: string;
+};
+
+
 type PokemonImageFallbackResponse = {
   ok?: boolean;
   imageUrl?: string | null;
@@ -353,6 +363,12 @@ export default function PublicListingPage() {
     setProviderLinks,
   ] = useState<CardProviderLink[]>([]);
 
+  const [listingImages, setListingImages] =
+    useState<ListingImage[]>([]);
+
+  const [activeListingImageId, setActiveListingImageId] =
+    useState<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -430,6 +446,43 @@ export default function PublicListingPage() {
           setListing(
             typedListing
           );
+
+
+          const {
+            data: listingImageRows,
+            error: listingImagesError,
+          } = await supabase
+            .from("inventory_images")
+            .select(`
+              id,
+              inventory_id,
+              storage_path,
+              image_type,
+              position,
+              created_at
+            `)
+            .eq("inventory_id", typedListing.id)
+            .order("position", { ascending: true })
+            .order("created_at", { ascending: true });
+
+          if (listingImagesError) {
+            console.error(
+              "Listing images load error:",
+              listingImagesError
+            );
+            setListingImages([]);
+            setActiveListingImageId(null);
+          } else if (!cancelled) {
+            const images =
+              (listingImageRows || []) as ListingImage[];
+
+            setListingImages(images);
+            setActiveListingImageId((current) =>
+              current && images.some((image) => image.id === current)
+                ? current
+                : images[0]?.id || null
+            );
+          }
 
           const {
             data:
@@ -951,6 +1004,20 @@ export default function PublicListingPage() {
     );
   }
 
+  const listingImageUrls = listingImages.map((image) => ({
+    ...image,
+    url: supabase.storage
+      .from("inventory-images")
+      .getPublicUrl(image.storage_path).data.publicUrl,
+  }));
+
+  const activeListingImage =
+    listingImageUrls.find(
+      (image) => image.id === activeListingImageId
+    ) || listingImageUrls[0] || null;
+
+  const hasActualPhotos = listingImageUrls.length > 0;
+
   return (
     <main className="min-h-screen bg-black text-white">
       <header className="border-b border-zinc-900">
@@ -977,18 +1044,75 @@ export default function PublicListingPage() {
 
       <section className="mx-auto max-w-5xl px-5 py-8 sm:py-12">
         <div className="grid gap-8 md:grid-cols-[320px_1fr] md:items-start">
-          <div className="mx-auto w-full max-w-[320px] overflow-hidden rounded-3xl border border-zinc-900 bg-zinc-950 p-4">
-            <div className="aspect-[0.716] overflow-hidden rounded-2xl bg-black">
-              {card ? (
-                <ListingCardImage
-                  card={card}
-                />
-              ) : (
-                <div className="flex h-full items-center justify-center text-sm text-zinc-700">
-                  Image unavailable
+          <div className="mx-auto w-full max-w-[320px]">
+            <div className="overflow-hidden rounded-3xl border border-zinc-900 bg-zinc-950 p-4">
+              {hasActualPhotos && (
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-300">
+                    Actual Card Photos
+                  </span>
+                  <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-600">
+                    {activeListingImage?.image_type || "photo"}
+                  </span>
+                </div>
+              )}
+
+              <div className="aspect-[0.716] overflow-hidden rounded-2xl bg-black">
+                {activeListingImage ? (
+                  <img
+                    src={activeListingImage.url}
+                    alt={`${card?.name || "Listing"} ${activeListingImage.image_type} photo`}
+                    className="h-full w-full object-contain"
+                  />
+                ) : card ? (
+                  <ListingCardImage card={card} />
+                ) : (
+                  <div className="flex h-full items-center justify-center text-sm text-zinc-700">
+                    Image unavailable
+                  </div>
+                )}
+              </div>
+
+              {hasActualPhotos && (
+                <div className="mt-3 grid grid-cols-4 gap-2">
+                  {listingImageUrls.map((image) => (
+                    <button
+                      key={image.id}
+                      type="button"
+                      onClick={() => setActiveListingImageId(image.id)}
+                      className={`overflow-hidden rounded-xl border bg-black p-1 transition ${
+                        activeListingImage?.id === image.id
+                          ? "border-emerald-400"
+                          : "border-zinc-800 hover:border-zinc-600"
+                      }`}
+                      aria-label={`View ${image.image_type} photo`}
+                    >
+                      <div className="aspect-[0.716] overflow-hidden rounded-lg">
+                        <img
+                          src={image.url}
+                          alt={`${image.image_type} thumbnail`}
+                          className="h-full w-full object-cover"
+                        />
+                      </div>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
+
+            {hasActualPhotos && card && (
+              <div className="mt-4 rounded-2xl border border-zinc-900 bg-zinc-950 p-4">
+                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-zinc-600">
+                  Catalog Reference
+                </p>
+                <div className="mt-3 aspect-[0.716] overflow-hidden rounded-xl bg-black">
+                  <ListingCardImage card={card} />
+                </div>
+                <p className="mt-3 text-xs leading-relaxed text-zinc-700">
+                  Reference artwork from the connected catalog. The photos above show the actual item offered by this vendor.
+                </p>
+              </div>
+            )}
           </div>
 
           <div>

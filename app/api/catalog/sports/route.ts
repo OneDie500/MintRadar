@@ -172,18 +172,6 @@ export async function GET(
     // -----------------------------------------
     // SPORTS RESULT QUALITY FILTER
     // -----------------------------------------
-    //
-    // CardSight can return sports checklist
-    // cards when a customer searches a number
-    // such as "151". Those results are not
-    // useful for MintRadar's universal search,
-    // so remove checklist-style cards here.
-    //
-    // IMPORTANT:
-    // We are NOT blocking card number 151.
-    // A real player card numbered 151 still
-    // passes through normally.
-    // -----------------------------------------
 
     const cardResults =
       rawResults.filter(
@@ -209,13 +197,49 @@ export async function GET(
         }
       );
 
+    // -----------------------------------------
+    // MINT RADAR SPORTS RANKING
+    // -----------------------------------------
+    //
+    // CardSight knows about sports parallels,
+    // but its provider ranking can still place
+    // the base card above the exact parallel
+    // requested by the user.
+    //
+    // Example:
+    // "Bo Nix Yellow Surge Refractor 125"
+    //
+    // Base Set #125 and Yellow Surge #125 are
+    // different collectibles. Promote records
+    // whose parallelName is actually present
+    // in the user's search.
+    // -----------------------------------------
+
+    const rankedCardResults =
+      [...cardResults].sort(
+        (a, b) =>
+          scoreSportsResult(
+            b,
+            query
+          ) -
+          scoreSportsResult(
+            a,
+            query
+          )
+      );
+
     const results =
-      cardResults.map(
+      rankedCardResults.map(
         (card) => {
           const cardId =
             card.id ||
             createFallbackId(
               card
+            );
+
+          const parallel =
+            cleanValue(
+              card.parallelName
             );
 
           return {
@@ -260,8 +284,12 @@ export async function GET(
             edition:
               null,
 
+            // MintRadar uses finish as its
+            // shared cross-category variant
+            // field. Sports parallels belong
+            // here as well.
             finish:
-              null,
+              parallel,
 
             illustrator:
               null,
@@ -281,10 +309,12 @@ export async function GET(
                 card.releaseName
               ),
 
+            // Preserve CardSight's provider-
+            // specific field too. This is
+            // useful for Sports-specific UI,
+            // debugging, and future matching.
             parallel_name:
-              cleanValue(
-                card.parallelName
-              ),
+              parallel,
 
             sport:
               cleanValue(
@@ -314,10 +344,6 @@ export async function GET(
         ? raw.total_count
         : results.length;
 
-    // Because MintRadar removes low-quality
-    // checklist results after CardSight returns
-    // them, use the provider's raw page length
-    // when deciding whether more pages may exist.
     const hasMore =
       skip +
         rawResults.length <
@@ -353,6 +379,185 @@ export async function GET(
 }
 
 // =============================================
+// SPORTS RESULT RANKING
+// =============================================
+
+function scoreSportsResult(
+  card:
+    CardSightSearchResult,
+  query:
+    string
+) {
+  const normalizedQuery =
+    normalizeSearchText(
+      query
+    );
+
+  const queryTokens =
+    new Set(
+      normalizedQuery
+        .split(" ")
+        .filter(Boolean)
+    );
+
+  const normalizedName =
+    normalizeSearchText(
+      card.name
+    );
+
+  const normalizedNumber =
+    normalizeSearchText(
+      card.cardNumber
+    );
+
+  const normalizedParallel =
+    normalizeSearchText(
+      card.parallelName
+    );
+
+  const normalizedSet =
+    normalizeSearchText(
+      card.setName
+    );
+
+  const normalizedRelease =
+    normalizeSearchText(
+      card.releaseName
+    );
+
+  let score =
+    typeof card.relevance ===
+      "number" &&
+    Number.isFinite(
+      card.relevance
+    )
+      ? card.relevance
+      : 0;
+
+  // Player/card name is still important.
+  if (
+    normalizedName &&
+    normalizedQuery.includes(
+      normalizedName
+    )
+  ) {
+    score += 350;
+  } else if (
+    normalizedName
+  ) {
+    const nameTokens =
+      normalizedName
+        .split(" ")
+        .filter(Boolean);
+
+    const matchingNameTokens =
+      nameTokens.filter(
+        (token) =>
+          queryTokens.has(
+            token
+          )
+      ).length;
+
+    score +=
+      matchingNameTokens *
+      60;
+  }
+
+  // Strongly respect an explicitly searched
+  // collector/card number.
+  if (
+    normalizedNumber &&
+    queryTokens.has(
+      normalizedNumber
+    )
+  ) {
+    score += 300;
+  }
+
+  // This is the key parallel-aware behavior.
+  // If the full provider parallel appears in
+  // the query, heavily promote it.
+  if (
+    normalizedParallel
+  ) {
+    if (
+      normalizedQuery.includes(
+        normalizedParallel
+      )
+    ) {
+      score += 1200;
+    } else {
+      const parallelTokens =
+        normalizedParallel
+          .split(" ")
+          .filter(Boolean);
+
+      const matchingParallelTokens =
+        parallelTokens.filter(
+          (token) =>
+            queryTokens.has(
+              token
+            )
+        ).length;
+
+      if (
+        matchingParallelTokens >
+        0
+      ) {
+        const coverage =
+          matchingParallelTokens /
+          parallelTokens.length;
+
+        score +=
+          matchingParallelTokens *
+          100;
+
+        score +=
+          coverage *
+          350;
+      }
+    }
+  }
+
+  // Smaller contextual boosts for product/set
+  // terms when the user includes them.
+  score +=
+    countMatchingTokens(
+      normalizedSet,
+      queryTokens
+    ) * 25;
+
+  score +=
+    countMatchingTokens(
+      normalizedRelease,
+      queryTokens
+    ) * 35;
+
+  return score;
+}
+
+function countMatchingTokens(
+  normalizedValue:
+    string,
+  queryTokens:
+    Set<string>
+) {
+  if (!normalizedValue) {
+    return 0;
+  }
+
+  return normalizedValue
+    .split(" ")
+    .filter(Boolean)
+    .filter(
+      (token) =>
+        queryTokens.has(
+          token
+        )
+    ).length;
+}
+
+// =============================================
 // SPORTS CHECKLIST FILTER
 // =============================================
 
@@ -360,9 +565,6 @@ function isChecklistCard(
   card:
     CardSightSearchResult
 ) {
-  // CardSight can place checklist wording in
-  // different fields depending on the record,
-  // so inspect all descriptive Sports fields.
   const searchableText =
     [
       card.name,
@@ -380,16 +582,6 @@ function isChecklistCard(
     return false;
   }
 
-  // Handles:
-  // Checklist
-  // Check List
-  // Checklists
-  // Check Lists
-  // Team Checklist
-  // Series Checklists
-  // "Checklist - AL"
-  // punctuation/hyphen variations after
-  // normalizeSearchText().
   return /\bcheck\s*lists?\b/i.test(
     searchableText
   );

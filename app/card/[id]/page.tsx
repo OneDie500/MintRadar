@@ -33,6 +33,12 @@ type InventoryItem = {
   quantity?: number | null;
   notes?: string | null;
 
+  inventory_images?: {
+    storage_path: string;
+    image_type: "front" | "back" | "detail" | string;
+    position: number | null;
+  }[];
+
   vendors?: Vendor | null;
 };
 
@@ -204,6 +210,11 @@ export default function CardDetailPage() {
               price,
               quantity,
               notes,
+              inventory_images (
+                storage_path,
+                image_type,
+                position
+              ),
               vendors (
                 id,
                 business_name,
@@ -2248,6 +2259,82 @@ export default function CardDetailPage() {
   );
 }
 
+function getListingPhotoUrl(item: InventoryItem) {
+  const photos = [...(item.inventory_images || [])].sort(
+    (a, b) => (a.position ?? 0) - (b.position ?? 0)
+  );
+
+  const preferred =
+    photos.find((photo) => photo.image_type === "front") ||
+    photos[0];
+
+  if (!preferred?.storage_path) {
+    return null;
+  }
+
+  return supabase.storage
+    .from("inventory-images")
+    .getPublicUrl(preferred.storage_path).data.publicUrl;
+}
+
+function ListingThumbnail({
+  item,
+  card,
+  resolvedImageUrl,
+}: {
+  item: InventoryItem;
+  card: Card;
+  resolvedImageUrl: string | null;
+}) {
+  const actualPhotoUrl = getListingPhotoUrl(item);
+  const imageUrl = actualPhotoUrl || resolvedImageUrl;
+
+  const image = imageUrl ? (
+    <img
+      src={imageUrl}
+      alt={
+        actualPhotoUrl
+          ? `Actual ${card.name || "card"} listing photo`
+          : card.name || "Card"
+      }
+      className="h-full w-full object-contain"
+    />
+  ) : (
+    <div className="flex h-full w-full items-center justify-center px-2 text-center text-xs text-zinc-700">
+      No Image
+    </div>
+  );
+
+  return (
+    <div className="mt-5 flex flex-col items-center">
+      {item.id ? (
+        <Link
+          href={`/listing/${item.id}`}
+          className="group relative h-48 w-32 overflow-hidden rounded-xl border border-zinc-800 bg-black transition hover:border-emerald-400/60 sm:h-52 sm:w-36"
+          aria-label={`View exact listing from ${item.vendors?.business_name || "MintRadar Seller"}`}
+        >
+          {image}
+          {actualPhotoUrl && (
+            <span className="absolute bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-emerald-400/30 bg-black/85 px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.12em] text-emerald-300 backdrop-blur">
+              Actual Card Photo
+            </span>
+          )}
+        </Link>
+      ) : (
+        <div className="relative h-48 w-32 overflow-hidden rounded-xl border border-zinc-800 bg-black sm:h-52 sm:w-36">
+          {image}
+        </div>
+      )}
+
+      {actualPhotoUrl && (
+        <p className="mt-2 text-center text-[10px] font-bold uppercase tracking-[0.12em] text-zinc-600">
+          Photo of this exact copy
+        </p>
+      )}
+    </div>
+  );
+}
+
 // =============================================
 // GRADED LISTING
 // =============================================
@@ -2298,21 +2385,11 @@ function GradedListingCard({
         </span>
       </div>
 
-      <div className="mt-5 flex justify-center">
-        <div className="h-48 w-32 overflow-hidden rounded-xl border border-zinc-800 bg-black sm:h-52 sm:w-36">
-          {resolvedImageUrl ? (
-            <img
-              src={resolvedImageUrl}
-              alt={card.name || "Card"}
-              className="h-full w-full object-contain"
-            />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center px-2 text-center text-xs text-zinc-700">
-              No Image
-            </div>
-          )}
-        </div>
-      </div>
+      <ListingThumbnail
+        item={item}
+        card={card}
+        resolvedImageUrl={resolvedImageUrl}
+      />
 
       <div className="mt-5 rounded-xl border border-zinc-900 bg-black/40 p-4">
         <div className="flex items-end justify-between gap-4">
@@ -2381,6 +2458,15 @@ function GradedListingCard({
         </button>
       </div>
 
+      {item.id && (
+        <Link
+          href={`/listing/${item.id}`}
+          className="mt-2 flex w-full items-center justify-center rounded-xl border border-emerald-400/30 bg-emerald-400/[0.06] px-4 py-3 text-sm font-black text-emerald-300 transition hover:border-emerald-400 hover:bg-emerald-400/10"
+        >
+          View Exact Listing →
+        </Link>
+      )}
+
       {item.vendors?.show_phone && item.vendors.phone?.trim() && (
         <a
           href={`tel:${item.vendors.phone.trim()}`}
@@ -2440,21 +2526,11 @@ function RawListingCard({
         </span>
       </div>
 
-      <div className="mt-5 flex justify-center">
-        <div className="h-48 w-32 overflow-hidden rounded-xl border border-zinc-800 bg-black sm:h-52 sm:w-36">
-          {resolvedImageUrl ? (
-            <img
-              src={resolvedImageUrl}
-              alt={card.name || "Card"}
-              className="h-full w-full object-contain"
-            />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center px-2 text-center text-xs text-zinc-700">
-              No Image
-            </div>
-          )}
-        </div>
-      </div>
+      <ListingThumbnail
+        item={item}
+        card={card}
+        resolvedImageUrl={resolvedImageUrl}
+      />
 
       <div className="mt-5 rounded-xl border border-zinc-900 bg-black/40 p-4">
         <div className="flex items-end justify-between gap-4">
@@ -2519,6 +2595,15 @@ function RawListingCard({
           {isOwnVendorListing ? "Your Listing" : messageLoading ? "Opening..." : "💬 Message"}
         </button>
       </div>
+
+      {item.id && (
+        <Link
+          href={`/listing/${item.id}`}
+          className="mt-2 flex w-full items-center justify-center rounded-xl border border-emerald-400/30 bg-emerald-400/[0.06] px-4 py-3 text-sm font-black text-emerald-300 transition hover:border-emerald-400 hover:bg-emerald-400/10"
+        >
+          View Exact Listing →
+        </Link>
+      )}
 
       {item.vendors?.show_phone && item.vendors.phone?.trim() && (
         <a
