@@ -81,6 +81,44 @@ function memberRoleCanBeManaged(
   return roleRank(actorRole) > roleRank(targetRole);
 }
 
+
+type VendorPaymentMethod = {
+  id?: string;
+  vendor_id?: string;
+  method: "paypal" | "venmo" | "cashapp" | "zelle" | "custom";
+  display_name?: string | null;
+  payment_url?: string | null;
+  payment_handle?: string | null;
+  instructions?: string | null;
+  is_enabled: boolean;
+};
+
+const PAYMENT_METHOD_OPTIONS: Array<{
+  method: VendorPaymentMethod["method"];
+  label: string;
+  placeholder: string;
+  handlePlaceholder: string;
+}> = [
+  { method: "paypal", label: "PayPal", placeholder: "https://paypal.me/yourname", handlePlaceholder: "PayPal username / email (optional)" },
+  { method: "venmo", label: "Venmo", placeholder: "https://venmo.com/u/yourname", handlePlaceholder: "@yourvenmo" },
+  { method: "cashapp", label: "Cash App", placeholder: "https://cash.app/$yourcashtag", handlePlaceholder: "$YourCashTag" },
+  { method: "zelle", label: "Zelle", placeholder: "Optional payment/instructions link", handlePlaceholder: "Email or phone used for Zelle" },
+  { method: "custom", label: "Custom", placeholder: "https://...", handlePlaceholder: "Payment handle / account name" },
+];
+
+function emptyPaymentMethod(
+  method: VendorPaymentMethod["method"]
+): VendorPaymentMethod {
+  return {
+    method,
+    display_name: "",
+    payment_url: "",
+    payment_handle: "",
+    instructions: "",
+    is_enabled: false,
+  };
+}
+
 export default function VendorSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -98,6 +136,15 @@ export default function VendorSettingsPage() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [teamError, setTeamError] = useState("");
+  const [paymentMethods, setPaymentMethods] = useState<Record<string, VendorPaymentMethod>>(
+    () => Object.fromEntries(
+      PAYMENT_METHOD_OPTIONS.map(({ method }) => [method, emptyPaymentMethod(method)])
+    )
+  );
+  const [paymentLoading, setPaymentLoading] = useState(false);
+  const [paymentSaving, setPaymentSaving] = useState(false);
+  const [paymentMessage, setPaymentMessage] = useState("");
+  const [paymentError, setPaymentError] = useState("");
 
   const normalizedRole = normalizeRole(role);
   const isOwner = normalizedRole === "owner";
@@ -219,6 +266,140 @@ export default function VendorSettingsPage() {
       loadTeam();
     }
   }, [canManageTeam, vendorId, loadTeam]);
+
+  useEffect(() => {
+    if (!vendorId) return;
+
+    let cancelled = false;
+
+    async function loadPaymentMethods() {
+      setPaymentLoading(true);
+      setPaymentError("");
+
+      try {
+        const { data, error: paymentLoadError } = await supabase
+          .from("vendor_payment_methods")
+          .select(
+            "id, vendor_id, method, display_name, payment_url, payment_handle, instructions, is_enabled"
+          )
+          .eq("vendor_id", vendorId);
+
+        if (paymentLoadError) throw paymentLoadError;
+        if (cancelled) return;
+
+        const next: Record<string, VendorPaymentMethod> = Object.fromEntries(
+          PAYMENT_METHOD_OPTIONS.map(({ method }) => [
+            method,
+            emptyPaymentMethod(method),
+          ])
+        );
+
+        for (const row of (data || []) as VendorPaymentMethod[]) {
+          if (next[row.method]) {
+            next[row.method] = {
+              ...next[row.method],
+              ...row,
+            };
+          }
+        }
+
+        setPaymentMethods(next);
+      } catch (err: any) {
+        console.error("Vendor payment methods load error:", err);
+        if (!cancelled) {
+          setPaymentError(
+            err?.message || "MintRadar could not load your payment methods."
+          );
+        }
+      } finally {
+        if (!cancelled) setPaymentLoading(false);
+      }
+    }
+
+    void loadPaymentMethods();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [vendorId]);
+
+  function updatePaymentMethod(
+    method: VendorPaymentMethod["method"],
+    patch: Partial<VendorPaymentMethod>
+  ) {
+    setPaymentMethods((current) => ({
+      ...current,
+      [method]: {
+        ...(current[method] || emptyPaymentMethod(method)),
+        ...patch,
+        method,
+      },
+    }));
+  }
+
+  async function savePaymentMethods() {
+    if (!vendorId || paymentSaving) return;
+
+    setPaymentSaving(true);
+    setPaymentMessage("");
+    setPaymentError("");
+
+    try {
+      const rows = PAYMENT_METHOD_OPTIONS.map(({ method }) => {
+        const value =
+          paymentMethods[method] || emptyPaymentMethod(method);
+
+        return {
+          vendor_id: vendorId,
+          method,
+          display_name:
+            value.display_name?.trim() || null,
+          payment_url:
+            value.payment_url?.trim() || null,
+          payment_handle:
+            value.payment_handle?.trim() || null,
+          instructions:
+            value.instructions?.trim() || null,
+          is_enabled: Boolean(value.is_enabled),
+          updated_at: new Date().toISOString(),
+        };
+      });
+
+      const { error: saveError } = await supabase
+        .from("vendor_payment_methods")
+        .upsert(rows, { onConflict: "vendor_id,method" });
+
+      if (saveError) {
+        console.error("PAYMENT SAVE SUPABASE ERROR", {
+          message: saveError.message,
+          details: saveError.details,
+          hint: saveError.hint,
+          code: saveError.code,
+        });
+
+        throw new Error(
+          [
+            saveError.message,
+            saveError.details,
+            saveError.hint,
+            saveError.code ? `Code: ${saveError.code}` : "",
+          ]
+            .filter(Boolean)
+            .join(" | ")
+        );
+      }
+
+      setPaymentMessage("Payment methods saved.");
+    } catch (err: any) {
+      console.error("Vendor payment methods save error:", err);
+      setPaymentError(
+        err?.message || "MintRadar could not save your payment methods."
+      );
+    } finally {
+      setPaymentSaving(false);
+    }
+  }
+
 
   async function handleSave(
     event: FormEvent<HTMLFormElement>
@@ -536,6 +717,161 @@ export default function VendorSettingsPage() {
                   {saving ? "Saving..." : "Save Settings"}
                 </button>
               </form>
+
+              <section className="border-t border-zinc-800 p-6 sm:p-8">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400">
+                    Payment Methods
+                  </p>
+
+                  <h2 className="mt-2 text-2xl font-black">
+                    How Customers Pay You
+                  </h2>
+
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500">
+                    Choose the payment methods your vendor accepts. MintRadar
+                    will show only the methods you enable when a customer is
+                    ready to complete an order with you.
+                  </p>
+                </div>
+
+                {paymentLoading ? (
+                  <p className="mt-6 text-sm text-zinc-500">
+                    Loading payment methods...
+                  </p>
+                ) : (
+                  <div className="mt-6 space-y-4">
+                    {PAYMENT_METHOD_OPTIONS.map((option) => {
+                      const value =
+                        paymentMethods[option.method] ||
+                        emptyPaymentMethod(option.method);
+
+                      return (
+                        <div
+                          key={option.method}
+                          className={`rounded-2xl border p-5 transition ${
+                            value.is_enabled
+                              ? "border-emerald-400/30 bg-emerald-400/[0.04]"
+                              : "border-zinc-800 bg-black"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-5">
+                            <div>
+                              <p className="font-black text-white">
+                                {option.label}
+                              </p>
+                              <p className="mt-1 text-xs text-zinc-600">
+                                {value.is_enabled
+                                  ? "Available to customers"
+                                  : "Not offered at checkout"}
+                              </p>
+                            </div>
+
+                            <label className="flex cursor-pointer items-center gap-2 text-xs font-black uppercase tracking-[0.12em] text-zinc-500">
+                              <span>
+                                {value.is_enabled ? "Enabled" : "Off"}
+                              </span>
+                              <input
+                                type="checkbox"
+                                checked={value.is_enabled}
+                                onChange={(event) =>
+                                  updatePaymentMethod(option.method, {
+                                    is_enabled: event.target.checked,
+                                  })
+                                }
+                                className="h-5 w-5 accent-emerald-400"
+                              />
+                            </label>
+                          </div>
+
+                          {value.is_enabled && (
+                            <div className="mt-5 grid gap-3">
+                              {option.method === "custom" && (
+                                <input
+                                  type="text"
+                                  value={value.display_name || ""}
+                                  onChange={(event) =>
+                                    updatePaymentMethod(option.method, {
+                                      display_name: event.target.value,
+                                    })
+                                  }
+                                  placeholder="Payment method name"
+                                  className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-white outline-none transition placeholder:text-zinc-700 focus:border-emerald-400"
+                                />
+                              )}
+
+                              <input
+                                type="text"
+                                value={value.payment_handle || ""}
+                                onChange={(event) =>
+                                  updatePaymentMethod(option.method, {
+                                    payment_handle: event.target.value,
+                                  })
+                                }
+                                placeholder={option.handlePlaceholder}
+                                className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-white outline-none transition placeholder:text-zinc-700 focus:border-emerald-400"
+                              />
+
+                              <input
+                                type="url"
+                                value={value.payment_url || ""}
+                                onChange={(event) =>
+                                  updatePaymentMethod(option.method, {
+                                    payment_url: event.target.value,
+                                  })
+                                }
+                                placeholder={option.placeholder}
+                                className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-white outline-none transition placeholder:text-zinc-700 focus:border-emerald-400"
+                              />
+
+                              <textarea
+                                value={value.instructions || ""}
+                                onChange={(event) =>
+                                  updatePaymentMethod(option.method, {
+                                    instructions: event.target.value,
+                                  })
+                                }
+                                placeholder="Optional payment instructions for customers"
+                                rows={3}
+                                className="resize-none rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-white outline-none transition placeholder:text-zinc-700 focus:border-emerald-400"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {paymentError && (
+                      <div className="rounded-xl border border-red-400/30 bg-red-400/5 px-4 py-3 text-sm text-red-400">
+                        {paymentError}
+                      </div>
+                    )}
+
+                    {paymentMessage && (
+                      <div className="rounded-xl border border-emerald-400/30 bg-emerald-400/5 px-4 py-3 text-sm font-bold text-emerald-400">
+                        {paymentMessage}
+                      </div>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={savePaymentMethods}
+                      disabled={paymentSaving}
+                      className="rounded-xl bg-emerald-400 px-5 py-3 font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {paymentSaving
+                        ? "Saving Payment Methods..."
+                        : "Save Payment Methods"}
+                    </button>
+
+                    <p className="text-xs leading-5 text-zinc-600">
+                      MintRadar stores the public payment destination,
+                      handle, and instructions you provide. Customers will
+                      pay the vendor directly.
+                    </p>
+                  </div>
+                )}
+              </section>
 
               <section className="border-t border-zinc-800 p-6 sm:p-8">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">

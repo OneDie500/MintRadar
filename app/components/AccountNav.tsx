@@ -407,6 +407,15 @@ export default function AccountNav() {
           </Link>
 
           <Link
+            href="/customer/orders"
+            onClick={() => setOpen(false)}
+            className="block px-4 py-3 text-sm font-bold text-zinc-200 transition hover:bg-zinc-900 hover:text-emerald-300"
+            role="menuitem"
+          >
+            My Orders
+          </Link>
+
+          <Link
             href="/customer/collection"
             onClick={() => setOpen(false)}
             className="block px-4 py-3 text-sm font-bold text-zinc-200 transition hover:bg-zinc-900 hover:text-emerald-300"

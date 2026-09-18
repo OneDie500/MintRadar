@@ -31,6 +31,7 @@ type InventoryItem = {
 
   price?: number | null;
   quantity?: number | null;
+  reserved_quantity?: number | null;
   notes?: string | null;
 
   inventory_images?: {
@@ -60,6 +61,7 @@ const MARKET_COMP_SOURCES = [
   "TCGplayer",
   "PriceCharting",
   "Collectr",
+  "Market Movers",
   "eBay",
 ] as const;
 
@@ -209,6 +211,7 @@ export default function CardDetailPage() {
               cert_number,
               price,
               quantity,
+              reserved_quantity,
               notes,
               inventory_images (
                 storage_path,
@@ -249,9 +252,10 @@ export default function CardDetailPage() {
                 []
               ).filter(
                 (listing) =>
-                  Number(
-                    listing.quantity ??
-                      0
+                  Math.max(
+                    0,
+                    Number(listing.quantity ?? 0) -
+                      Number(listing.reserved_quantity ?? 0)
                   ) > 0 &&
                   Number(
                     listing.price ??
@@ -1576,7 +1580,11 @@ export default function CardDetailPage() {
   const availableInventory =
     card.inventory?.filter(
       (item) =>
-        (item.quantity ?? 0) > 0
+        Math.max(
+          0,
+          Number(item.quantity ?? 0) -
+            Number(item.reserved_quantity ?? 0)
+        ) > 0
     ) || [];
 
   const rawListings =
@@ -1598,6 +1606,7 @@ export default function CardDetailPage() {
   const compLinks = isSportsCard
     ? [
         { label: "Card Ladder", description: "Sports card pricing & sales", href: "https://www.cardladder.com/" },
+        { label: "Market Movers", description: "Sports card comps & market trends", href: "https://www.marketmoversapp.com/" },
         { label: "130point", description: "Recent marketplace sales", href: "https://130point.com/sales/" },
         { label: "eBay Sold", description: "Completed sold listings", href: `https://www.ebay.com/sch/i.html?_nkw=${encodedCompSearch}&LH_Sold=1&LH_Complete=1` },
       ]

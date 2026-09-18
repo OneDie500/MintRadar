@@ -2643,6 +2643,13 @@ export default function VendorDashboardPage() {
               <BuyingAnalyzer />
 
               <Link
+                href="/vendor/orders"
+                className="flex h-full w-full items-center justify-center whitespace-nowrap rounded-xl border border-sky-400/30 bg-sky-400/10 px-6 py-4 text-center font-black text-sky-300 transition hover:bg-sky-400 hover:text-black"
+              >
+                Orders
+              </Link>
+
+              <Link
                 href="/vendor/import"
                 className="flex h-full w-full items-center justify-center whitespace-nowrap rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-6 py-4 text-center font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black"
               >
@@ -2656,11 +2663,17 @@ export default function VendorDashboardPage() {
                   deletingAllInventory ||
                   inventory.length === 0
                 }
-                className="rounded-xl border border-red-400/30 bg-red-400/10 px-6 py-4 text-center font-black text-red-300 transition hover:bg-red-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex h-full w-full items-center justify-center whitespace-nowrap rounded-xl border border-red-400/30 bg-red-400/10 px-4 py-4 text-center text-sm font-black text-red-300 transition hover:bg-red-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
               >
-                {deletingAllInventory
-                  ? "Deleting..."
-                  : "Delete All Inventory"}
+                {deletingAllInventory ? (
+                  "Deleting..."
+                ) : (
+                  <span className="leading-tight">
+                    Delete All
+                    <br />
+                    Inventory
+                  </span>
+                )}
               </button>
 
               <Link

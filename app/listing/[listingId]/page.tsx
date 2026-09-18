@@ -16,6 +16,7 @@ type Listing = {
   condition: string | null;
   price: number | null;
   quantity: number | null;
+  reserved_quantity: number | null;
   listing_type: string | null;
   grading_company: string | null;
   grade: string | null;
@@ -48,6 +49,7 @@ type MarketplaceListing = {
   condition: string | null;
   price: number | null;
   quantity: number | null;
+  reserved_quantity: number | null;
   listing_type: string | null;
   grading_company: string | null;
   grade: string | null;
@@ -390,6 +392,7 @@ export default function PublicListingPage() {
             condition,
             price,
             quantity,
+            reserved_quantity,
             listing_type,
             grading_company,
             grade,
@@ -442,6 +445,18 @@ export default function PublicListingPage() {
         if (!cancelled) {
           const typedListing =
             data as unknown as Listing;
+
+          const availableQuantity = Math.max(
+            0,
+            Number(typedListing.quantity ?? 0) -
+              Number(typedListing.reserved_quantity ?? 0)
+          );
+
+          if (availableQuantity <= 0) {
+            throw new Error(
+              "This listing is currently reserved or no longer available."
+            );
+          }
 
           setListing(
             typedListing
@@ -541,6 +556,7 @@ export default function PublicListingPage() {
               condition,
               price,
               quantity,
+              reserved_quantity,
               listing_type,
               grading_company,
               grade,
@@ -587,9 +603,19 @@ export default function PublicListingPage() {
           } else if (
             !cancelled
           ) {
-            setMarketplaceListings(
+            const typedOtherListings =
               (otherListings ||
-                []) as unknown as MarketplaceListing[]
+                []) as unknown as MarketplaceListing[];
+
+            setMarketplaceListings(
+              typedOtherListings.filter(
+                (item) =>
+                  Math.max(
+                    0,
+                    Number(item.quantity ?? 0) -
+                      Number(item.reserved_quantity ?? 0)
+                  ) > 0
+              )
             );
           }
 
@@ -795,10 +821,14 @@ export default function PublicListingPage() {
         listing.grade
     );
 
+  const availableQuantity = Math.max(
+    0,
+    Number(listing.quantity ?? 0) -
+      Number(listing.reserved_quantity ?? 0)
+  );
+
   const available =
-    Number(
-      listing.quantity || 0
-    ) > 0;
+    availableQuantity > 0;
 
   const vendorPhone =
     listing.vendors?.phone?.trim() ||
@@ -1195,7 +1225,7 @@ export default function PublicListingPage() {
                     }`}
                   >
                     {available
-                      ? `${listing.quantity} available`
+                      ? `${availableQuantity} available`
                       : "Sold / unavailable"}
                   </p>
                 </div>
@@ -1459,7 +1489,11 @@ export default function PublicListingPage() {
 
                               <p className="mt-1 text-xs text-zinc-700">
                                 {
-                                  other.quantity
+                                  Math.max(
+                                    0,
+                                    Number(other.quantity ?? 0) -
+                                      Number(other.reserved_quantity ?? 0)
+                                  )
                                 }{" "}
                                 available
                                 {other.cert_number

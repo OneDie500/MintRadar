@@ -14,6 +14,7 @@ type InventoryListing = {
   cert_number?: string | null;
   price?: number | null;
   quantity?: number | null;
+  reserved_quantity?: number | null;
 };
 
 type Card = {
@@ -353,7 +354,8 @@ export default function Home() {
             grade,
             cert_number,
             price,
-            quantity
+            quantity,
+            reserved_quantity
           )
         `)
         .gt("inventory.quantity", 0)
@@ -375,7 +377,11 @@ export default function Home() {
         const availableCards = typedCards.filter((card) =>
           card.inventory?.some(
             (listing) =>
-              (listing.quantity ?? 0) > 0 &&
+              Math.max(
+                0,
+                (listing.quantity ?? 0) -
+                  (listing.reserved_quantity ?? 0)
+              ) > 0 &&
               Number(listing.price ?? 0) > 0
           )
         );
@@ -786,7 +792,11 @@ export default function Home() {
         total +
         (card.inventory?.filter(
           (listing) =>
-            (listing.quantity ?? 0) > 0 &&
+            Math.max(
+              0,
+              (listing.quantity ?? 0) -
+                (listing.reserved_quantity ?? 0)
+            ) > 0 &&
             Number(listing.price ?? 0) > 0
         ).length || 0),
       0
@@ -1184,7 +1194,11 @@ function HomeCard({
   const liveListings =
     (card.inventory || []).filter(
       (listing) =>
-        (listing.quantity ?? 0) > 0 &&
+        Math.max(
+          0,
+          (listing.quantity ?? 0) -
+            (listing.reserved_quantity ?? 0)
+        ) > 0 &&
         Number(listing.price ?? 0) > 0
     );
 
@@ -1195,14 +1209,22 @@ function HomeCard({
         Number(b.price ?? 0)
     );
 
-  const visibleListings =
-    sortedListings.slice(0, 3);
+  const lowestPrice =
+    sortedListings.length > 0
+      ? Number(sortedListings[0].price ?? 0)
+      : 0;
 
-  const additionalListings =
-    Math.max(
-      0,
-      sortedListings.length - 3
-    );
+  const rawCount =
+    liveListings.filter(
+      (listing) =>
+        listing.listing_type !== "graded"
+    ).length;
+
+  const gradedCount =
+    liveListings.filter(
+      (listing) =>
+        listing.listing_type === "graded"
+    ).length;
 
   return (
     <Link
@@ -1211,9 +1233,9 @@ function HomeCard({
     >
       <article className="h-full bg-zinc-950 border border-zinc-900 rounded-2xl overflow-hidden hover:border-emerald-400/60 hover:-translate-y-1 transition duration-200">
 
-        {/* IMAGE */}
+        {/* CATALOG REFERENCE IMAGE */}
 
-        <div className="aspect-[3/4] bg-zinc-900 flex items-center justify-center overflow-hidden">
+        <div className="relative aspect-[3/4] bg-zinc-900 flex items-center justify-center overflow-hidden">
           <CatalogImage
             src={card.image_url}
             alt={card.name}
@@ -1222,6 +1244,12 @@ function HomeCard({
             cardNumber={card.card_number}
             className="w-full h-full object-contain p-3 group-hover:scale-[1.03] transition duration-200"
           />
+
+          <div className="absolute left-3 top-3">
+            <span className="inline-flex rounded-full border border-zinc-700 bg-black/80 px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-zinc-300 backdrop-blur">
+              Catalog Reference
+            </span>
+          </div>
         </div>
 
         <div className="p-4">
@@ -1240,7 +1268,7 @@ function HomeCard({
 
           <div className="flex justify-between items-start gap-3">
             <div className="min-w-0">
-              <h4 className="font-black text-base sm:text-lg truncate">
+              <h4 className="font-black text-base sm:text-lg leading-tight line-clamp-2">
                 {card.name ||
                   "Unnamed Card"}
               </h4>
@@ -1281,110 +1309,67 @@ function HomeCard({
             )}
           </div>
 
-          {/* LIVE LISTINGS */}
+          {/* GROUPED MARKETPLACE AVAILABILITY */}
 
           <div className="mt-4 pt-4 border-t border-zinc-900">
-            <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600 font-black mb-2">
-              Available Listings
-            </p>
+            <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3">
+              <div className="flex items-end justify-between gap-3">
+                <div>
+                  <p className="text-[10px] uppercase tracking-[0.16em] text-emerald-300/70 font-black">
+                    Available Now
+                  </p>
 
-            <div className="space-y-2">
-              {visibleListings.map(
-                (listing) => (
-                  <ListingPreview
-                    key={listing.id}
-                    listing={listing}
-                  />
-                )
+                  <p className="text-sm font-black text-white mt-1">
+                    {liveListings.length} option
+                    {liveListings.length === 1
+                      ? ""
+                      : "s"}
+                  </p>
+                </div>
+
+                <div className="text-right">
+                  <p className="text-[10px] uppercase tracking-[0.14em] text-zinc-500 font-black">
+                    From
+                  </p>
+
+                  <p className="text-xl font-black text-emerald-400 mt-1">
+                    ${lowestPrice.toFixed(2)}
+                  </p>
+                </div>
+              </div>
+
+              {(rawCount > 0 || gradedCount > 0) && (
+                <div className="flex flex-wrap gap-2 mt-3">
+                  {rawCount > 0 && (
+                    <span className="text-[10px] font-bold rounded-full border border-zinc-700 bg-black/50 px-2 py-1 text-zinc-300">
+                      {rawCount} Raw
+                    </span>
+                  )}
+
+                  {gradedCount > 0 && (
+                    <span className="text-[10px] font-bold rounded-full border border-emerald-400/20 bg-black/50 px-2 py-1 text-emerald-300">
+                      {gradedCount} Graded
+                    </span>
+                  )}
+                </div>
               )}
             </div>
-
-            {additionalListings > 0 && (
-              <p className="text-xs text-zinc-600 mt-2">
-                +{additionalListings} more listing
-                {additionalListings === 1
-                  ? ""
-                  : "s"}
-              </p>
-            )}
           </div>
 
-          {/* VIEW */}
+          {/* VIEW OPTIONS */}
 
           <div className="mt-4 pt-3 border-t border-zinc-900 flex items-center justify-between">
             <span className="text-xs text-zinc-600">
-              {liveListings.length} option
-              {liveListings.length === 1
-                ? ""
-                : "s"}
+              Compare available copies
             </span>
 
             <span className="text-sm font-bold text-emerald-400">
-              View →
+              View Options →
             </span>
           </div>
         </div>
       </article>
     </Link>
-  );
-}
-
-// =============================================
-// LISTING PREVIEW
-// =============================================
-
-function ListingPreview({
-  listing,
-}: {
-  listing: InventoryListing;
-}) {
-  const graded =
-    listing.listing_type === "graded";
-
-  if (graded) {
-    return (
-      <div className="flex items-center justify-between gap-2 bg-emerald-400/10 border border-emerald-400/20 rounded-lg px-2.5 py-2">
-        <div className="min-w-0">
-          <p className="text-xs sm:text-sm font-black text-emerald-300 truncate">
-            {listing.grading_company ||
-              "Graded"}{" "}
-            {listing.grade || ""}
-          </p>
-
-          <p className="text-[10px] text-zinc-500">
-            Graded
-          </p>
-        </div>
-
-        <p className="text-xs sm:text-sm font-black text-white shrink-0">
-          $
-          {Number(
-            listing.price ?? 0
-          ).toFixed(2)}
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex items-center justify-between gap-2 bg-black border border-zinc-900 rounded-lg px-2.5 py-2">
-      <div className="min-w-0">
-        <p className="text-xs sm:text-sm font-black text-white truncate">
-          {listing.condition || "Raw"} Raw
-        </p>
-
-        <p className="text-[10px] text-zinc-600">
-          Ungraded
-        </p>
-      </div>
-
-      <p className="text-xs sm:text-sm font-black text-emerald-400 shrink-0">
-        $
-        {Number(
-          listing.price ?? 0
-        ).toFixed(2)}
-      </p>
-    </div>
   );
 }
 

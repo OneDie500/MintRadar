@@ -21,6 +21,7 @@ type CartRow = {
   inventory?: {
     id: string;
     quantity?: number | null;
+    reserved_quantity?: number | null;
     price?: number | null;
     listing_type?: string | null;
     condition?: string | null;
@@ -109,6 +110,7 @@ export default function CartPage() {
           .select(`
             id,
             quantity,
+            reserved_quantity,
             price,
             listing_type,
             condition,
@@ -181,10 +183,8 @@ export default function CartPage() {
                             1
                         ),
                         Math.max(
-                          Number(
-                            inventory.quantity ||
-                              0
-                          ),
+                          Number(inventory.quantity ?? 0) -
+                            Number(inventory.reserved_quantity ?? 0),
                           1
                         )
                       ),
@@ -238,6 +238,7 @@ export default function CartPage() {
           inventory (
             id,
             quantity,
+            reserved_quantity,
             price,
             listing_type,
             condition,
@@ -272,11 +273,32 @@ export default function CartPage() {
         throw error;
       }
 
-      setItems(
+      const loadedRows =
         (
           data ||
           []
-        ) as unknown as CartRow[]
+        ) as unknown as CartRow[];
+
+      setItems(
+        loadedRows.map((row) => {
+          const availableQuantity = Math.max(
+            0,
+            Number(row.inventory?.quantity ?? 0) -
+              Number(row.inventory?.reserved_quantity ?? 0)
+          );
+
+          if (availableQuantity <= 0) {
+            return row;
+          }
+
+          return {
+            ...row,
+            quantity: Math.min(
+              Math.max(Number(row.quantity || 1), 1),
+              availableQuantity
+            ),
+          };
+        })
       );
     } catch (
       err: any
@@ -308,10 +330,8 @@ export default function CartPage() {
 
     const available =
       Math.max(
-        Number(
-          row.inventory.quantity ??
-            0
-        ),
+        Number(row.inventory.quantity ?? 0) -
+          Number(row.inventory.reserved_quantity ?? 0),
         0
       );
 
@@ -542,6 +562,64 @@ export default function CartPage() {
       );
     }, [items]);
 
+  const hasUnavailableItems = useMemo(
+    () =>
+      items.some((row) => {
+        const availableQuantity = Math.max(
+          0,
+          Number(row.inventory?.quantity ?? 0) -
+            Number(row.inventory?.reserved_quantity ?? 0)
+        );
+
+        return (
+          !row.inventory ||
+          availableQuantity <= 0 ||
+          Number(row.quantity || 0) > availableQuantity
+        );
+      }),
+    [items]
+  );
+
+  const vendorGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        vendorId: string;
+        vendorName: string;
+        items: CartRow[];
+        subtotal: number;
+      }
+    >();
+
+    for (const row of items) {
+      const vendorId =
+        row.inventory?.vendors?.id || "unknown-vendor";
+      const vendorName =
+        row.inventory?.vendors?.business_name ||
+        "MintRadar Seller";
+      const price = Number(row.inventory?.price ?? 0);
+      const lineTotal = price * Number(row.quantity || 0);
+
+      const existing = groups.get(vendorId);
+
+      if (existing) {
+        existing.items.push(row);
+        existing.subtotal += lineTotal;
+      } else {
+        groups.set(vendorId, {
+          vendorId,
+          vendorName,
+          items: [row],
+          subtotal: lineTotal,
+        });
+      }
+    }
+
+    return Array.from(groups.values()).sort((a, b) =>
+      a.vendorName.localeCompare(b.vendorName)
+    );
+  }, [items]);
+
   if (loading) {
     return (
       <main className="min-h-screen bg-black text-white flex items-center justify-center">
@@ -628,12 +706,41 @@ export default function CartPage() {
 
           </section>
         ) : (
-          <section className="mt-8 space-y-4">
+          <section className="mt-8 space-y-6">
 
-            {items.map(
-              (
-                row
-              ) => {
+            {vendorGroups.map((group) => (
+              <div
+                key={group.vendorId}
+                className="overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-950"
+              >
+                <div className="flex flex-col gap-3 border-b border-zinc-800 bg-black/60 px-5 py-5 sm:flex-row sm:items-end sm:justify-between sm:px-6">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">
+                      Vendor
+                    </p>
+                    <h2 className="mt-1 text-2xl font-black">
+                      {group.vendorName}
+                    </h2>
+                    <p className="mt-1 text-sm text-zinc-600">
+                      {group.items.length} {group.items.length === 1 ? "item" : "items"} in this vendor order
+                    </p>
+                  </div>
+
+                  <div className="sm:text-right">
+                    <p className="text-xs font-black uppercase tracking-wider text-zinc-600">
+                      Vendor Subtotal
+                    </p>
+                    <p className="mt-1 text-2xl font-black text-emerald-400">
+                      ${group.subtotal.toFixed(2)}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-0">
+                  {group.items.map(
+                    (
+                      row
+                    ) => {
                 const inventory =
                   row.inventory;
 
@@ -645,12 +752,15 @@ export default function CartPage() {
 
                 const available =
                   Math.max(
-                    Number(
-                      inventory?.quantity ??
-                        0
-                    ),
+                    Number(inventory?.quantity ?? 0) -
+                      Number(inventory?.reserved_quantity ?? 0),
                     0
                   );
+
+                const unavailable =
+                  !inventory ||
+                  available <= 0 ||
+                  row.quantity > available;
 
                 const lineTotal =
                   Number(
@@ -758,6 +868,17 @@ export default function CartPage() {
 
                         </div>
 
+                        {unavailable && (
+                          <div className="mt-5 rounded-2xl border border-red-400/30 bg-red-400/10 p-4">
+                            <p className="text-sm font-black text-red-300">
+                              This item is no longer available in the quantity in your cart.
+                            </p>
+                            <p className="mt-1 text-xs leading-5 text-red-200/70">
+                              Remove it or reduce the quantity before continuing to checkout.
+                            </p>
+                          </div>
+                        )}
+
                         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mt-5 pt-5 border-t border-zinc-900">
 
                           <div className="flex items-center gap-2">
@@ -840,10 +961,9 @@ export default function CartPage() {
                             </button>
 
                             <span className="text-xs text-zinc-600 ml-2">
-                              {
-                                available
-                              }{" "}
-                              available
+                              {available > 0
+                                ? `${available} available`
+                                : "Unavailable"}
                             </span>
 
                           </div>
@@ -873,8 +993,25 @@ export default function CartPage() {
 
                   </article>
                 );
-              }
-            )}
+                    }
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-3 border-t border-zinc-800 bg-black/40 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+                  <p className="text-xs leading-5 text-zinc-600">
+                    Payment will be completed directly with {group.vendorName}.
+                  </p>
+                  <div className="text-left sm:text-right">
+                    <p className="text-xs font-black uppercase tracking-wider text-zinc-600">
+                      {group.vendorName} Total
+                    </p>
+                    <p className="text-xl font-black text-white">
+                      ${group.subtotal.toFixed(2)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ))}
 
             <div className="bg-emerald-400 text-black rounded-3xl p-6 sm:p-8 mt-6">
 
@@ -893,21 +1030,25 @@ export default function CartPage() {
                   </p>
                 </div>
 
-                <Link
-                  href="/checkout"
-                  className="bg-black hover:bg-zinc-900 text-white rounded-xl px-6 py-3 font-black transition text-center"
-                >
-                  Continue to Checkout
-                </Link>
+                {hasUnavailableItems ? (
+                  <div className="rounded-xl bg-black/15 px-6 py-3 text-center font-black text-black/50">
+                    Resolve Unavailable Items
+                  </div>
+                ) : (
+                  <Link
+                    href="/checkout"
+                    className="bg-black hover:bg-zinc-900 text-white rounded-xl px-6 py-3 font-black transition text-center"
+                  >
+                    Continue to Checkout
+                  </Link>
+                )}
 
               </div>
 
               <p className="text-sm font-medium mt-4 opacity-70">
-                Guest checkout
-                supported. Adding an
-                item to cart does not
-                reserve vendor
-                inventory yet.
+                Your cart is grouped by vendor. Each vendor order will use
+                that vendor’s enabled payment methods. Adding an item to cart
+                does not reserve vendor inventory yet.
               </p>
 
             </div>
