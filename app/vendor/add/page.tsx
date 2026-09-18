@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase";
@@ -53,6 +53,20 @@ type Membership = {
   vendor_id: string;
   role?: string | null;
 };
+
+type ListingPhotoType =
+  | "front"
+  | "back"
+  | "detail";
+
+type PendingListingPhoto = {
+  id: string;
+  file: File;
+  imageType: ListingPhotoType;
+};
+
+const MAX_DETAIL_PHOTOS = 4;
+const MAX_LISTING_PHOTO_BYTES = 10 * 1024 * 1024;
 
 const SPORTS_PARALLELS = [
   "Silver",
@@ -556,6 +570,22 @@ export default function AddInventoryPage() {
     publishSuccess,
     setPublishSuccess,
   ] = useState("");
+
+  // -----------------------------------------
+  // ACTUAL LISTING PHOTOS
+  // -----------------------------------------
+
+  const [frontPhoto, setFrontPhoto] =
+    useState<File | null>(null);
+
+  const [backPhoto, setBackPhoto] =
+    useState<File | null>(null);
+
+  const [detailPhotos, setDetailPhotos] =
+    useState<File[]>([]);
+
+  const [photoError, setPhotoError] =
+    useState("");
 
   // -----------------------------------------
   // BACK TO TOP
@@ -1117,6 +1147,11 @@ export default function AddInventoryPage() {
     setQuantity("1");
     setNotes("");
 
+    setFrontPhoto(null);
+    setBackPhoto(null);
+    setDetailPhotos([]);
+    setPhotoError("");
+
     setPublishError("");
     setPublishSuccess("");
   }
@@ -1245,6 +1280,297 @@ export default function AddInventoryPage() {
   }
 
   // -----------------------------------------
+  // ACTUAL LISTING PHOTO HELPERS
+  // -----------------------------------------
+
+  function validatePhoto(file: File) {
+    if (!file.type.startsWith("image/")) {
+      return "Choose an image file.";
+    }
+
+    if (file.size > MAX_LISTING_PHOTO_BYTES) {
+      return "Each listing photo must be 10 MB or smaller.";
+    }
+
+    return "";
+  }
+
+  function choosePrimaryPhoto(
+    imageType: "front" | "back",
+    file: File | null
+  ) {
+    if (!file) {
+      return;
+    }
+
+    const validationError =
+      validatePhoto(file);
+
+    if (validationError) {
+      setPhotoError(validationError);
+      return;
+    }
+
+    setPhotoError("");
+
+    if (imageType === "front") {
+      setFrontPhoto(file);
+      return;
+    }
+
+    setBackPhoto(file);
+  }
+
+  function addDetailPhotos(files: FileList | null) {
+    if (!files?.length) {
+      return;
+    }
+
+    const incoming = Array.from(files);
+
+    for (const file of incoming) {
+      const validationError =
+        validatePhoto(file);
+
+      if (validationError) {
+        setPhotoError(validationError);
+        return;
+      }
+    }
+
+    const availableSlots =
+      MAX_DETAIL_PHOTOS - detailPhotos.length;
+
+    if (availableSlots <= 0) {
+      setPhotoError(
+        `You can add up to ${MAX_DETAIL_PHOTOS} detail photos.`
+      );
+      return;
+    }
+
+    const accepted = incoming.slice(
+      0,
+      availableSlots
+    );
+
+    setDetailPhotos((current) => [
+      ...current,
+      ...accepted,
+    ]);
+
+    setPhotoError(
+      incoming.length > availableSlots
+        ? `Added ${accepted.length} photo${accepted.length === 1 ? "" : "s"}. Maximum ${MAX_DETAIL_PHOTOS} detail photos.`
+        : ""
+    );
+  }
+
+  function getPendingListingPhotos(): PendingListingPhoto[] {
+    const photos: PendingListingPhoto[] = [];
+
+    if (frontPhoto) {
+      photos.push({
+        id: "front",
+        file: frontPhoto,
+        imageType: "front",
+      });
+    }
+
+    if (backPhoto) {
+      photos.push({
+        id: "back",
+        file: backPhoto,
+        imageType: "back",
+      });
+    }
+
+    detailPhotos.forEach((file, index) => {
+      photos.push({
+        id: `detail-${index}`,
+        file,
+        imageType: "detail",
+      });
+    });
+
+    return photos;
+  }
+
+  function safePhotoExtension(file: File) {
+    const fromName = file.name
+      .split(".")
+      .pop()
+      ?.toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+
+    if (fromName && fromName.length <= 5) {
+      return fromName;
+    }
+
+    if (file.type === "image/png") {
+      return "png";
+    }
+
+    if (file.type === "image/webp") {
+      return "webp";
+    }
+
+    if (file.type === "image/heic") {
+      return "heic";
+    }
+
+    if (file.type === "image/heif") {
+      return "heif";
+    }
+
+    return "jpg";
+  }
+
+  async function uploadListingPhotos(
+    inventoryId: string
+  ) {
+    const photos = getPendingListingPhotos();
+
+    if (photos.length === 0) {
+      return;
+    }
+
+    const vendorId = membership!.vendor_id;
+    const uploadedPaths: string[] = [];
+
+    try {
+      const imageRows: {
+        inventory_id: string;
+        storage_path: string;
+        image_type: ListingPhotoType;
+        position: number;
+      }[] = [];
+
+      for (let index = 0; index < photos.length; index += 1) {
+        const photo = photos[index];
+        const extension =
+          safePhotoExtension(photo.file);
+        const uniquePart =
+          crypto.randomUUID();
+        const storagePath =
+          `${vendorId}/${inventoryId}/${photo.imageType}-${uniquePart}.${extension}`;
+
+        const { error: uploadError } =
+          await supabase.storage
+            .from("inventory-images")
+            .upload(
+              storagePath,
+              photo.file,
+              {
+                cacheControl: "3600",
+                upsert: false,
+                contentType:
+                  photo.file.type || undefined,
+              }
+            );
+
+        if (uploadError) {
+          throw uploadError;
+        }
+
+        uploadedPaths.push(storagePath);
+
+        imageRows.push({
+          inventory_id: inventoryId,
+          storage_path: storagePath,
+          image_type: photo.imageType,
+          position: index,
+        });
+      }
+
+      const { error: imageRowsError } =
+        await supabase
+          .from("inventory_images")
+          .insert(imageRows);
+
+      if (imageRowsError) {
+        throw imageRowsError;
+      }
+    } catch (error) {
+      if (uploadedPaths.length > 0) {
+        await supabase.storage
+          .from("inventory-images")
+          .remove(uploadedPaths);
+      }
+
+      throw error;
+    }
+  }
+
+  async function createInventoryListing({
+    cardId,
+    listingTypeValue,
+    conditionValue,
+    gradingCompanyValue,
+    gradeValue,
+    certNumberValue,
+    numericPrice,
+    numericQuantity,
+  }: {
+    cardId: string;
+    listingTypeValue: "raw" | "graded";
+    conditionValue: string | null;
+    gradingCompanyValue: string | null;
+    gradeValue: string | null;
+    certNumberValue: string | null;
+    numericPrice: number;
+    numericQuantity: number;
+  }) {
+    const {
+      data: inventoryRow,
+      error: inventoryError,
+    } = await supabase
+      .from("inventory")
+      .insert({
+        vendor_id: membership!.vendor_id,
+        card_id: cardId,
+        listing_type: listingTypeValue,
+        condition: conditionValue,
+        grading_company: gradingCompanyValue,
+        grade: gradeValue,
+        cert_number: certNumberValue,
+        price: numericPrice,
+        quantity: numericQuantity,
+        notes: notes.trim() || null,
+      })
+      .select("id")
+      .single();
+
+    if (inventoryError) {
+      throw inventoryError;
+    }
+
+    if (!inventoryRow?.id) {
+      throw new Error(
+        "MintRadar created the listing but could not read its inventory ID."
+      );
+    }
+
+    return inventoryRow.id as string;
+  }
+
+  async function removeIncompleteInventoryListing(
+    inventoryId: string
+  ) {
+    const { error } = await supabase
+      .from("inventory")
+      .delete()
+      .eq("id", inventoryId)
+      .eq("vendor_id", membership!.vendor_id);
+
+    if (error) {
+      console.error(
+        "Could not remove incomplete inventory listing:",
+        error
+      );
+    }
+  }
+
+  // -----------------------------------------
   // VALIDATE
   // -----------------------------------------
 
@@ -1317,62 +1643,49 @@ export default function AddInventoryPage() {
     setPublishError("");
     setPublishSuccess("");
 
+    let inventoryId: string | null = null;
+
     try {
       const cardId =
         await getOrCreateCard();
 
-      const {
-        error:
-          inventoryError,
-      } = await supabase
-        .from("inventory")
-        .insert({
-          vendor_id:
-            membership!.vendor_id,
-
-          card_id:
-            cardId,
-
-          listing_type:
-            "raw",
-
-          condition,
-
-          grading_company:
-            null,
-
-          grade:
-            null,
-
-          cert_number:
-            null,
-
-          price:
+      inventoryId =
+        await createInventoryListing({
+          cardId,
+          listingTypeValue: "raw",
+          conditionValue: condition,
+          gradingCompanyValue: null,
+          gradeValue: null,
+          certNumberValue: null,
+          numericPrice:
             validation.numericPrice,
-
-          quantity:
+          numericQuantity:
             validation.numericQuantity,
-
-          notes:
-            notes.trim() ||
-            null,
         });
 
-      if (inventoryError) {
-        throw inventoryError;
-      }
+      await uploadListingPhotos(
+        inventoryId
+      );
 
       setPublishSuccess(
-        `${selectedCard?.name || "Collectible"} is now live in MintRadar.`
+        `${selectedCard?.name || "Collectible"} is now live in MintRadar${getPendingListingPhotos().length > 0 ? " with actual card photos." : "."}`
       );
 
       setPrice("");
       setQuantity("1");
       setNotes("");
+      setFrontPhoto(null);
+      setBackPhoto(null);
+      setDetailPhotos([]);
+      setPhotoError("");
     } catch (error: any) {
-      handlePublishError(
-        error
-      );
+      if (inventoryId) {
+        await removeIncompleteInventoryListing(
+          inventoryId
+        );
+      }
+
+      handlePublishError(error);
     } finally {
       setPublishing(false);
     }
@@ -1408,64 +1721,52 @@ export default function AddInventoryPage() {
     setPublishError("");
     setPublishSuccess("");
 
+    let inventoryId: string | null = null;
+
     try {
       const cardId =
         await getOrCreateCard();
 
-      const {
-        error:
-          inventoryError,
-      } = await supabase
-        .from("inventory")
-        .insert({
-          vendor_id:
-            membership!.vendor_id,
-
-          card_id:
-            cardId,
-
-          listing_type:
-            "graded",
-
-          condition:
-            null,
-
-          grading_company:
+      inventoryId =
+        await createInventoryListing({
+          cardId,
+          listingTypeValue: "graded",
+          conditionValue: null,
+          gradingCompanyValue:
             gradingCompany,
-
-          grade,
-
-          cert_number:
-            certNumber.trim() ||
-            null,
-
-          price:
+          gradeValue: grade,
+          certNumberValue:
+            certNumber.trim() || null,
+          numericPrice:
             validation.numericPrice,
-
-          quantity:
+          numericQuantity:
             validation.numericQuantity,
-
-          notes:
-            notes.trim() ||
-            null,
         });
 
-      if (inventoryError) {
-        throw inventoryError;
-      }
+      await uploadListingPhotos(
+        inventoryId
+      );
 
       setPublishSuccess(
-        `${gradingCompany} ${grade} ${selectedCard?.name || "collectible"} is now live in MintRadar.`
+        `${gradingCompany} ${grade} ${selectedCard?.name || "collectible"} is now live in MintRadar${getPendingListingPhotos().length > 0 ? " with actual slab photos." : "."}`
       );
 
       setPrice("");
       setQuantity("1");
       setCertNumber("");
       setNotes("");
+      setFrontPhoto(null);
+      setBackPhoto(null);
+      setDetailPhotos([]);
+      setPhotoError("");
     } catch (error: any) {
-      handlePublishError(
-        error
-      );
+      if (inventoryId) {
+        await removeIncompleteInventoryListing(
+          inventoryId
+        );
+      }
+
+      handlePublishError(error);
     } finally {
       setPublishing(false);
     }
@@ -2465,6 +2766,35 @@ export default function AddInventoryPage() {
 
             </div>
 
+            <ListingPhotoUploader
+              frontPhoto={frontPhoto}
+              backPhoto={backPhoto}
+              detailPhotos={detailPhotos}
+              photoError={photoError}
+              condition={condition}
+              listingType="raw"
+              onFrontPhoto={(file) =>
+                choosePrimaryPhoto("front", file)
+              }
+              onBackPhoto={(file) =>
+                choosePrimaryPhoto("back", file)
+              }
+              onRemoveFront={() =>
+                setFrontPhoto(null)
+              }
+              onRemoveBack={() =>
+                setBackPhoto(null)
+              }
+              onAddDetails={addDetailPhotos}
+              onRemoveDetail={(index) =>
+                setDetailPhotos((current) =>
+                  current.filter((_, itemIndex) =>
+                    itemIndex !== index
+                  )
+                )
+              }
+            />
+
             <PublishMessages
               error={
                 publishError
@@ -2705,6 +3035,35 @@ export default function AddInventoryPage() {
               />
 
             </div>
+
+            <ListingPhotoUploader
+              frontPhoto={frontPhoto}
+              backPhoto={backPhoto}
+              detailPhotos={detailPhotos}
+              photoError={photoError}
+              condition={null}
+              listingType="graded"
+              onFrontPhoto={(file) =>
+                choosePrimaryPhoto("front", file)
+              }
+              onBackPhoto={(file) =>
+                choosePrimaryPhoto("back", file)
+              }
+              onRemoveFront={() =>
+                setFrontPhoto(null)
+              }
+              onRemoveBack={() =>
+                setBackPhoto(null)
+              }
+              onAddDetails={addDetailPhotos}
+              onRemoveDetail={(index) =>
+                setDetailPhotos((current) =>
+                  current.filter((_, itemIndex) =>
+                    itemIndex !== index
+                  )
+                )
+              }
+            />
 
             {/* PREVIEW */}
 
@@ -3352,6 +3711,256 @@ function NotesInput({
         className="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 resize-none"
       />
 
+    </div>
+  );
+}
+
+function ListingPhotoUploader({
+  frontPhoto,
+  backPhoto,
+  detailPhotos,
+  photoError,
+  condition,
+  listingType,
+  onFrontPhoto,
+  onBackPhoto,
+  onRemoveFront,
+  onRemoveBack,
+  onAddDetails,
+  onRemoveDetail,
+}: {
+  frontPhoto: File | null;
+  backPhoto: File | null;
+  detailPhotos: File[];
+  photoError: string;
+  condition: string | null;
+  listingType: "raw" | "graded";
+  onFrontPhoto: (file: File | null) => void;
+  onBackPhoto: (file: File | null) => void;
+  onRemoveFront: () => void;
+  onRemoveBack: () => void;
+  onAddDetails: (files: FileList | null) => void;
+  onRemoveDetail: (index: number) => void;
+}) {
+  const conditionPhotosRecommended =
+    listingType === "raw" &&
+    condition !== null &&
+    ["LP", "MP", "HP", "DMG"].includes(condition);
+
+  return (
+    <div className="mt-6 bg-black border border-zinc-900 rounded-2xl p-5 sm:p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.2em] text-emerald-400 font-bold">
+            Actual Card Photos · Optional
+          </p>
+
+          <h3 className="text-xl font-black mt-2">
+            Show buyers the real card
+          </h3>
+
+          <p className="text-zinc-500 text-sm mt-2 max-w-2xl leading-relaxed">
+            {listingType === "graded"
+              ? "Add photos of the actual slab so buyers can see the label, cert and slab condition. These photos belong only to this listing and never replace the catalog image."
+              : "Add front and back photos so buyers can inspect the exact copy you are selling. These photos belong only to this listing and never replace the catalog image."}
+          </p>
+        </div>
+
+        {conditionPhotosRecommended && (
+          <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-[10px] font-black uppercase tracking-[0.15em] text-amber-300">
+            Recommended for {condition}
+          </span>
+        )}
+      </div>
+
+      <div className="grid sm:grid-cols-2 gap-4 mt-5">
+        <ListingPhotoSlot
+          label="Front"
+          photo={frontPhoto}
+          onChoose={onFrontPhoto}
+          onRemove={onRemoveFront}
+        />
+
+        <ListingPhotoSlot
+          label="Back"
+          photo={backPhoto}
+          onChoose={onBackPhoto}
+          onRemove={onRemoveBack}
+        />
+      </div>
+
+      <div className="mt-5 rounded-2xl border border-zinc-900 bg-zinc-950 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-black">
+              Detail Photos
+            </p>
+            <p className="text-xs text-zinc-600 mt-1">
+              Optional corners, surface, serial number or slab details · {detailPhotos.length}/{MAX_DETAIL_PHOTOS}
+            </p>
+          </div>
+
+          <label className={`cursor-pointer rounded-xl border px-4 py-2 text-xs font-black transition ${
+            detailPhotos.length >= MAX_DETAIL_PHOTOS
+              ? "pointer-events-none border-zinc-900 text-zinc-700"
+              : "border-zinc-700 text-white hover:border-emerald-400 hover:text-emerald-400"
+          }`}>
+            Add Details
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+              multiple
+              className="hidden"
+              disabled={detailPhotos.length >= MAX_DETAIL_PHOTOS}
+              onChange={(event) => {
+                onAddDetails(event.target.files);
+                event.currentTarget.value = "";
+              }}
+            />
+          </label>
+        </div>
+
+        {detailPhotos.length > 0 && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
+            {detailPhotos.map((file, index) => (
+              <ListingPhotoPreview
+                key={`${file.name}-${file.size}-${file.lastModified}-${index}`}
+                file={file}
+                label={`Detail ${index + 1}`}
+                onRemove={() => onRemoveDetail(index)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {photoError && (
+        <div className="mt-4 rounded-xl border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-300">
+          {photoError}
+        </div>
+      )}
+
+      <p className="text-[11px] text-zinc-700 mt-4">
+        JPG, PNG, WebP, HEIC or HEIF · 10 MB max per photo.
+      </p>
+    </div>
+  );
+}
+
+function ListingPhotoSlot({
+  label,
+  photo,
+  onChoose,
+  onRemove,
+}: {
+  label: string;
+  photo: File | null;
+  onChoose: (file: File | null) => void;
+  onRemove: () => void;
+}) {
+  if (photo) {
+    return (
+      <ListingPhotoPreview
+        file={photo}
+        label={label}
+        onRemove={onRemove}
+        replaceControl={
+          <label className="cursor-pointer rounded-lg border border-white/20 bg-black/80 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-white backdrop-blur hover:border-emerald-400 hover:text-emerald-400 transition">
+            Replace
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+              capture="environment"
+              className="hidden"
+              onChange={(event) => {
+                onChoose(event.target.files?.[0] || null);
+                event.currentTarget.value = "";
+              }}
+            />
+          </label>
+        }
+      />
+    );
+  }
+
+  return (
+    <label className="cursor-pointer min-h-52 rounded-2xl border border-dashed border-zinc-800 bg-zinc-950 flex flex-col items-center justify-center p-6 text-center transition hover:border-emerald-400/60 hover:bg-emerald-400/[0.03]">
+      <span className="text-3xl" aria-hidden="true">
+        ＋
+      </span>
+      <span className="font-black mt-2">
+        {label} Photo
+      </span>
+      <span className="text-xs text-zinc-600 mt-2">
+        Take a photo or choose one from your device
+      </span>
+      <input
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+        capture="environment"
+        className="hidden"
+        onChange={(event) => {
+          onChoose(event.target.files?.[0] || null);
+          event.currentTarget.value = "";
+        }}
+      />
+    </label>
+  );
+}
+
+function ListingPhotoPreview({
+  file,
+  label,
+  onRemove,
+  replaceControl,
+}: {
+  file: File;
+  label: string;
+  onRemove: () => void;
+  replaceControl?: ReactNode;
+}) {
+  const [previewUrl, setPreviewUrl] =
+    useState("");
+
+  useEffect(() => {
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [file]);
+
+  return (
+    <div className="relative overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950 aspect-[3/4]">
+      {previewUrl ? (
+        <img
+          src={previewUrl}
+          alt={`${label} listing preview`}
+          className="h-full w-full object-contain"
+        />
+      ) : (
+        <div className="h-full w-full flex items-center justify-center text-xs text-zinc-600">
+          Preparing preview...
+        </div>
+      )}
+
+      <div className="absolute inset-x-0 top-0 flex items-center justify-between gap-2 p-2 bg-gradient-to-b from-black/80 to-transparent">
+        <span className="rounded-lg bg-black/80 px-2 py-1 text-[10px] font-black uppercase tracking-wider text-white">
+          {label}
+        </span>
+
+        <div className="flex gap-2">
+          {replaceControl}
+          <button
+            type="button"
+            onClick={onRemove}
+            className="rounded-lg border border-red-400/30 bg-black/80 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-red-300 backdrop-blur hover:bg-red-400 hover:text-black transition"
+          >
+            Remove
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
