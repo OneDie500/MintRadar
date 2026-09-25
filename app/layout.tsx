@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
 import AccountNav from "./components/AccountNav";
@@ -18,6 +18,12 @@ export const metadata: Metadata = {
   title: "MintRadar",
   description:
     "Search collectible cards, vendors, inventory, and live pricing with MintRadar.",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
