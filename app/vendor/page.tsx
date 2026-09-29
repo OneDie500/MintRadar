@@ -1925,7 +1925,7 @@ export default function VendorDashboardPage() {
       // printer's physical 112-dot width. No QR/text coordinates or sizes
       // are changed here.
       const transportPhysicalOffset =
-        10;
+        5;
 
       transportCtx.drawImage(
         rotatedCanvas,
@@ -1967,11 +1967,13 @@ export default function VendorDashboardPage() {
 
     // Use a larger QR on the 112 px short axis while retaining
     // 4 px of physical clearance on every side.
-    // DIAGNOSTIC LARGE-QR TEST:
-    // 110 px nearly fills the entire 112 px short axis.
-    const qrSize = 110;
-    const qrX = 1;
-    const qrY = 1;
+    // FINAL HORIZONTAL P31S CALIBRATION:
+    // Keep the QR materially larger than the original unreadable 88 px
+    // version, while reserving a protected top band so the printer cannot
+    // eat into the QR quiet zone.
+    const qrSize = 104;
+    const qrX = 4;
+    const qrY = 7;
 
     const qrRenderSize = 416;
 
@@ -2059,7 +2061,7 @@ export default function VendorDashboardPage() {
       ctx.drawImage(
         logo,
         textX,
-        13,
+        19,
         logoWidth,
         logoHeight
       );
@@ -2083,7 +2085,7 @@ export default function VendorDashboardPage() {
       ctx.fillText(
         vendorText,
         textX,
-        14
+        20
       );
     }
 
@@ -2107,7 +2109,7 @@ export default function VendorDashboardPage() {
     ctx.fillText(
       condition,
       textX,
-      41
+      47
     );
 
     // ------------------------------
@@ -2132,7 +2134,7 @@ export default function VendorDashboardPage() {
     ctx.fillText(
       bottomText,
       textX,
-      68
+      74
     );
 
     return transportCanvas;
