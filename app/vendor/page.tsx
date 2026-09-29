@@ -1644,8 +1644,16 @@ export default function VendorDashboardPage() {
       // Text/branding should be visually centered on the physical
       // 112 px label even though the QR remains biased inside the
       // proven clipping-safe area.
+      // Physical P31S calibration:
+      // Real-world testing shows the visible print area is offset from the
+      // nominal 112 px raster. Shift the ENTIRE vertical composition 10 px
+      // away from the clipped physical-right edge while keeping the giant
+      // QR at its proven 108 px size.
+      const physicalShift = -10;
+
       const textCenter =
-        finishedCanvas.width / 2;
+        finishedCanvas.width / 2 +
+        physicalShift;
 
       // ------------------------------
       // VENDOR BRANDING
@@ -1776,7 +1784,8 @@ export default function VendorDashboardPage() {
           p31sQrDataUrl
         );
 
-      const qrX = 0;
+      const qrX =
+        physicalShift;
 
       const qrY = 66;
 
