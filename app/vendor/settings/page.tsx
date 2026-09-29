@@ -11,6 +11,8 @@ type VendorSettingsMetadata = {
   [key: string]: unknown;
 };
 
+type LabelBrandingMode = "business_name" | "logo";
+
 type TeamMember = {
   user_id: string;
   email?: string | null;
@@ -145,6 +147,10 @@ export default function VendorSettingsPage() {
   const [paymentSaving, setPaymentSaving] = useState(false);
   const [paymentMessage, setPaymentMessage] = useState("");
   const [paymentError, setPaymentError] = useState("");
+  const [labelBrandingMode, setLabelBrandingMode] =
+    useState<LabelBrandingMode>("business_name");
+  const [vendorLogoUrl, setVendorLogoUrl] =
+    useState<string | null>(null);
 
   const normalizedRole = normalizeRole(role);
   const isOwner = normalizedRole === "owner";
@@ -221,12 +227,36 @@ export default function VendorSettingsPage() {
           );
         }
 
+        const { data: vendorSettings, error: vendorSettingsError } =
+          await supabase
+            .from("vendors")
+            .select("logo_url, label_branding_mode")
+            .eq("id", membership.vendor_id)
+            .single();
+
+        if (vendorSettingsError) {
+          throw vendorSettingsError;
+        }
+
         const metadata =
           (user.user_metadata || {}) as VendorSettingsMetadata;
 
         if (!cancelled) {
           setVendorId(membership.vendor_id);
           setRole(normalizeRole(membership.role));
+
+          setVendorLogoUrl(
+            typeof vendorSettings?.logo_url === "string" &&
+              vendorSettings.logo_url.trim()
+              ? vendorSettings.logo_url.trim()
+              : null
+          );
+
+          setLabelBrandingMode(
+            vendorSettings?.label_branding_mode === "logo"
+              ? "logo"
+              : "business_name"
+          );
 
           setSaleUpdates(
             typeof metadata.vendor_sale_updates === "boolean"
@@ -426,6 +456,29 @@ export default function VendorSettingsPage() {
         window.location.assign("/vendor/login");
         return;
       }
+
+      if (!vendorId) {
+        throw new Error("MintRadar could not identify this vendor.");
+      }
+
+      const brandingModeToSave: LabelBrandingMode =
+        labelBrandingMode === "logo" && vendorLogoUrl
+          ? "logo"
+          : "business_name";
+
+      const { error: vendorUpdateError } =
+        await supabase
+          .from("vendors")
+          .update({
+            label_branding_mode: brandingModeToSave,
+          })
+          .eq("id", vendorId);
+
+      if (vendorUpdateError) {
+        throw vendorUpdateError;
+      }
+
+      setLabelBrandingMode(brandingModeToSave);
 
       const existingMetadata =
         (user.user_metadata || {}) as VendorSettingsMetadata;
@@ -685,6 +738,97 @@ export default function VendorSettingsPage() {
                     className="mt-1 h-5 w-5 accent-emerald-400"
                   />
                 </label>
+
+                <div className="rounded-2xl border border-zinc-800 bg-black p-5">
+                  <div>
+                    <p className="font-black">
+                      Label Branding
+                    </p>
+                    <p className="mt-1 text-sm leading-6 text-zinc-500">
+                      Choose what MintRadar prints in the vendor branding area
+                      on your inventory labels.
+                    </p>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <label
+                      className={`cursor-pointer rounded-2xl border p-4 transition ${
+                        labelBrandingMode === "business_name"
+                          ? "border-emerald-400/40 bg-emerald-400/[0.06]"
+                          : "border-zinc-800 bg-zinc-950"
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <input
+                          type="radio"
+                          name="label-branding"
+                          value="business_name"
+                          checked={labelBrandingMode === "business_name"}
+                          onChange={() =>
+                            setLabelBrandingMode("business_name")
+                          }
+                          className="mt-1 h-4 w-4 accent-emerald-400"
+                        />
+                        <div>
+                          <p className="font-black text-white">
+                            Business Name
+                          </p>
+                          <p className="mt-1 text-xs leading-5 text-zinc-500">
+                            Print your vendor name as clean thermal text.
+                          </p>
+                        </div>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`rounded-2xl border p-4 transition ${
+                        !vendorLogoUrl
+                          ? "cursor-not-allowed border-zinc-900 bg-zinc-950/50 opacity-50"
+                          : labelBrandingMode === "logo"
+                            ? "cursor-pointer border-emerald-400/40 bg-emerald-400/[0.06]"
+                            : "cursor-pointer border-zinc-800 bg-zinc-950"
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <input
+                          type="radio"
+                          name="label-branding"
+                          value="logo"
+                          checked={labelBrandingMode === "logo"}
+                          disabled={!vendorLogoUrl}
+                          onChange={() =>
+                            setLabelBrandingMode("logo")
+                          }
+                          className="mt-1 h-4 w-4 accent-emerald-400"
+                        />
+                        <div className="min-w-0">
+                          <p className="font-black text-white">
+                            Vendor Logo
+                          </p>
+                          <p className="mt-1 text-xs leading-5 text-zinc-500">
+                            {vendorLogoUrl
+                              ? "Use the logo saved on your vendor profile."
+                              : "Add a vendor logo in Profile / Account to enable this option."}
+                          </p>
+                          {vendorLogoUrl && (
+                            <div className="mt-3 rounded-xl border border-zinc-800 bg-white p-3">
+                              <img
+                                src={vendorLogoUrl}
+                                alt="Vendor logo preview"
+                                className="h-10 w-full object-contain"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+
+                  <p className="mt-3 text-xs leading-5 text-zinc-600">
+                    If a saved logo cannot be loaded while printing, MintRadar
+                    automatically falls back to the business name.
+                  </p>
+                </div>
 
                 <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5">
                   <p className="text-xs font-black uppercase tracking-[0.15em] text-zinc-500">
