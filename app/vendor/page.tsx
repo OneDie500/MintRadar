@@ -1624,12 +1624,22 @@ export default function VendorDashboardPage() {
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
 
-      // Safe printable inset. Nothing important touches the
-      // 112 px printhead edges.
-      const safeX = 8;
+      // P31S physical safe area.
+      //
+      // The native/web driver rotates this finished portrait label
+      // onto the 112 px printhead axis. Real-world testing showed the
+      // far-right physical edge clips slightly, so we intentionally
+      // bias the entire portrait design 6 px left while keeping a
+      // generous QR quiet zone.
+      const safeLeft = 4;
+      const safeRight = 16;
       const safeWidth =
         finishedCanvas.width -
-        safeX * 2;
+        safeLeft -
+        safeRight;
+      const safeCenter =
+        safeLeft +
+        safeWidth / 2;
 
       // ------------------------------
       // VENDOR BRANDING
@@ -1673,9 +1683,8 @@ export default function VendorDashboardPage() {
         ctx.drawImage(
           logo,
           Math.round(
-            (finishedCanvas.width -
-              logoWidth) /
-              2
+            safeCenter -
+              logoWidth / 2
           ),
           12,
           logoWidth,
@@ -1700,8 +1709,7 @@ export default function VendorDashboardPage() {
 
         ctx.fillText(
           vendorText,
-          finishedCanvas.width /
-            2,
+          safeCenter,
           12
         );
       }
@@ -1734,12 +1742,11 @@ export default function VendorDashboardPage() {
       // QR
       // ------------------------------
       //
-      // 88 px QR + QR's own margin gives us a real quiet
-      // zone plus 12 px of physical clearance on each side.
-      // This is intentionally smaller than the old 100 px
-      // edge-hugging QR to eliminate thermal clipping.
-
-      const qrSize = 88;
+      // Use nearly the full safe width for the QR. At 96 px,
+      // the encoded modules are materially larger than the previous
+      // 88 px version while the QR generator still provides a real
+      // quiet zone around the code.
+      const qrSize = 96;
 
       const p31sQrDataUrl =
         await QRCode.toDataURL(
@@ -1759,12 +1766,11 @@ export default function VendorDashboardPage() {
 
       const qrX =
         Math.round(
-          (finishedCanvas.width -
-            qrSize) /
-            2
+          safeCenter -
+            qrSize / 2
         );
 
-      const qrY = 76;
+      const qrY = 72;
 
       ctx.drawImage(
         qr,
@@ -1797,7 +1803,7 @@ export default function VendorDashboardPage() {
         bottomText,
         finishedCanvas.width /
           2,
-        184
+        178
       );
 
       // A small MintRadar footer helps visually anchor the
@@ -1822,7 +1828,7 @@ export default function VendorDashboardPage() {
         footerText,
         finishedCanvas.width /
           2,
-        229
+        224
       );
 
       // Rotate the finished portrait design COUNTER-CLOCKWISE
@@ -1903,11 +1909,11 @@ export default function VendorDashboardPage() {
     ctx.fillStyle = "#000000";
     ctx.textBaseline = "top";
 
-    // Keep the QR comfortably inside the short physical axis.
-    // 88 px leaves 12 px above and below on the 112 px source.
-    const qrSize = 88;
-    const qrX = 12;
-    const qrY = 12;
+    // Use a larger QR on the 112 px short axis while retaining
+    // 4 px of physical clearance on every side.
+    const qrSize = 104;
+    const qrX = 4;
+    const qrY = 4;
 
     const p31sQrDataUrl =
       await QRCode.toDataURL(
@@ -1938,7 +1944,7 @@ export default function VendorDashboardPage() {
     const textX =
       qrX +
       qrSize +
-      12;
+      10;
 
     const textWidth =
       transportCanvas.width -
@@ -2006,8 +2012,8 @@ export default function VendorDashboardPage() {
           ctx,
           vendorText,
           textWidth,
-          18,
-          10,
+          17,
+          9,
           900
         );
 
@@ -2030,8 +2036,8 @@ export default function VendorDashboardPage() {
         ctx,
         condition,
         textWidth,
-        15,
-        9,
+        14,
+        8,
         800
       );
 
@@ -2054,8 +2060,8 @@ export default function VendorDashboardPage() {
         bottomText,
         textWidth,
         showPriceOnLabel
-          ? 25
-          : 17,
+          ? 23
+          : 15,
         10,
         900
       );
