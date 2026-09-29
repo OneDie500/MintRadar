@@ -1486,44 +1486,42 @@ export default function VendorDashboardPage() {
   }
 
   async function buildP31SLabelCanvas() {
-    if (
-      !qrItem
-    ) {
+    if (!qrItem) {
       throw new Error(
         "Open a MintRadar label first."
       );
     }
 
-    const canvas =
+    // --------------------------------------------------
+    // P31S 13 × 38 MM CALIBRATED LABEL
+    // --------------------------------------------------
+    //
+    // IMPORTANT:
+    // The known-good P31S transport expects a 320 × 112 source canvas.
+    // The printer driver then rotates that source into the printer's
+    // 112 × 320 physical raster.
+    //
+    // HORIZONTAL:
+    //   Render directly into the 320 × 112 transport canvas.
+    //
+    // VERTICAL:
+    //   First render the finished label exactly as we want it to appear
+    //   physically at 112 × 320, then rotate that finished design
+    //   COUNTER-CLOCKWISE into the required 320 × 112 transport canvas.
+    //   The P31S driver's clockwise rotation restores it to the intended
+    //   upright 112 × 320 physical label.
+    //
+    // This keeps lib/p31s-web.ts untouched and gives native/web printing
+    // the same finished source canvas.
+    // --------------------------------------------------
+
+    const transportCanvas =
       document.createElement(
         "canvas"
       );
 
-    canvas.width = 320;
-    canvas.height = 112;
-
-    const ctx =
-      canvas.getContext("2d");
-
-    if (!ctx) {
-      throw new Error(
-        "MintRadar could not create the P31S label image."
-      );
-    }
-
-    ctx.imageSmoothingEnabled =
-      false;
-
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(
-      0,
-      0,
-      canvas.width,
-      canvas.height
-    );
-
-    ctx.fillStyle = "#000000";
-    ctx.textBaseline = "top";
+    transportCanvas.width = 320;
+    transportCanvas.height = 112;
 
     const graded =
       isGraded(qrItem);
@@ -1541,18 +1539,10 @@ export default function VendorDashboardPage() {
         qrItem.price ?? 0
       ).toFixed(2);
 
-    // --------------------------------------------------
-    // P31S 13 × 38 MM CALIBRATED LABEL
-    // --------------------------------------------------
-    //
-    // Important:
-    // The general preview QR is generated large at high error correction.
-    // Shrinking that image into a tiny thermal bitmap can make QR modules
-    // uneven and hard for a phone camera to resolve.
-    //
-    // For the P31S we generate a dedicated QR at its native print size,
-    // with medium error correction and its own quiet zone.
-    // --------------------------------------------------
+    const bottomText =
+      showPriceOnLabel
+        ? `$${price}`
+        : "SCAN FOR PRICE";
 
     const shortCode =
       encodeListingId(
@@ -1562,77 +1552,95 @@ export default function VendorDashboardPage() {
     const listingUrl =
       `${window.location.origin}/l/${shortCode}`;
 
-    const p31sQrDataUrl =
-      await QRCode.toDataURL(
-        listingUrl,
-        {
-          width: 100,
-          margin: 2,
-          errorCorrectionLevel: "M",
-        }
-      );
-
-    const qr =
-      await loadLabelImage(
-        p31sQrDataUrl
-      );
-
-    // Keep the entire QR well inside the printer's real 13 mm safe area.
-    // 100 px is larger than the previous readable area, but ends at y=102,
-    // leaving 10 px of bottom clearance on the 112 px bitmap.
-    const qrSize = 100;
-    const qrX = 4;
-    const qrY = 2;
-
-    ctx.drawImage(
-      qr,
-      qrX,
-      qrY,
-      qrSize,
-      qrSize
-    );
-
-    // --------------------------------------------------
-    // TEXT COLUMN
-    // --------------------------------------------------
-
-    const pad = 8;
-
-    const textX =
-      qrX + qrSize + 10;
-
-    const textWidth =
-      canvas.width -
-      textX -
-      pad;
-
-    ctx.fillStyle = "#000000";
-    ctx.textAlign = "left";
-
-    // --------------------------------------------------
-    // VENDOR BRANDING
-    // --------------------------------------------------
-
     const normalizedVendorName =
       vendorName
         .trim()
         .toLowerCase();
 
-    if (
-      normalizedVendorName ===
-      "onlyslabs"
-    ) {
-      try {
-        const logo =
-          await loadLabelImage(
+    const loadVendorLogo =
+      async () => {
+        if (
+          normalizedVendorName !==
+          "onlyslabs"
+        ) {
+          return null;
+        }
+
+        try {
+          return await loadLabelImage(
             "/onlyslabs-label-logo.png"
           );
-
-        const maxLogoWidth =
-          Math.min(
-            textWidth,
-            176
+        } catch (
+          logoError
+        ) {
+          console.warn(
+            "OnlySlabs label logo could not be loaded. Falling back to text.",
+            logoError
           );
+
+          return null;
+        }
+      };
+
+    // --------------------------------------------------
+    // VERTICAL LABEL
+    // --------------------------------------------------
+
+    if (
+      labelOrientation ===
+      "vertical"
+    ) {
+      const finishedCanvas =
+        document.createElement(
+          "canvas"
+        );
+
+      finishedCanvas.width = 112;
+      finishedCanvas.height = 320;
+
+      const ctx =
+        finishedCanvas.getContext(
+          "2d"
+        );
+
+      if (!ctx) {
+        throw new Error(
+          "MintRadar could not create the vertical P31S label image."
+        );
+      }
+
+      ctx.imageSmoothingEnabled =
+        false;
+
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(
+        0,
+        0,
+        finishedCanvas.width,
+        finishedCanvas.height
+      );
+
+      ctx.fillStyle = "#000000";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+
+      // Safe printable inset. Nothing important touches the
+      // 112 px printhead edges.
+      const safeX = 8;
+      const safeWidth =
+        finishedCanvas.width -
+        safeX * 2;
+
+      // ------------------------------
+      // VENDOR BRANDING
+      // ------------------------------
+
+      const logo =
+        await loadVendorLogo();
+
+      if (logo) {
+        const maxLogoWidth =
+          safeWidth;
 
         const maxLogoHeight = 22;
 
@@ -1664,19 +1672,16 @@ export default function VendorDashboardPage() {
 
         ctx.drawImage(
           logo,
-          textX,
-          13,
+          Math.round(
+            (finishedCanvas.width -
+              logoWidth) /
+              2
+          ),
+          12,
           logoWidth,
           logoHeight
         );
-      } catch (
-        logoError
-      ) {
-        console.warn(
-          "OnlySlabs label logo could not be loaded. Falling back to text.",
-          logoError
-        );
-
+      } else {
         const vendorText =
           vendorName.toUpperCase();
 
@@ -1684,9 +1689,9 @@ export default function VendorDashboardPage() {
           fitCanvasText(
             ctx,
             vendorText,
-            textWidth,
-            18,
-            10,
+            safeWidth,
+            16,
+            9,
             900
           );
 
@@ -1695,10 +1700,303 @@ export default function VendorDashboardPage() {
 
         ctx.fillText(
           vendorText,
-          textX,
-          14
+          finishedCanvas.width /
+            2,
+          12
         );
       }
+
+      // ------------------------------
+      // CONDITION / GRADE
+      // ------------------------------
+
+      const conditionSize =
+        fitCanvasText(
+          ctx,
+          condition,
+          safeWidth,
+          14,
+          9,
+          800
+        );
+
+      ctx.font =
+        `800 ${conditionSize}px Arial, Helvetica, sans-serif`;
+
+      ctx.fillText(
+        condition,
+        finishedCanvas.width /
+          2,
+        42
+      );
+
+      // ------------------------------
+      // QR
+      // ------------------------------
+      //
+      // 88 px QR + QR's own margin gives us a real quiet
+      // zone plus 12 px of physical clearance on each side.
+      // This is intentionally smaller than the old 100 px
+      // edge-hugging QR to eliminate thermal clipping.
+
+      const qrSize = 88;
+
+      const p31sQrDataUrl =
+        await QRCode.toDataURL(
+          listingUrl,
+          {
+            width: qrSize,
+            margin: 3,
+            errorCorrectionLevel:
+              "M",
+          }
+        );
+
+      const qr =
+        await loadLabelImage(
+          p31sQrDataUrl
+        );
+
+      const qrX =
+        Math.round(
+          (finishedCanvas.width -
+            qrSize) /
+            2
+        );
+
+      const qrY = 76;
+
+      ctx.drawImage(
+        qr,
+        qrX,
+        qrY,
+        qrSize,
+        qrSize
+      );
+
+      // ------------------------------
+      // PRICE / SCAN MESSAGE
+      // ------------------------------
+
+      const bottomSize =
+        fitCanvasText(
+          ctx,
+          bottomText,
+          safeWidth,
+          showPriceOnLabel
+            ? 27
+            : 15,
+          9,
+          900
+        );
+
+      ctx.font =
+        `900 ${bottomSize}px Arial, Helvetica, sans-serif`;
+
+      ctx.fillText(
+        bottomText,
+        finishedCanvas.width /
+          2,
+        184
+      );
+
+      // A small MintRadar footer helps visually anchor the
+      // long vertical stock without crowding the QR.
+      const footerText =
+        "MINTRADAR";
+
+      const footerSize =
+        fitCanvasText(
+          ctx,
+          footerText,
+          safeWidth,
+          11,
+          8,
+          800
+        );
+
+      ctx.font =
+        `800 ${footerSize}px Arial, Helvetica, sans-serif`;
+
+      ctx.fillText(
+        footerText,
+        finishedCanvas.width /
+          2,
+        229
+      );
+
+      // Rotate the finished portrait design COUNTER-CLOCKWISE
+      // into the 320 × 112 transport canvas. The known-good
+      // P31S driver rotates it clockwise for the physical raster.
+      const transportCtx =
+        transportCanvas.getContext(
+          "2d"
+        );
+
+      if (!transportCtx) {
+        throw new Error(
+          "MintRadar could not create the P31S transport image."
+        );
+      }
+
+      transportCtx.imageSmoothingEnabled =
+        false;
+
+      transportCtx.fillStyle =
+        "#ffffff";
+
+      transportCtx.fillRect(
+        0,
+        0,
+        transportCanvas.width,
+        transportCanvas.height
+      );
+
+      transportCtx.save();
+
+      transportCtx.translate(
+        0,
+        transportCanvas.height
+      );
+
+      transportCtx.rotate(
+        -Math.PI / 2
+      );
+
+      transportCtx.drawImage(
+        finishedCanvas,
+        0,
+        0
+      );
+
+      transportCtx.restore();
+
+      return transportCanvas;
+    }
+
+    // --------------------------------------------------
+    // HORIZONTAL LABEL
+    // --------------------------------------------------
+
+    const ctx =
+      transportCanvas.getContext(
+        "2d"
+      );
+
+    if (!ctx) {
+      throw new Error(
+        "MintRadar could not create the horizontal P31S label image."
+      );
+    }
+
+    ctx.imageSmoothingEnabled =
+      false;
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(
+      0,
+      0,
+      transportCanvas.width,
+      transportCanvas.height
+    );
+
+    ctx.fillStyle = "#000000";
+    ctx.textBaseline = "top";
+
+    // Keep the QR comfortably inside the short physical axis.
+    // 88 px leaves 12 px above and below on the 112 px source.
+    const qrSize = 88;
+    const qrX = 12;
+    const qrY = 12;
+
+    const p31sQrDataUrl =
+      await QRCode.toDataURL(
+        listingUrl,
+        {
+          width: qrSize,
+          margin: 3,
+          errorCorrectionLevel:
+            "M",
+        }
+      );
+
+    const qr =
+      await loadLabelImage(
+        p31sQrDataUrl
+      );
+
+    ctx.drawImage(
+      qr,
+      qrX,
+      qrY,
+      qrSize,
+      qrSize
+    );
+
+    const pad = 10;
+
+    const textX =
+      qrX +
+      qrSize +
+      12;
+
+    const textWidth =
+      transportCanvas.width -
+      textX -
+      pad;
+
+    ctx.fillStyle = "#000000";
+    ctx.textAlign = "left";
+
+    // ------------------------------
+    // VENDOR BRANDING
+    // ------------------------------
+
+    const logo =
+      await loadVendorLogo();
+
+    if (logo) {
+      const maxLogoWidth =
+        Math.min(
+          textWidth,
+          176
+        );
+
+      const maxLogoHeight = 22;
+
+      const logoScale =
+        Math.min(
+          maxLogoWidth /
+            logo.naturalWidth,
+          maxLogoHeight /
+            logo.naturalHeight
+        );
+
+      const logoWidth =
+        Math.max(
+          1,
+          Math.round(
+            logo.naturalWidth *
+              logoScale
+          )
+        );
+
+      const logoHeight =
+        Math.max(
+          1,
+          Math.round(
+            logo.naturalHeight *
+              logoScale
+          )
+        );
+
+      ctx.drawImage(
+        logo,
+        textX,
+        13,
+        logoWidth,
+        logoHeight
+      );
     } else {
       const vendorText =
         vendorName.toUpperCase();
@@ -1723,9 +2021,9 @@ export default function VendorDashboardPage() {
       );
     }
 
-    // --------------------------------------------------
+    // ------------------------------
     // CONDITION / GRADE
-    // --------------------------------------------------
+    // ------------------------------
 
     const conditionSize =
       fitCanvasText(
@@ -1746,14 +2044,9 @@ export default function VendorDashboardPage() {
       41
     );
 
-    // --------------------------------------------------
+    // ------------------------------
     // PRICE / SCAN MESSAGE
-    // --------------------------------------------------
-
-    const bottomText =
-      showPriceOnLabel
-        ? `$${price}`
-        : "SCAN FOR PRICE";
+    // ------------------------------
 
     const bottomSize =
       fitCanvasText(
@@ -1776,7 +2069,7 @@ export default function VendorDashboardPage() {
       68
     );
 
-    return canvas;
+    return transportCanvas;
   }
 
   async function connectP31S() {
