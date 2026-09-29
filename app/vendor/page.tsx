@@ -1485,6 +1485,9 @@ export default function VendorDashboardPage() {
     return minSize;
   }
 
+  const ONLYSLABS_VENDOR_ID =
+    "8d34558a-52ff-4434-bf68-2587fb01dbc6";
+
   async function buildP31SLabelCanvas() {
     if (!qrItem) {
       throw new Error(
@@ -1560,15 +1563,15 @@ export default function VendorDashboardPage() {
     const loadVendorLogo =
       async () => {
         if (
-          normalizedVendorName !==
-          "onlyslabs"
+          vendorId !==
+          ONLYSLABS_VENDOR_ID
         ) {
           return null;
         }
 
         try {
           return await loadLabelImage(
-            "/onlyslabs-label-logo.png"
+            "/onlyslabs-label-logo-new.png"
           );
         } catch (
           logoError
