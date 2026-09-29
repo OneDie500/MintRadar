@@ -1644,16 +1644,8 @@ export default function VendorDashboardPage() {
       // Text/branding should be visually centered on the physical
       // 112 px label even though the QR remains biased inside the
       // proven clipping-safe area.
-      // Physical P31S calibration:
-      // Real-world testing shows the visible print area is offset from the
-      // nominal 112 px raster. Shift the ENTIRE vertical composition 10 px
-      // away from the clipped physical-right edge while keeping the giant
-      // QR at its proven 108 px size.
-      const physicalShift = -10;
-
       const textCenter =
-        finishedCanvas.width / 2 +
-        physicalShift;
+        finishedCanvas.width / 2;
 
       // ------------------------------
       // VENDOR BRANDING
@@ -1784,8 +1776,7 @@ export default function VendorDashboardPage() {
           p31sQrDataUrl
         );
 
-      const qrX =
-        physicalShift;
+      const qrX = 0;
 
       const qrY = 66;
 
@@ -1875,24 +1866,72 @@ export default function VendorDashboardPage() {
         transportCanvas.height
       );
 
-      transportCtx.save();
+      // First build the complete rotated transport raster exactly as before.
+      const rotatedCanvas =
+        document.createElement(
+          "canvas"
+        );
 
-      transportCtx.translate(
+      rotatedCanvas.width =
+        transportCanvas.width;
+      rotatedCanvas.height =
+        transportCanvas.height;
+
+      const rotatedCtx =
+        rotatedCanvas.getContext(
+          "2d"
+        );
+
+      if (!rotatedCtx) {
+        throw new Error(
+          "MintRadar could not create the rotated P31S transport image."
+        );
+      }
+
+      rotatedCtx.imageSmoothingEnabled =
+        false;
+
+      rotatedCtx.fillStyle =
+        "#ffffff";
+
+      rotatedCtx.fillRect(
         0,
-        transportCanvas.height
+        0,
+        rotatedCanvas.width,
+        rotatedCanvas.height
       );
 
-      transportCtx.rotate(
+      rotatedCtx.save();
+
+      rotatedCtx.translate(
+        0,
+        rotatedCanvas.height
+      );
+
+      rotatedCtx.rotate(
         -Math.PI / 2
       );
 
-      transportCtx.drawImage(
+      rotatedCtx.drawImage(
         finishedCanvas,
         0,
         0
       );
 
-      transportCtx.restore();
+      rotatedCtx.restore();
+
+      // PHYSICAL-ALIGNMENT DIAGNOSTIC:
+      // Move the ENTIRE completed transport raster together across the
+      // printer's physical 112-dot width. No QR/text coordinates or sizes
+      // are changed here.
+      const transportPhysicalOffset =
+        -10;
+
+      transportCtx.drawImage(
+        rotatedCanvas,
+        0,
+        transportPhysicalOffset
+      );
 
       return transportCanvas;
     }
