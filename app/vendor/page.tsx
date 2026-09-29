@@ -1925,7 +1925,7 @@ export default function VendorDashboardPage() {
       // printer's physical 112-dot width. No QR/text coordinates or sizes
       // are changed here.
       const transportPhysicalOffset =
-        -10;
+        10;
 
       transportCtx.drawImage(
         rotatedCanvas,
