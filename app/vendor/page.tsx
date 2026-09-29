@@ -1641,6 +1641,12 @@ export default function VendorDashboardPage() {
         safeLeft +
         safeWidth / 2;
 
+      // Text/branding should be visually centered on the physical
+      // 112 px label even though the QR remains biased inside the
+      // proven clipping-safe area.
+      const textCenter =
+        finishedCanvas.width / 2;
+
       // ------------------------------
       // VENDOR BRANDING
       // ------------------------------
@@ -1683,7 +1689,7 @@ export default function VendorDashboardPage() {
         ctx.drawImage(
           logo,
           Math.round(
-            safeCenter -
+            textCenter -
               logoWidth / 2
           ),
           12,
@@ -1709,7 +1715,7 @@ export default function VendorDashboardPage() {
 
         ctx.fillText(
           vendorText,
-          safeCenter,
+          textCenter,
           12
         );
       }
@@ -1748,14 +1754,16 @@ export default function VendorDashboardPage() {
       // quiet zone around the code.
       const qrSize = 96;
 
+      const qrRenderSize = 384;
+
       const p31sQrDataUrl =
         await QRCode.toDataURL(
           listingUrl,
           {
-            width: qrSize,
-            margin: 3,
+            width: qrRenderSize,
+            margin: 4,
             errorCorrectionLevel:
-              "M",
+              "L",
           }
         );
 
@@ -1915,14 +1923,16 @@ export default function VendorDashboardPage() {
     const qrX = 4;
     const qrY = 4;
 
+    const qrRenderSize = 416;
+
     const p31sQrDataUrl =
       await QRCode.toDataURL(
         listingUrl,
         {
-          width: qrSize,
-          margin: 3,
+          width: qrRenderSize,
+          margin: 4,
           errorCorrectionLevel:
-            "M",
+            "L",
         }
       );
 
