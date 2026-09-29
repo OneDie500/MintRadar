@@ -1592,14 +1592,73 @@ export default function VendorDashboardPage() {
         }
 
         try {
+          const response =
+            await fetch(
+              vendorLogoUrl,
+              {
+                mode: "cors",
+                cache: "no-store",
+              }
+            );
+
+          if (!response.ok) {
+            throw new Error(
+              `Vendor logo request failed with status ${response.status}.`
+            );
+          }
+
+          const blob =
+            await response.blob();
+
+          const localDataUrl =
+            await new Promise<string>(
+              (
+                resolve,
+                reject
+              ) => {
+                const reader =
+                  new FileReader();
+
+                reader.onload =
+                  () => {
+                    if (
+                      typeof reader.result ===
+                      "string"
+                    ) {
+                      resolve(
+                        reader.result
+                      );
+                    } else {
+                      reject(
+                        new Error(
+                          "MintRadar could not convert the vendor logo into a local image."
+                        )
+                      );
+                    }
+                  };
+
+                reader.onerror =
+                  () =>
+                    reject(
+                      new Error(
+                        "MintRadar could not read the vendor logo."
+                      )
+                    );
+
+                reader.readAsDataURL(
+                  blob
+                );
+              }
+            );
+
           return await loadLabelImage(
-            vendorLogoUrl
+            localDataUrl
           );
         } catch (
           logoError
         ) {
           console.warn(
-            "Vendor label logo could not be loaded. Falling back to business name.",
+            "Vendor label logo could not be loaded safely. Falling back to business name.",
             logoError
           );
 
