@@ -447,6 +447,12 @@ export default function VendorDashboardPage() {
   const [vendorName, setVendorName] =
     useState("MintRadar Vendor");
 
+  const [vendorLogoUrl, setVendorLogoUrl] =
+    useState<string | null>(null);
+
+  const [labelBrandingMode, setLabelBrandingMode] =
+    useState<"business_name" | "logo">("business_name");
+
   const [role, setRole] =
     useState<string | null>(null);
 
@@ -678,10 +684,34 @@ export default function VendorDashboardPage() {
           membership.role || null
         );
 
+        const { data: vendorProfile, error: vendorProfileError } =
+          await supabase
+            .from("vendors")
+            .select("business_name, logo_url, label_branding_mode")
+            .eq("id", membership.vendor_id)
+            .single();
+
+        if (vendorProfileError) {
+          throw vendorProfileError;
+        }
+
         setVendorName(
-          membership.vendor
-            ?.business_name ||
+          vendorProfile?.business_name ||
+            membership.vendor?.business_name ||
             "MintRadar Vendor"
+        );
+
+        setVendorLogoUrl(
+          typeof vendorProfile?.logo_url === "string" &&
+            vendorProfile.logo_url.trim()
+            ? vendorProfile.logo_url.trim()
+            : null
+        );
+
+        setLabelBrandingMode(
+          vendorProfile?.label_branding_mode === "logo"
+            ? "logo"
+            : "business_name"
         );
       } catch (err: any) {
         console.error(
@@ -1485,9 +1515,6 @@ export default function VendorDashboardPage() {
     return minSize;
   }
 
-  const ONLYSLABS_VENDOR_ID =
-    "8d34558a-52ff-4434-bf68-2587fb01dbc6";
-
   async function buildP31SLabelCanvas() {
     if (!qrItem) {
       throw new Error(
@@ -1555,29 +1582,24 @@ export default function VendorDashboardPage() {
     const listingUrl =
       `${window.location.origin}/l/${shortCode}`;
 
-    const normalizedVendorName =
-      vendorName
-        .trim()
-        .toLowerCase();
-
     const loadVendorLogo =
       async () => {
         if (
-          vendorId !==
-          ONLYSLABS_VENDOR_ID
+          labelBrandingMode !== "logo" ||
+          !vendorLogoUrl
         ) {
           return null;
         }
 
         try {
           return await loadLabelImage(
-            "/onlyslabs-label-logo-new.png"
+            vendorLogoUrl
           );
         } catch (
           logoError
         ) {
           console.warn(
-            "OnlySlabs label logo could not be loaded. Falling back to text.",
+            "Vendor label logo could not be loaded. Falling back to business name.",
             logoError
           );
 

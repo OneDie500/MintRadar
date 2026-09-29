@@ -1,8 +1,27 @@
-//
-//  MintRadarViewController.swift
-//  App
-//
-//  Created by Michael Navarro on 9/25/26.
-//
+import UIKit
+import Capacitor
 
-import Foundation
+class MintRadarViewController: CAPBridgeViewController {
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        Swift.print(
+            "[MintRadarViewController] viewDidLoad FIRED"
+        )
+    }
+
+    override open func capacitorDidLoad() {
+        Swift.print(
+            "[MintRadarViewController] capacitorDidLoad FIRED"
+        )
+
+        bridge?.registerPluginInstance(
+            MintRadarNativePrinterPlugin()
+        )
+
+        Swift.print(
+            "[MintRadarViewController] Native printer plugin registration requested"
+        )
+    }
+}
