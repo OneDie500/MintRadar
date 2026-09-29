@@ -1752,7 +1752,11 @@ export default function VendorDashboardPage() {
       // the encoded modules are materially larger than the previous
       // 88 px version while the QR generator still provides a real
       // quiet zone around the code.
-      const qrSize = 96;
+      // DIAGNOSTIC LARGE-QR TEST:
+      // This is the FINAL physical draw size, not just source resolution.
+      // 108 px nearly fills the 112-dot printhead width, so the printed
+      // size difference should be unmistakable.
+      const qrSize = 108;
 
       const qrRenderSize = 384;
 
@@ -1772,13 +1776,9 @@ export default function VendorDashboardPage() {
           p31sQrDataUrl
         );
 
-      const qrX =
-        Math.round(
-          safeCenter -
-            qrSize / 2
-        );
+      const qrX = 0;
 
-      const qrY = 72;
+      const qrY = 66;
 
       ctx.drawImage(
         qr,
@@ -1919,9 +1919,11 @@ export default function VendorDashboardPage() {
 
     // Use a larger QR on the 112 px short axis while retaining
     // 4 px of physical clearance on every side.
-    const qrSize = 104;
-    const qrX = 4;
-    const qrY = 4;
+    // DIAGNOSTIC LARGE-QR TEST:
+    // 110 px nearly fills the entire 112 px short axis.
+    const qrSize = 110;
+    const qrX = 1;
+    const qrY = 1;
 
     const qrRenderSize = 416;
 
