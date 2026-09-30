@@ -207,9 +207,6 @@ function saleSnapshotText(
 
 type LabelOrientation = "vertical" | "horizontal";
 
-const labelPrinterProfiles =
-  getMintRadarPrinterProfiles();
-
 
 function normalizeImageCategory(value?: string | null) {
   return (value || "").trim().toLowerCase();
@@ -590,6 +587,13 @@ export default function VendorDashboardPage() {
     connectedLabelPrinter,
     setConnectedLabelPrinter,
   ] = useState<MintRadarPrinterProfileId | null>(
+    null
+  );
+
+  const [
+    selectedDiscoveredPrinter,
+    setSelectedDiscoveredPrinter,
+  ] = useState<MintRadarDiscoveredPrinter | null>(
     null
   );
 
@@ -2372,6 +2376,7 @@ export default function VendorDashboardPage() {
     setLabelDiscoveryBusy(true);
     setLabelDiscoveryStatus("");
     setDiscoveredLabelPrinters([]);
+    setSelectedDiscoveredPrinter(null);
 
     try {
       const result =
@@ -3550,6 +3555,7 @@ export default function VendorDashboardPage() {
 
         setP31sConnected(false);
         setConnectedLabelPrinter(null);
+        setSelectedDiscoveredPrinter(null);
         setP31sStatus(
           "P31S disconnected."
         );
@@ -3583,6 +3589,7 @@ export default function VendorDashboardPage() {
 
         setD110Connected(false);
         setConnectedLabelPrinter(null);
+        setSelectedDiscoveredPrinter(null);
         setD110Status(
           "NIIMBOT D110_M disconnected."
         );
@@ -3611,6 +3618,7 @@ export default function VendorDashboardPage() {
 
       setNiimbotConnected(false);
       setConnectedLabelPrinter(null);
+      setSelectedDiscoveredPrinter(null);
       setNiimbotStatus(
         "NIIMBOT D11_H disconnected."
       );
@@ -5503,10 +5511,18 @@ export default function VendorDashboardPage() {
                                     setSelectedLabelPrinter(
                                       printer.profileId
                                     );
+                                    setSelectedDiscoveredPrinter(
+                                      printer
+                                    );
 
                                     setLabelDiscoveryStatus("");
                                   }}
-                                  className="flex w-full items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-black px-3 py-3 text-left transition hover:border-emerald-400/40 hover:bg-emerald-400/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
+                                  className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                                    selectedDiscoveredPrinter?.deviceId ===
+                                    printer.deviceId
+                                      ? "border-emerald-400/60 bg-emerald-400/[0.07]"
+                                      : "border-zinc-800 bg-black hover:border-emerald-400/40 hover:bg-emerald-400/[0.04]"
+                                  }`}
                                 >
                                   <div className="min-w-0 flex-1">
                                     <div className="min-w-0">
@@ -5548,34 +5564,6 @@ export default function VendorDashboardPage() {
                       )}
                     </div>
 
-                    <div className="mt-3">
-                      <label className="mb-2 block text-xs font-black uppercase tracking-[0.14em] text-zinc-500">
-                        Printer
-                      </label>
-
-                      <select
-                        value={selectedLabelPrinter}
-                        onChange={(event) =>
-                          setSelectedLabelPrinter(
-                            event.target
-                              .value as MintRadarPrinterProfileId
-                          )
-                        }
-                        className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm font-black text-white outline-none transition focus:border-emerald-400"
-                      >
-                        {labelPrinterProfiles.map(
-                          (printer) => (
-                            <option
-                              key={printer.id}
-                              value={printer.id}
-                            >
-                              {printer.displayName}
-                            </option>
-                          )
-                        )}
-                      </select>
-                    </div>
-
                     <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950 p-3">
                       <div className="flex items-center justify-between gap-3">
                         <div className="min-w-0">
@@ -5609,11 +5597,11 @@ export default function VendorDashboardPage() {
                         </span>
                       </div>
 
-                      {connectedLabelPrinter &&
-                        connectedLabelPrinter !==
-                          selectedLabelPrinter && (
-                          <p className="mt-2 text-[11px] font-bold leading-4 text-amber-300">
-                            {connectedLabelPrinterProfile?.displayName} is still connected. Disconnect it before connecting {selectedLabelPrinterProfile.displayName}.
+                      {!connectedLabelPrinter &&
+                        selectedDiscoveredPrinter && (
+                          <p className="mt-2 text-[11px] font-bold leading-4 text-emerald-300">
+                            Selected: {selectedDiscoveredPrinter.deviceName ||
+                              selectedLabelPrinterProfile.displayName}
                           </p>
                         )}
                     </div>
@@ -5658,6 +5646,8 @@ export default function VendorDashboardPage() {
                           Boolean(
                             connectedLabelPrinter
                           ) ||
+                          (mintRadarPrintService.native &&
+                            !selectedDiscoveredPrinter) ||
                           (selectedLabelPrinter === "p31s"
                             ? p31sBusy ||
                               !p31sSupported
