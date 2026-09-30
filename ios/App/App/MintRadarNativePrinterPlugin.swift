@@ -20,6 +20,10 @@ public class MintRadarNativePrinterPlugin:
             returnType: CAPPluginReturnPromise
         ),
         CAPPluginMethod(
+            name: "findPrinters",
+            returnType: CAPPluginReturnPromise
+        ),
+        CAPPluginMethod(
             name: "connect",
             returnType: CAPPluginReturnPromise
         ),
@@ -81,6 +85,10 @@ public class MintRadarNativePrinterPlugin:
     private var pendingConnectCall: CAPPluginCall?
 
     private var pendingPrintCall: CAPPluginCall?
+
+    // Discovery is intentionally separate from connection state.
+    private var pendingDiscoveryCall: CAPPluginCall?
+    private var discoveredPrinters: [String: [String: Any]] = [:]
 
     private var requestedPrinterModel: String?
 
@@ -204,6 +212,107 @@ public class MintRadarNativePrinterPlugin:
         }
     }
 
+    @objc func findPrinters(
+        _ call: CAPPluginCall
+    ) {
+        guard let centralManager = centralManager else {
+            call.reject(
+                "Bluetooth manager is not available."
+            )
+            return
+        }
+
+        guard centralManager.state == .poweredOn else {
+            call.reject(
+                bluetoothStateMessage(
+                    centralManager.state
+                )
+            )
+            return
+        }
+
+        guard pendingDiscoveryCall == nil else {
+            call.reject(
+                "A printer discovery scan is already in progress."
+            )
+            return
+        }
+
+        guard pendingConnectCall == nil else {
+            call.reject(
+                "A printer connection is already in progress."
+            )
+            return
+        }
+
+        guard !isPrinting else {
+            call.reject(
+                "A label is currently printing."
+            )
+            return
+        }
+
+        pendingDiscoveryCall = call
+        discoveredPrinters = [:]
+
+        log(
+            "Starting MintRadar labeler discovery scan."
+        )
+
+        centralManager.scanForPeripherals(
+            withServices: nil,
+            options: [
+                CBCentralManagerScanOptionAllowDuplicatesKey:
+                    false
+            ]
+        )
+
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + 5.0
+        ) { [weak self] in
+            guard let self = self else {
+                return
+            }
+
+            guard
+                let pendingCall =
+                    self.pendingDiscoveryCall,
+                pendingCall === call
+            else {
+                return
+            }
+
+            self.centralManager?.stopScan()
+
+            let printers =
+                Array(
+                    self.discoveredPrinters.values
+                )
+                .sorted { left, right in
+                    let leftRSSI =
+                        left["rssi"] as? Int ??
+                        Int.min
+
+                    let rightRSSI =
+                        right["rssi"] as? Int ??
+                        Int.min
+
+                    return leftRSSI > rightRSSI
+                }
+
+            self.log(
+                "Labeler discovery completed with \(printers.count) supported printer(s)."
+            )
+
+            pendingCall.resolve([
+                "printers": printers
+            ])
+
+            self.pendingDiscoveryCall = nil
+            self.discoveredPrinters = [:]
+        }
+    }
+
     @objc func connect(
         _ call: CAPPluginCall
     ) {
@@ -213,6 +322,13 @@ public class MintRadarNativePrinterPlugin:
         log(
             "Connect requested for printer model: \(printerModel)"
         )
+
+        guard pendingDiscoveryCall == nil else {
+            call.reject(
+                "A printer discovery scan is already in progress."
+            )
+            return
+        }
 
         guard
             printerModel == "p31s" ||
@@ -2041,6 +2157,25 @@ public class MintRadarNativePrinterPlugin:
             central.state != .poweredOn,
             central.state != .unknown,
             central.state != .resetting,
+            let pendingDiscoveryCall =
+                pendingDiscoveryCall
+        {
+            central.stopScan()
+
+            pendingDiscoveryCall.reject(
+                bluetoothStateMessage(
+                    central.state
+                )
+            )
+
+            self.pendingDiscoveryCall = nil
+            self.discoveredPrinters = [:]
+        }
+
+        if
+            central.state != .poweredOn,
+            central.state != .unknown,
+            central.state != .resetting,
             let pendingConnectCall =
                 pendingConnectCall
         {
@@ -2062,6 +2197,7 @@ public class MintRadarNativePrinterPlugin:
         rssi RSSI: NSNumber
     ) {
         guard
+            pendingDiscoveryCall != nil ||
             pendingConnectCall != nil
         else {
             return
@@ -2086,6 +2222,42 @@ public class MintRadarNativePrinterPlugin:
             log(
                 "Discovered BLE device: \(normalizedName)"
             )
+        }
+
+        if pendingDiscoveryCall != nil {
+            let profileId: String?
+
+            if normalizedName == "P31S" {
+                profileId = "p31s"
+            } else if normalizedName.hasPrefix(
+                "D110"
+            ) {
+                profileId = "d110"
+            } else {
+                profileId = nil
+            }
+
+            if let profileId = profileId {
+                let deviceId =
+                    peripheral.identifier.uuidString
+
+                discoveredPrinters[deviceId] = [
+                    "deviceId": deviceId,
+                    "deviceName":
+                        peripheralName.isEmpty
+                        ? normalizedName
+                        : peripheralName,
+                    "profileId": profileId,
+                    "supported": true,
+                    "rssi": RSSI.intValue
+                ]
+
+                log(
+                    "Discovery matched \(normalizedName) to MintRadar profile \(profileId)."
+                )
+            }
+
+            return
         }
 
         let wantsNiimbot =

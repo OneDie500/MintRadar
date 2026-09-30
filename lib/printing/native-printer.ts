@@ -2,6 +2,10 @@ import {
   registerPlugin,
 } from "@capacitor/core";
 
+import type {
+  MintRadarDiscoveredPrinter,
+} from "./types";
+
 export type NativePrinterModel =
   | "p31s"
   | "d11h";
@@ -9,6 +13,10 @@ export type NativePrinterModel =
 export type NativePrinterConnectionResult = {
   connected: boolean;
   printerName?: string;
+};
+
+export type NativePrinterDiscoveryResult = {
+  printers: MintRadarDiscoveredPrinter[];
 };
 
 export type NativePrinterPrintOptions = {
@@ -34,6 +42,15 @@ export interface MintRadarNativePrinterPlugin {
   isSupported(): Promise<{
     supported: boolean;
   }>;
+
+  /**
+   * Scan for nearby Bluetooth labelers that MintRadar
+   * can identify.
+   *
+   * Discovery does not connect to a printer and does
+   * not change the currently selected printer.
+   */
+  findPrinters(): Promise<NativePrinterDiscoveryResult>;
 
   connect(options: {
     printerModel: NativePrinterModel;

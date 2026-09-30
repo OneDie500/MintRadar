@@ -18,6 +18,7 @@ import {
   getMintRadarPrinterProfile,
 } from "../../lib/printing/printer-registry";
 import type {
+  MintRadarDiscoveredPrinter,
   MintRadarPrinterProfileId,
 } from "../../lib/printing/types";
 import {
@@ -29,6 +30,10 @@ import {
 import { encodeListingId } from "../../lib/listing-short-code";
 
 type MintRadarNativePrinterBridge = {
+  findPrinters(): Promise<{
+    printers: MintRadarDiscoveredPrinter[];
+  }>;
+
   print(options: {
     printerModel: string;
     testPrint?: boolean;
@@ -612,6 +617,21 @@ export default function VendorDashboardPage() {
   const [
     d110Status,
     setD110Status,
+  ] = useState("");
+
+  const [
+    discoveredLabelPrinters,
+    setDiscoveredLabelPrinters,
+  ] = useState<MintRadarDiscoveredPrinter[]>([]);
+
+  const [
+    labelDiscoveryBusy,
+    setLabelDiscoveryBusy,
+  ] = useState(false);
+
+  const [
+    labelDiscoveryStatus,
+    setLabelDiscoveryStatus,
   ] = useState("");
 
   const [editItem, setEditItem] =
@@ -2296,6 +2316,69 @@ export default function VendorDashboardPage() {
     );
 
     return transportCanvas;
+  }
+
+  async function findNearbyLabelPrinters() {
+    if (!mintRadarPrintService.native) {
+      setLabelDiscoveryStatus(
+        "Find Labeler is available in the MintRadar iPhone app."
+      );
+      return;
+    }
+
+    if (connectedLabelPrinter) {
+      setLabelDiscoveryStatus(
+        "Disconnect the active labeler before scanning for another one."
+      );
+      return;
+    }
+
+    setLabelDiscoveryBusy(true);
+    setLabelDiscoveryStatus("");
+    setDiscoveredLabelPrinters([]);
+
+    try {
+      const result =
+        await MintRadarNativePrinter.findPrinters();
+
+      const printers =
+        Array.isArray(result?.printers)
+          ? result.printers
+          : [];
+
+      setDiscoveredLabelPrinters(
+        printers
+      );
+
+      if (printers.length === 0) {
+        setLabelDiscoveryStatus(
+          "No supported MintRadar labelers were found. Make sure the printer is powered on and nearby."
+        );
+        return;
+      }
+
+      setLabelDiscoveryStatus(
+        `Found ${printers.length} supported ${
+          printers.length === 1
+            ? "labeler"
+            : "labelers"
+        }.`
+      );
+    } catch (error: any) {
+      console.error(
+        "Labeler discovery error:",
+        error
+      );
+
+      setDiscoveredLabelPrinters([]);
+
+      setLabelDiscoveryStatus(
+        error?.message ||
+          "MintRadar could not scan for nearby labelers."
+      );
+    } finally {
+      setLabelDiscoveryBusy(false);
+    }
   }
 
   async function connectP31S() {
@@ -5310,6 +5393,126 @@ export default function VendorDashboardPage() {
                     <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">
                       Direct Bluetooth
                     </p>
+
+                    <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-[0.16em] text-zinc-600">
+                            Nearby Labelers
+                          </p>
+
+                          <p className="mt-1 text-xs font-bold leading-5 text-zinc-500">
+                            Scan for supported labelers without connecting to them.
+                          </p>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void findNearbyLabelPrinters();
+                          }}
+                          disabled={
+                            labelDiscoveryBusy ||
+                            Boolean(
+                              connectedLabelPrinter
+                            ) ||
+                            !mintRadarPrintService.native
+                          }
+                          className="shrink-0 rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-xs font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {labelDiscoveryBusy
+                            ? "Scanning..."
+                            : "Find Labeler"}
+                        </button>
+                      </div>
+
+                      {labelDiscoveryStatus && (
+                        <p className="mt-3 text-xs font-bold leading-5 text-zinc-500">
+                          {labelDiscoveryStatus}
+                        </p>
+                      )}
+
+                      {discoveredLabelPrinters.length >
+                        0 && (
+                        <div className="mt-3 space-y-2">
+                          {discoveredLabelPrinters.map(
+                            (printer) => {
+                              const profile =
+                                printer.profileId
+                                  ? getMintRadarPrinterProfile(
+                                      printer.profileId
+                                    )
+                                  : null;
+
+                              const canSelect =
+                                printer.supported &&
+                                Boolean(profile);
+
+                              return (
+                                <button
+                                  key={
+                                    printer.deviceId
+                                  }
+                                  type="button"
+                                  disabled={
+                                    !canSelect ||
+                                    Boolean(
+                                      connectedLabelPrinter
+                                    )
+                                  }
+                                  onClick={() => {
+                                    if (
+                                      !printer.profileId
+                                    ) {
+                                      return;
+                                    }
+
+                                    setSelectedLabelPrinter(
+                                      printer.profileId
+                                    );
+
+                                    setLabelDiscoveryStatus(
+                                      `${profile?.displayName || printer.deviceName} selected. Tap Connect to use the existing MintRadar connection path.`
+                                    );
+                                  }}
+                                  className="flex w-full items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-black px-3 py-3 text-left transition hover:border-emerald-400/40 hover:bg-emerald-400/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  <div className="min-w-0">
+                                    <p className="truncate text-sm font-black text-white">
+                                      {printer.deviceName ||
+                                        profile?.displayName ||
+                                        "Bluetooth Labeler"}
+                                    </p>
+
+                                    <p className="mt-1 truncate text-[11px] font-bold text-zinc-600">
+                                      {profile
+                                        ? `${profile.manufacturer} • ${profile.displayName}`
+                                        : "Unrecognized labeler"}
+                                      {typeof printer.rssi ===
+                                      "number"
+                                        ? ` • ${printer.rssi} dBm`
+                                        : ""}
+                                    </p>
+                                  </div>
+
+                                  <span
+                                    className={`shrink-0 rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${
+                                      printer.supported
+                                        ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
+                                        : "border-zinc-800 bg-zinc-950 text-zinc-600"
+                                    }`}
+                                  >
+                                    {printer.supported
+                                      ? "Supported"
+                                      : "Unknown"}
+                                  </span>
+                                </button>
+                              );
+                            }
+                          )}
+                        </div>
+                      )}
+                    </div>
 
                     <div className="mt-3">
                       <label className="mb-2 block text-xs font-black uppercase tracking-[0.14em] text-zinc-500">
