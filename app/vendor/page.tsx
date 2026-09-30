@@ -5524,19 +5524,7 @@ export default function VendorDashboardPage() {
                                     </p>
                                   </div>
 
-                                  <div className="flex shrink-0 flex-col items-end gap-1.5">
-                                    <span
-                                      className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${
-                                        printer.supported
-                                          ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
-                                          : "border-zinc-800 bg-zinc-950 text-zinc-600"
-                                      }`}
-                                    >
-                                      {printer.supported
-                                        ? "Supported"
-                                        : "Unknown"}
-                                    </span>
-
+                                  <div className="shrink-0">
                                     {(() => {
                                       const proximity =
                                         getPrinterProximityLabel(
