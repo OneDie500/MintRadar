@@ -331,10 +331,9 @@ export async function printD11HImage(
   );
 }
 
-export async function disconnectNiimbot() {
+export async function disconnectD11H() {
   const driver =
     await loadNiimbotDriver();
 
   await driver.disconnect();
 }
-
