@@ -5507,9 +5507,7 @@ export default function VendorDashboardPage() {
                                       printer.profileId
                                     );
 
-                                    setLabelDiscoveryStatus(
-                                      `${profile?.displayName || printer.deviceName} selected. Tap Connect to use the existing MintRadar connection path.`
-                                    );
+                                    setLabelDiscoveryStatus("");
                                   }}
                                   className="flex w-full items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-black px-3 py-3 text-left transition hover:border-emerald-400/40 hover:bg-emerald-400/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
                                 >
