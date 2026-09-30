@@ -23,6 +23,7 @@ import type {
 import {
   identifyD11H,
   printD11HImage,
+  disconnectNiimbot,
   supportsNiimbotWebBluetooth,
 } from "../../lib/niimbot-web";
 import { encodeListingId } from "../../lib/listing-short-code";
@@ -543,6 +544,26 @@ export default function VendorDashboardPage() {
     getMintRadarPrinterProfile(
       selectedLabelPrinter
     );
+
+  const [
+    connectedLabelPrinter,
+    setConnectedLabelPrinter,
+  ] =
+    useState<MintRadarPrinterProfileId | null>(
+      null
+    );
+
+  const [
+    printerDisconnectBusy,
+    setPrinterDisconnectBusy,
+  ] = useState(false);
+
+  const connectedLabelPrinterProfile =
+    connectedLabelPrinter
+      ? getMintRadarPrinterProfile(
+          connectedLabelPrinter
+        )
+      : null;
 
   const [
     p31sSupported,
@@ -2304,6 +2325,10 @@ export default function VendorDashboardPage() {
         connection.connected
       );
 
+      if (connection.connected) {
+        setConnectedLabelPrinter("p31s");
+      }
+
       setP31sStatus(
         `Connected to ${
           connection.printerName || "P31S"
@@ -2344,6 +2369,10 @@ export default function VendorDashboardPage() {
           connection.connected
         );
 
+        if (connection.connected) {
+          setConnectedLabelPrinter("p31s");
+        }
+
         setP31sStatus(
           `Connected to ${
             connection.printerName || "P31S"
@@ -2360,6 +2389,7 @@ export default function VendorDashboardPage() {
       );
 
       setP31sConnected(true);
+      setConnectedLabelPrinter("p31s");
       setP31sStatus(
         "MintRadar label sent to the P31S."
       );
@@ -2407,6 +2437,10 @@ export default function VendorDashboardPage() {
           connection?.connected
         )
       );
+
+      if (connection?.connected) {
+        setConnectedLabelPrinter("d110");
+      }
 
       if (
         Number.isFinite(modelId)
@@ -3094,6 +3128,7 @@ export default function VendorDashboardPage() {
         });
 
       setD110Connected(true);
+      setConnectedLabelPrinter("d110");
 
       setD110Status(
         `Real MintRadar label sent to ${
@@ -3376,6 +3411,70 @@ export default function VendorDashboardPage() {
     return canvas;
   }
 
+  async function disconnectConnectedLabelPrinter() {
+    if (!connectedLabelPrinter) {
+      return;
+    }
+
+    setPrinterDisconnectBusy(true);
+
+    try {
+      if (connectedLabelPrinter === "p31s") {
+        await mintRadarPrintService.disconnect(
+          "p31s"
+        );
+
+        setP31sConnected(false);
+        setP31sStatus(
+          "P31S disconnected."
+        );
+      } else if (
+        connectedLabelPrinter === "d110"
+      ) {
+        await (
+          mintRadarPrintService as any
+        ).disconnect(
+          "niimbot_d110"
+        );
+
+        setD110Connected(false);
+        setD110Status(
+          "NIIMBOT D110_M disconnected."
+        );
+      } else {
+        await disconnectNiimbot();
+
+        setNiimbotConnected(false);
+        setNiimbotStatus(
+          "NIIMBOT D11_H disconnected."
+        );
+      }
+
+      setConnectedLabelPrinter(null);
+    } catch (error: any) {
+      console.error(
+        "Printer disconnect error:",
+        error
+      );
+
+      const message =
+        error?.message ||
+        "MintRadar could not disconnect the printer.";
+
+      if (connectedLabelPrinter === "p31s") {
+        setP31sStatus(message);
+      } else if (
+        connectedLabelPrinter === "d110"
+      ) {
+        setD110Status(message);
+      } else {
+        setNiimbotStatus(message);
+      }
+    } finally {
+      setPrinterDisconnectBusy(false);
+    }
+  }
+
   async function connectD11H() {
     if (!niimbotSupported) {
       setNiimbotStatus(
@@ -3390,6 +3489,7 @@ export default function VendorDashboardPage() {
     try {
       const printer = await identifyD11H();
       setNiimbotConnected(true);
+      setConnectedLabelPrinter("d11h");
       setNiimbotStatus(
         `Connected to ${printer?.label || "Niimbot D11_H"}.`
       );
@@ -3413,6 +3513,7 @@ export default function VendorDashboardPage() {
       if (!niimbotConnected) {
         const printer = await identifyD11H();
         setNiimbotConnected(true);
+        setConnectedLabelPrinter("d11h");
         setNiimbotStatus(
           `Connected to ${printer?.label || "Niimbot D11_H"}. Sending label...`
         );
@@ -3424,6 +3525,7 @@ export default function VendorDashboardPage() {
       await printD11HImage(imageDataUrl);
 
       setNiimbotConnected(true);
+      setConnectedLabelPrinter("d11h");
       setNiimbotStatus(
         "MintRadar label sent to the Niimbot D11_H."
       );
@@ -5197,32 +5299,32 @@ export default function VendorDashboardPage() {
                     </div>
 
                     <div className="mt-3 flex items-center justify-between gap-3">
-                      <p className="text-xs font-bold text-zinc-500">
-                        {
-                          selectedLabelPrinterProfile.displayName
-                        }
-                      </p>
+                      <div className="min-w-0">
+                        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-zinc-600">
+                          Connected Printer
+                        </p>
+
+                        <p
+                          className={`mt-1 truncate text-xs font-bold ${
+                            connectedLabelPrinterProfile
+                              ? "text-emerald-300"
+                              : "text-zinc-500"
+                          }`}
+                        >
+                          {connectedLabelPrinterProfile
+                            ? connectedLabelPrinterProfile.displayName
+                            : "No printer connected"}
+                        </p>
+                      </div>
 
                       <span
-                        className={`w-fit rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-wider ${
-                          (
-                            selectedLabelPrinter === "p31s"
-                              ? p31sConnected
-                              : selectedLabelPrinter === "d110"
-                                ? d110Connected
-                                : niimbotConnected
-                          )
+                        className={`w-fit shrink-0 rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-wider ${
+                          connectedLabelPrinterProfile
                             ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
                             : "border-zinc-800 bg-zinc-950 text-zinc-600"
                         }`}
                       >
-                        {(
-                          selectedLabelPrinter === "p31s"
-                            ? p31sConnected
-                            : selectedLabelPrinter === "d110"
-                              ? d110Connected
-                              : niimbotConnected
-                        )
+                        {connectedLabelPrinterProfile
                           ? "Connected"
                           : "Not Connected"}
                       </span>
@@ -5242,7 +5344,7 @@ export default function VendorDashboardPage() {
                         </div>
                       )}
 
-                    <div className="mt-4 flex gap-2">
+                    <div className="mt-4 grid grid-cols-3 gap-2">
                       <button
                         type="button"
                         onClick={() => {
@@ -5265,15 +5367,24 @@ export default function VendorDashboardPage() {
                           void connectD11H();
                         }}
                         disabled={
-                          selectedLabelPrinter === "p31s"
+                          printerDisconnectBusy ||
+                          Boolean(
+                            connectedLabelPrinter &&
+                              connectedLabelPrinter !==
+                                selectedLabelPrinter
+                          ) ||
+                          (selectedLabelPrinter === "p31s"
                             ? p31sBusy ||
-                              !p31sSupported
+                              !p31sSupported ||
+                              p31sConnected
                             : selectedLabelPrinter === "d110"
-                              ? d110Busy
+                              ? d110Busy ||
+                                d110Connected
                               : niimbotBusy ||
-                                !niimbotSupported
+                                !niimbotSupported ||
+                                niimbotConnected)
                         }
-                        className="flex-1 rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
+                        className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-3 py-3 text-sm font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         {(
                           selectedLabelPrinter === "p31s"
@@ -5284,6 +5395,25 @@ export default function VendorDashboardPage() {
                         )
                           ? "Connecting..."
                           : "Connect"}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void disconnectConnectedLabelPrinter()
+                        }
+                        disabled={
+                          !connectedLabelPrinter ||
+                          printerDisconnectBusy ||
+                          p31sBusy ||
+                          d110Busy ||
+                          niimbotBusy
+                        }
+                        className="rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-3 text-sm font-black text-zinc-300 transition hover:border-red-400/40 hover:bg-red-400/10 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {printerDisconnectBusy
+                          ? "Disconnecting..."
+                          : "Disconnect"}
                       </button>
 
                       <button
@@ -5308,7 +5438,10 @@ export default function VendorDashboardPage() {
                           void printQrLabelD11H();
                         }}
                         disabled={
-                          selectedLabelPrinter === "p31s"
+                          connectedLabelPrinter !==
+                            selectedLabelPrinter ||
+                          printerDisconnectBusy ||
+                          (selectedLabelPrinter === "p31s"
                             ? p31sBusy ||
                               !p31sSupported
                             : selectedLabelPrinter === "d110"
@@ -5316,9 +5449,9 @@ export default function VendorDashboardPage() {
                                 !d110Connected ||
                                 !qrItem
                               : niimbotBusy ||
-                                !niimbotSupported
+                                !niimbotSupported)
                         }
-                        className="flex-1 rounded-xl bg-emerald-400 px-4 py-3 text-sm font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+                        className="rounded-xl bg-emerald-400 px-3 py-3 text-sm font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         {(
                           selectedLabelPrinter === "p31s"
@@ -5331,6 +5464,19 @@ export default function VendorDashboardPage() {
                           : "Print"}
                       </button>
                     </div>
+
+                    {connectedLabelPrinter &&
+                      connectedLabelPrinter !==
+                        selectedLabelPrinter && (
+                        <p className="mt-3 text-xs font-bold leading-5 text-amber-300">
+                          Disconnect{" "}
+                          {
+                            connectedLabelPrinterProfile
+                              ?.displayName
+                          }{" "}
+                          before connecting another printer.
+                        </p>
+                      )}
 
                     {(selectedLabelPrinter === "p31s"
                       ? p31sStatus

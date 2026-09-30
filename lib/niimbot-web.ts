@@ -57,6 +57,9 @@ type NiimbotGlobal = {
     >
   ) => Promise<any>;
 
+  disconnect: () =>
+    Promise<void>;
+
   printImage: (
     image: string,
     options: {
@@ -327,3 +330,11 @@ export async function printD11HImage(
     }
   );
 }
+
+export async function disconnectNiimbot() {
+  const driver =
+    await loadNiimbotDriver();
+
+  await driver.disconnect();
+}
+
