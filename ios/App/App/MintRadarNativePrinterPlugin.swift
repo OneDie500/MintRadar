@@ -41,6 +41,23 @@ public class MintRadarNativePrinterPlugin:
     private let p31sWriteUUID =
         CBUUID(string: "FF02")
 
+    // MARK: - NIIMBOT Bluetooth UUIDs
+    //
+    // D110-family transport validated by MintRadar's existing niimbot.js.
+    // This path is CONNECTION / IDENTIFICATION ONLY for the first checkpoint.
+
+    private let niimbotServiceUUID =
+        CBUUID(
+            string:
+                "E7810A71-73AE-499D-8C15-FAA9AEF0C3F2"
+        )
+
+    private let niimbotCharacteristicUUID =
+        CBUUID(
+            string:
+                "BEF8D6C9-9C21-4C9E-B632-BD58C1009F9F"
+        )
+
     // MARK: - P31S Label Geometry
 
     private let p31sSourceWidth = 320
@@ -66,6 +83,13 @@ public class MintRadarNativePrinterPlugin:
     private var pendingPrintCall: CAPPluginCall?
 
     private var requestedPrinterModel: String?
+
+    // NIIMBOT identification state.
+    // The D110 family is expected to report model id 2304, but MintRadar
+    // always reports the actual value returned by the printer.
+    private var niimbotDetectedModelId: Int?
+    private var niimbotIdentificationStarted = false
+    private var niimbotModelQuerySent = false
 
     // MARK: - Print State
 
@@ -190,7 +214,10 @@ public class MintRadarNativePrinterPlugin:
             "Connect requested for printer model: \(printerModel)"
         )
 
-        guard printerModel == "p31s" else {
+        guard
+            printerModel == "p31s" ||
+            printerModel == "niimbot_d110"
+        else {
             call.reject(
                 "Native printing for \(printerModel.uppercased()) is not implemented yet."
             )
@@ -223,20 +250,50 @@ public class MintRadarNativePrinterPlugin:
         if
             let connectedPeripheral = connectedPeripheral,
             connectedPeripheral.state == .connected,
-            writeCharacteristic != nil
+            writeCharacteristic != nil,
+            requestedPrinterModel == nil
         {
-            log(
-                "P31S is already connected."
-            )
+            let connectedName =
+                connectedPeripheral.name ??
+                (
+                    printerModel == "niimbot_d110"
+                    ? "NIIMBOT D110"
+                    : "P31S"
+                )
 
-            call.resolve([
-                "connected": true,
-                "printerName":
-                    connectedPeripheral.name ??
-                    "P31S"
-            ])
+            if printerModel == "p31s" {
+                log(
+                    "P31S is already connected."
+                )
 
-            return
+                call.resolve([
+                    "connected": true,
+                    "printerName":
+                        connectedName
+                ])
+
+                return
+            }
+
+            if
+                printerModel == "niimbot_d110",
+                let modelId =
+                    niimbotDetectedModelId
+            {
+                log(
+                    "NIIMBOT D110 is already connected. Model ID: \(modelId)."
+                )
+
+                call.resolve([
+                    "connected": true,
+                    "printerName":
+                        connectedName,
+                    "modelId":
+                        modelId
+                ])
+
+                return
+            }
         }
 
         if pendingConnectCall != nil {
@@ -252,9 +309,17 @@ public class MintRadarNativePrinterPlugin:
 
         connectedPeripheral = nil
         writeCharacteristic = nil
+        niimbotDetectedModelId = nil
+        niimbotIdentificationStarted = false
+        niimbotModelQuerySent = false
+
+        let scanTarget =
+            printerModel == "niimbot_d110"
+            ? "NIIMBOT D110"
+            : "P31S"
 
         log(
-            "Starting BLE scan for P31S."
+            "Starting BLE scan for \(scanTarget)."
         )
 
         centralManager.scanForPeripherals(
@@ -281,12 +346,18 @@ public class MintRadarNativePrinterPlugin:
 
             self.centralManager?.stopScan()
 
+            let target =
+                self.requestedPrinterModel ==
+                    "niimbot_d110"
+                ? "NIIMBOT D110"
+                : "P31S"
+
             self.log(
-                "BLE scan timed out without finding P31S."
+                "BLE scan timed out without finding \(target)."
             )
 
             self.pendingConnectCall?.reject(
-                "Could not find the P31S printer. Make sure it is powered on and nearby."
+                "Could not find the \(target) printer. Make sure it is powered on and nearby."
             )
 
             self.pendingConnectCall = nil
@@ -320,6 +391,9 @@ public class MintRadarNativePrinterPlugin:
         connectedPeripheral = nil
         writeCharacteristic = nil
         requestedPrinterModel = nil
+        niimbotDetectedModelId = nil
+        niimbotIdentificationStarted = false
+        niimbotModelQuerySent = false
 
         call.resolve()
     }
@@ -1106,14 +1180,28 @@ public class MintRadarNativePrinterPlugin:
             )
         }
 
-        guard
-            normalizedName == "P31S"
-        else {
+        let wantsNiimbot =
+            requestedPrinterModel ==
+                "niimbot_d110"
+
+        let matchesTarget =
+            wantsNiimbot
+            ? normalizedName.hasPrefix(
+                "D110"
+              )
+            : normalizedName == "P31S"
+
+        guard matchesTarget else {
             return
         }
 
+        let targetName =
+            wantsNiimbot
+            ? "NIIMBOT D110"
+            : "P31S"
+
         log(
-            "Found P31S."
+            "Found \(targetName): \(normalizedName)."
         )
 
         central.stopScan()
@@ -1125,7 +1213,7 @@ public class MintRadarNativePrinterPlugin:
             self
 
         log(
-            "Connecting to P31S."
+            "Connecting to \(targetName)."
         )
 
         central.connect(
@@ -1138,20 +1226,36 @@ public class MintRadarNativePrinterPlugin:
         _ central: CBCentralManager,
         didConnect peripheral: CBPeripheral
     ) {
+        let wantsNiimbot =
+            requestedPrinterModel ==
+                "niimbot_d110"
+
         log(
-            "Connected to P31S peripheral."
+            wantsNiimbot
+            ? "Connected to NIIMBOT D110 peripheral."
+            : "Connected to P31S peripheral."
         )
 
         peripheral.delegate =
             self
 
-        log(
-            "Discovering service FF00."
-        )
+        if wantsNiimbot {
+            log(
+                "Discovering NIIMBOT service \(niimbotServiceUUID.uuidString)."
+            )
 
-        peripheral.discoverServices([
-            p31sServiceUUID
-        ])
+            peripheral.discoverServices([
+                niimbotServiceUUID
+            ])
+        } else {
+            log(
+                "Discovering service FF00."
+            )
+
+            peripheral.discoverServices([
+                p31sServiceUUID
+            ])
+        }
     }
 
     public func centralManager(
@@ -1167,8 +1271,14 @@ public class MintRadarNativePrinterPlugin:
             "Connection failed: \(message)"
         )
 
+        let target =
+            requestedPrinterModel ==
+                "niimbot_d110"
+            ? "NIIMBOT D110"
+            : "P31S"
+
         pendingConnectCall?.reject(
-            "Could not connect to P31S: \(message)"
+            "Could not connect to \(target): \(message)"
         )
 
         pendingConnectCall = nil
@@ -1182,13 +1292,17 @@ public class MintRadarNativePrinterPlugin:
         didDisconnectPeripheral peripheral: CBPeripheral,
         error: Error?
     ) {
+        let disconnectedName =
+            peripheral.name ??
+            "Bluetooth printer"
+
         if let error = error {
             log(
-                "P31S disconnected with error: \(error.localizedDescription)"
+                "\(disconnectedName) disconnected with error: \(error.localizedDescription)"
             )
         } else {
             log(
-                "P31S disconnected."
+                "\(disconnectedName) disconnected."
             )
         }
 
@@ -1219,9 +1333,18 @@ public class MintRadarNativePrinterPlugin:
         _ peripheral: CBPeripheral,
         didDiscoverServices error: Error?
     ) {
+        let wantsNiimbot =
+            requestedPrinterModel ==
+                "niimbot_d110"
+
+        let target =
+            wantsNiimbot
+            ? "NIIMBOT D110"
+            : "P31S"
+
         if let error = error {
             failConnection(
-                "Could not discover P31S services: \(error.localizedDescription)"
+                "Could not discover \(target) services: \(error.localizedDescription)"
             )
 
             return
@@ -1232,7 +1355,7 @@ public class MintRadarNativePrinterPlugin:
                 peripheral.services
         else {
             failConnection(
-                "P31S did not expose any Bluetooth services."
+                "\(target) did not expose any Bluetooth services."
             )
 
             return
@@ -1251,28 +1374,41 @@ public class MintRadarNativePrinterPlugin:
             "Services discovered: \(serviceNames)"
         )
 
+        let wantedServiceUUID =
+            wantsNiimbot
+            ? niimbotServiceUUID
+            : p31sServiceUUID
+
         guard
             let service =
                 services.first(
                     where: {
                         $0.uuid ==
-                            p31sServiceUUID
+                            wantedServiceUUID
                     }
                 )
         else {
             failConnection(
-                "P31S service FF00 was not found."
+                wantsNiimbot
+                ? "NIIMBOT service \(niimbotServiceUUID.uuidString) was not found."
+                : "P31S service FF00 was not found."
             )
 
             return
         }
 
         log(
-            "Found service FF00."
+            wantsNiimbot
+            ? "Found NIIMBOT service \(niimbotServiceUUID.uuidString)."
+            : "Found service FF00."
         )
 
         peripheral.discoverCharacteristics(
-            [p31sWriteUUID],
+            [
+                wantsNiimbot
+                ? niimbotCharacteristicUUID
+                : p31sWriteUUID
+            ],
             for: service
         )
     }
@@ -1282,9 +1418,18 @@ public class MintRadarNativePrinterPlugin:
         didDiscoverCharacteristicsFor service: CBService,
         error: Error?
     ) {
+        let wantsNiimbot =
+            requestedPrinterModel ==
+                "niimbot_d110"
+
+        let target =
+            wantsNiimbot
+            ? "NIIMBOT D110"
+            : "P31S"
+
         if let error = error {
             failConnection(
-                "Could not discover P31S characteristics: \(error.localizedDescription)"
+                "Could not discover \(target) characteristics: \(error.localizedDescription)"
             )
 
             return
@@ -1295,7 +1440,7 @@ public class MintRadarNativePrinterPlugin:
                 service.characteristics
         else {
             failConnection(
-                "P31S did not expose any characteristics."
+                "\(target) did not expose any characteristics."
             )
 
             return
@@ -1314,17 +1459,24 @@ public class MintRadarNativePrinterPlugin:
             "Characteristics discovered: \(characteristicNames)"
         )
 
+        let wantedUUID =
+            wantsNiimbot
+            ? niimbotCharacteristicUUID
+            : p31sWriteUUID
+
         guard
             let characteristic =
                 characteristics.first(
                     where: {
                         $0.uuid ==
-                            p31sWriteUUID
+                            wantedUUID
                     }
                 )
         else {
             failConnection(
-                "P31S write characteristic FF02 was not found."
+                wantsNiimbot
+                ? "NIIMBOT characteristic \(niimbotCharacteristicUUID.uuidString) was not found."
+                : "P31S write characteristic FF02 was not found."
             )
 
             return
@@ -1332,6 +1484,33 @@ public class MintRadarNativePrinterPlugin:
 
         writeCharacteristic =
             characteristic
+
+        if wantsNiimbot {
+            guard
+                characteristic.properties.contains(
+                    .notify
+                ) ||
+                characteristic.properties.contains(
+                    .indicate
+                )
+            else {
+                failConnection(
+                    "NIIMBOT characteristic does not support notifications."
+                )
+                return
+            }
+
+            log(
+                "Found NIIMBOT characteristic. Enabling notifications before identification."
+            )
+
+            peripheral.setNotifyValue(
+                true,
+                for: characteristic
+            )
+
+            return
+        }
 
         log(
             "Found FF02. Native P31S connection GREEN."
@@ -1346,6 +1525,444 @@ public class MintRadarNativePrinterPlugin:
 
         pendingConnectCall = nil
         requestedPrinterModel = nil
+    }
+
+    public func peripheral(
+        _ peripheral: CBPeripheral,
+        didUpdateNotificationStateFor characteristic: CBCharacteristic,
+        error: Error?
+    ) {
+        guard
+            requestedPrinterModel ==
+                "niimbot_d110",
+            characteristic.uuid ==
+                niimbotCharacteristicUUID
+        else {
+            return
+        }
+
+        if let error = error {
+            failConnection(
+                "Could not enable NIIMBOT notifications: \(error.localizedDescription)"
+            )
+            return
+        }
+
+        guard characteristic.isNotifying else {
+            failConnection(
+                "NIIMBOT notifications did not become active."
+            )
+            return
+        }
+
+        log(
+            "NIIMBOT notifications GREEN. Starting identification."
+        )
+
+        beginNiimbotIdentification(
+            peripheral: peripheral,
+            characteristic: characteristic
+        )
+    }
+
+    public func peripheral(
+        _ peripheral: CBPeripheral,
+        didUpdateValueFor characteristic: CBCharacteristic,
+        error: Error?
+    ) {
+        guard
+            characteristic.uuid ==
+                niimbotCharacteristicUUID,
+            requestedPrinterModel ==
+                "niimbot_d110"
+        else {
+            return
+        }
+
+        if let error = error {
+            log(
+                "NIIMBOT notification error: \(error.localizedDescription)"
+            )
+            return
+        }
+
+        guard
+            let value =
+                characteristic.value,
+            let frame =
+                parseNiimbotFrame(
+                    value
+                )
+        else {
+            return
+        }
+
+        log(
+            "NIIMBOT RX command 0x\(String(format: "%02X", frame.command)), \(frame.data.count) data bytes."
+        )
+
+        if
+            frame.command == 0xB5,
+            !niimbotModelQuerySent
+        {
+            sendNiimbotModelQuery(
+                peripheral: peripheral,
+                characteristic: characteristic
+            )
+            return
+        }
+
+        if frame.command == 0x48 {
+            guard
+                !frame.data.isEmpty
+            else {
+                failConnection(
+                    "NIIMBOT returned an empty model-id response."
+                )
+                return
+            }
+
+            let modelId: Int
+
+            if frame.data.count >= 2 {
+                modelId =
+                    (
+                        Int(
+                            frame.data[0]
+                        ) << 8
+                    ) |
+                    Int(
+                        frame.data[1]
+                    )
+            } else {
+                modelId =
+                    Int(
+                        frame.data[0]
+                    ) << 8
+            }
+
+            niimbotDetectedModelId =
+                modelId
+
+            let printerName =
+                peripheral.name ??
+                "NIIMBOT D110"
+
+            log(
+                "NIIMBOT connection GREEN. Device \(printerName) reported model ID \(modelId)."
+            )
+
+            pendingConnectCall?.resolve([
+                "connected": true,
+                "printerName":
+                    printerName,
+                "modelId":
+                    modelId,
+                "expectedD110ModelId":
+                    2304,
+                "identifiedAsD110":
+                    modelId == 2304
+            ])
+
+            pendingConnectCall = nil
+            requestedPrinterModel = nil
+            niimbotIdentificationStarted = false
+            niimbotModelQuerySent = false
+        }
+    }
+
+    private func beginNiimbotIdentification(
+        peripheral: CBPeripheral,
+        characteristic: CBCharacteristic
+    ) {
+        guard
+            !niimbotIdentificationStarted
+        else {
+            return
+        }
+
+        niimbotIdentificationStarted =
+            true
+
+        let initialPacket =
+            Data([
+                0x03,
+                0x55,
+                0x55,
+                0xC1,
+                0x01,
+                0x01,
+                0xC1,
+                0xAA,
+                0xAA
+            ])
+
+        do {
+            try writeNiimbotData(
+                initialPacket,
+                peripheral: peripheral,
+                characteristic: characteristic
+            )
+        } catch {
+            failConnection(
+                "Could not send the NIIMBOT connection packet: \(error.localizedDescription)"
+            )
+            return
+        }
+
+        log(
+            "NIIMBOT initial connection packet sent."
+        )
+
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + 0.200
+        ) { [weak self, weak peripheral] in
+            guard
+                let self = self,
+                let peripheral = peripheral,
+                self.pendingConnectCall != nil,
+                self.requestedPrinterModel ==
+                    "niimbot_d110"
+            else {
+                return
+            }
+
+            do {
+                let statusFrame =
+                    self.packNiimbotFrame(
+                        command: 0xA5,
+                        data: [0x01]
+                    )
+
+                try self.writeNiimbotData(
+                    statusFrame,
+                    peripheral: peripheral,
+                    characteristic: characteristic
+                )
+
+                self.log(
+                    "NIIMBOT status query sent; waiting briefly before model-id query."
+                )
+            } catch {
+                self.failConnection(
+                    "Could not send the NIIMBOT status query: \(error.localizedDescription)"
+                )
+                return
+            }
+
+            // D110 can return a short/non-universal B5 response. Identification
+            // rests on 0x40[08] -> 0x48, so send that query even if B5 never arrives.
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + 0.450
+            ) { [weak self, weak peripheral] in
+                guard
+                    let self = self,
+                    let peripheral = peripheral,
+                    self.pendingConnectCall != nil,
+                    self.requestedPrinterModel ==
+                        "niimbot_d110",
+                    !self.niimbotModelQuerySent
+                else {
+                    return
+                }
+
+                self.sendNiimbotModelQuery(
+                    peripheral: peripheral,
+                    characteristic: characteristic
+                )
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + 5.0
+        ) { [weak self] in
+            guard
+                let self = self,
+                self.pendingConnectCall != nil,
+                self.requestedPrinterModel ==
+                    "niimbot_d110"
+            else {
+                return
+            }
+
+            self.failConnection(
+                "Connected to the NIIMBOT, but model identification timed out."
+            )
+        }
+    }
+
+    private func sendNiimbotModelQuery(
+        peripheral: CBPeripheral,
+        characteristic: CBCharacteristic
+    ) {
+        guard
+            !niimbotModelQuerySent
+        else {
+            return
+        }
+
+        niimbotModelQuerySent =
+            true
+
+        do {
+            let frame =
+                packNiimbotFrame(
+                    command: 0x40,
+                    data: [0x08]
+                )
+
+            try writeNiimbotData(
+                frame,
+                peripheral: peripheral,
+                characteristic: characteristic
+            )
+
+            log(
+                "NIIMBOT model-id query 0x40[08] sent."
+            )
+        } catch {
+            failConnection(
+                "Could not send the NIIMBOT model-id query: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func writeNiimbotData(
+        _ data: Data,
+        peripheral: CBPeripheral,
+        characteristic: CBCharacteristic
+    ) throws {
+        guard
+            peripheral.state ==
+                .connected
+        else {
+            throw NativePrinterError(
+                message:
+                    "The NIIMBOT disconnected during identification."
+            )
+        }
+
+        let writeType: CBCharacteristicWriteType
+
+        if characteristic.properties.contains(
+            .writeWithoutResponse
+        ) {
+            writeType =
+                .withoutResponse
+        } else if characteristic.properties.contains(
+            .write
+        ) {
+            writeType =
+                .withResponse
+        } else {
+            throw NativePrinterError(
+                message:
+                    "The NIIMBOT characteristic does not support Bluetooth writes."
+            )
+        }
+
+        peripheral.writeValue(
+            data,
+            for: characteristic,
+            type: writeType
+        )
+    }
+
+    private func packNiimbotFrame(
+        command: UInt8,
+        data: [UInt8]
+    ) -> Data {
+        let length =
+            UInt8(
+                data.count
+            )
+
+        var crc =
+            command ^
+            length
+
+        for byte in data {
+            crc ^= byte
+        }
+
+        var bytes: [UInt8] = [
+            0x55,
+            0x55,
+            command,
+            length
+        ]
+
+        bytes.append(
+            contentsOf: data
+        )
+
+        bytes.append(
+            crc
+        )
+
+        bytes.append(
+            0xAA
+        )
+
+        bytes.append(
+            0xAA
+        )
+
+        return Data(
+            bytes
+        )
+    }
+
+    private func parseNiimbotFrame(
+        _ value: Data
+    ) -> (
+        command: UInt8,
+        data: [UInt8]
+    )? {
+        let bytes =
+            [UInt8](
+                value
+            )
+
+        guard
+            bytes.count >= 7,
+            bytes[0] == 0x55,
+            bytes[1] == 0x55
+        else {
+            return nil
+        }
+
+        let command =
+            bytes[2]
+
+        let length =
+            Int(
+                bytes[3]
+            )
+
+        guard
+            bytes.count >=
+                7 + length
+        else {
+            return nil
+        }
+
+        let payloadStart = 4
+        let payloadEnd =
+            payloadStart +
+            length
+
+        let payload =
+            Array(
+                bytes[
+                    payloadStart..<payloadEnd
+                ]
+            )
+
+        return (
+            command,
+            payload
+        )
     }
 
     // MARK: - Helpers
@@ -1376,6 +1993,9 @@ public class MintRadarNativePrinterPlugin:
         connectedPeripheral = nil
         writeCharacteristic = nil
         requestedPrinterModel = nil
+        niimbotDetectedModelId = nil
+        niimbotIdentificationStarted = false
+        niimbotModelQuerySent = false
     }
 
     private func bluetoothStateMessage(

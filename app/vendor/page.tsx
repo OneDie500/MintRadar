@@ -541,6 +541,21 @@ export default function VendorDashboardPage() {
     setNiimbotStatus,
   ] = useState("");
 
+  const [
+    d110Connected,
+    setD110Connected,
+  ] = useState(false);
+
+  const [
+    d110Busy,
+    setD110Busy,
+  ] = useState(false);
+
+  const [
+    d110Status,
+    setD110Status,
+  ] = useState("");
+
   const [editItem, setEditItem] =
     useState<InventoryItem | null>(null);
 
@@ -1423,6 +1438,7 @@ export default function VendorDashboardPage() {
     setShowPriceOnLabel(false);
     setP31sStatus("");
     setNiimbotStatus("");
+    setD110Status("");
 
     try {
       const shortCode =
@@ -2318,6 +2334,72 @@ export default function VendorDashboardPage() {
       );
     } finally {
       setP31sBusy(false);
+    }
+  }
+
+  async function connectD110Native() {
+    if (!mintRadarPrintService.native) {
+      setD110Status(
+        "NIIMBOT D110_M native testing is available in the MintRadar iPhone app."
+      );
+      return;
+    }
+
+    setD110Busy(true);
+    setD110Status("");
+
+    try {
+      const connection =
+        await (mintRadarPrintService as any).connect(
+          "niimbot_d110"
+        );
+
+      const modelId =
+        Number(
+          connection?.modelId
+        );
+
+      setD110Connected(
+        Boolean(
+          connection?.connected
+        )
+      );
+
+      if (
+        Number.isFinite(modelId)
+      ) {
+        setD110Status(
+          `Connected to ${
+            connection?.printerName ||
+            "NIIMBOT D110"
+          } • detected model ID ${modelId}${
+            modelId === 2304
+              ? " • D110 family confirmed."
+              : " • connected, but this unit reported a different model ID."
+          }`
+        );
+      } else {
+        setD110Status(
+          `Connected to ${
+            connection?.printerName ||
+            "NIIMBOT D110"
+          }, but no model ID was returned.`
+        );
+      }
+    } catch (error: any) {
+      console.error(
+        "D110_M native connect error:",
+        error
+      );
+
+      setD110Connected(false);
+
+      setD110Status(
+        error?.message ||
+          "MintRadar could not connect to the NIIMBOT D110_M."
+      );
+    } finally {
+      setD110Busy(false);
     }
   }
 
@@ -4445,6 +4527,61 @@ export default function VendorDashboardPage() {
                       </p>
                     )}
                   </div>
+
+                  {mintRadarPrintService.native && (
+                    <div className="mt-5 rounded-2xl border border-zinc-800 bg-black p-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">
+                            Native iPhone Bluetooth • Connection Test
+                          </p>
+
+                          <p className="mt-1 text-sm font-black text-white">
+                            NIIMBOT D110_M • Identify Only
+                          </p>
+
+                          <p className="mt-1 text-xs leading-5 text-zinc-600">
+                            First checkpoint only: connect to the D110_M and read the hardware model ID. No NIIMBOT print data is sent yet.
+                          </p>
+                        </div>
+
+                        <span
+                          className={`w-fit rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-wider ${
+                            d110Connected
+                              ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
+                              : "border-zinc-800 bg-zinc-950 text-zinc-600"
+                          }`}
+                        >
+                          {d110Connected
+                            ? "Connected"
+                            : "Not Connected"}
+                        </span>
+                      </div>
+
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void connectD110Native()
+                          }
+                          disabled={d110Busy}
+                          className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {d110Busy
+                            ? "Connecting & Identifying..."
+                            : d110Connected
+                              ? "Identify D110_M Again"
+                              : "Connect D110_M"}
+                        </button>
+                      </div>
+
+                      {d110Status && (
+                        <p className="mt-3 text-xs font-bold leading-5 text-zinc-500">
+                          {d110Status}
+                        </p>
+                      )}
+                    </div>
+                  )}
 
                   <div className="mt-5 rounded-2xl border border-zinc-800 bg-black p-4">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
