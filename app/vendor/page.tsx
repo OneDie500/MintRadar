@@ -121,6 +121,42 @@ type Vendor = {
   business_name?: string | null;
 };
 
+
+function getPrinterProximityLabel(rssi?: number) {
+  if (typeof rssi !== "number") {
+    return {
+      label: "Unknown",
+      tone: "border-zinc-800 bg-zinc-950 text-zinc-600",
+    };
+  }
+
+  if (rssi >= -50) {
+    return {
+      label: "Very Close",
+      tone: "border-emerald-400/30 bg-emerald-400/10 text-emerald-300",
+    };
+  }
+
+  if (rssi >= -70) {
+    return {
+      label: "Nearby",
+      tone: "border-sky-400/30 bg-sky-400/10 text-sky-300",
+    };
+  }
+
+  if (rssi >= -85) {
+    return {
+      label: "Far Away",
+      tone: "border-yellow-400/30 bg-yellow-400/10 text-yellow-300",
+    };
+  }
+
+  return {
+    label: "Weak Signal",
+    tone: "border-red-400/30 bg-red-400/10 text-red-300",
+  };
+}
+
 function saleMoney(
   value: number | string | null | undefined
 ) {
@@ -5488,10 +5524,20 @@ export default function VendorDashboardPage() {
                                       {profile
                                         ? `${profile.manufacturer} • ${profile.displayName}`
                                         : "Unrecognized labeler"}
-                                      {typeof printer.rssi ===
-                                      "number"
-                                        ? ` • ${printer.rssi} dBm`
-                                        : ""}
+                                      {(() => {
+                                        const proximity =
+                                          getPrinterProximityLabel(
+                                            printer.rssi
+                                          );
+
+                                        return (
+                                          <span
+                                            className={`mt-2 inline-flex rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${proximity.tone}`}
+                                          >
+                                            🟢 {proximity.label}
+                                          </span>
+                                        );
+                                      })()}
                                     </p>
                                   </div>
 
