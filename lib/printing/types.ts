@@ -50,3 +50,57 @@ export interface MintRadarPrinter {
 
   print(job: MintRadarPrintJob): Promise<void>;
 }
+
+/**
+ * Stable IDs used by the MintRadar printer picker/registry.
+ *
+ * These IDs describe user-selectable printer profiles. They are intentionally
+ * separate from the transport implementation so a verified printer can keep
+ * using its existing known-good connection/print path while the registry grows.
+ */
+export type MintRadarPrinterProfileId =
+  | "p31s"
+  | "d110"
+  | "d11h";
+
+export type MintRadarPrinterVerification =
+  | "verified"
+  | "pending";
+
+export type MintRadarPrinterDriverFamily =
+  | "p31s"
+  | "niimbot-b1"
+  | "niimbot";
+
+export type MintRadarLabelOrientation =
+  | "vertical"
+  | "horizontal";
+
+export type MintRadarPrinterOrientationSupport = {
+  vertical: boolean;
+  horizontal: boolean;
+};
+
+export type MintRadarPrinterPlatformSupport = {
+  platform: MintRadarPlatform;
+  transport: MintRadarPrintTransport;
+};
+
+export type MintRadarPrinterProfile = {
+  id: MintRadarPrinterProfileId;
+
+  displayName: string;
+
+  manufacturer: string;
+
+  modelName: string;
+
+  verification: MintRadarPrinterVerification;
+
+  driverFamily: MintRadarPrinterDriverFamily;
+
+  orientations: MintRadarPrinterOrientationSupport;
+
+  platformSupport: readonly MintRadarPrinterPlatformSupport[];
+};
+

@@ -14,6 +14,13 @@ import {
   mintRadarPrintService,
 } from "../../lib/printing/print-service";
 import {
+  getMintRadarPrinterProfiles,
+  getMintRadarPrinterProfile,
+} from "../../lib/printing/printer-registry";
+import type {
+  MintRadarPrinterProfileId,
+} from "../../lib/printing/types";
+import {
   identifyD11H,
   printD11HImage,
   supportsNiimbotWebBluetooth,
@@ -157,6 +164,10 @@ function saleSnapshotText(
 }
 
 type LabelOrientation = "vertical" | "horizontal";
+
+const labelPrinterProfiles =
+  getMintRadarPrinterProfiles();
+
 
 function normalizeImageCategory(value?: string | null) {
   return (value || "").trim().toLowerCase();
@@ -526,7 +537,12 @@ export default function VendorDashboardPage() {
     useState(false);
 
   const [selectedLabelPrinter, setSelectedLabelPrinter] =
-    useState<"p31s" | "d110" | "d11h">("p31s");
+    useState<MintRadarPrinterProfileId>("p31s");
+
+  const selectedLabelPrinterProfile =
+    getMintRadarPrinterProfile(
+      selectedLabelPrinter
+    );
 
   const [
     p31sSupported,
@@ -5161,37 +5177,30 @@ export default function VendorDashboardPage() {
                         value={selectedLabelPrinter}
                         onChange={(event) =>
                           setSelectedLabelPrinter(
-                            event.target.value as
-                              | "p31s"
-                              | "d110"
-                              | "d11h"
+                            event.target
+                              .value as MintRadarPrinterProfileId
                           )
                         }
                         className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm font-black text-white outline-none transition focus:border-emerald-400"
                       >
-                        <option value="p31s">
-                          Polono P31S
-                        </option>
-
-                        {mintRadarPrintService.native && (
-                          <option value="d110">
-                            NIIMBOT D110_M
-                          </option>
+                        {labelPrinterProfiles.map(
+                          (printer) => (
+                            <option
+                              key={printer.id}
+                              value={printer.id}
+                            >
+                              {printer.displayName}
+                            </option>
+                          )
                         )}
-
-                        <option value="d11h">
-                          NIIMBOT D11_H
-                        </option>
                       </select>
                     </div>
 
                     <div className="mt-3 flex items-center justify-between gap-3">
                       <p className="text-xs font-bold text-zinc-500">
-                        {selectedLabelPrinter === "p31s"
-                          ? "Polono P31S"
-                          : selectedLabelPrinter === "d110"
-                            ? "NIIMBOT D110_M"
-                            : "NIIMBOT D11_H"}
+                        {
+                          selectedLabelPrinterProfile.displayName
+                        }
                       </p>
 
                       <span
