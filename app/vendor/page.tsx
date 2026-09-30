@@ -24,12 +24,17 @@ type MintRadarNativePrinterBridge = {
   print(options: {
     printerModel: string;
     testPrint?: boolean;
+    imageBase64?: string;
+    width?: number;
+    height?: number;
+    copies?: number;
   }): Promise<{
     printed?: boolean;
     printerName?: string;
     modelId?: number;
     testWidth?: number;
     testHeight?: number;
+    realLabel?: boolean;
   }>;
 };
 
@@ -2392,7 +2397,8 @@ export default function VendorDashboardPage() {
             connection?.printerName ||
             "NIIMBOT D110"
           } • detected model ID ${modelId}${
-            modelId === 2304
+            modelId === 2304 ||
+            modelId === 2320
               ? " • D110 family confirmed."
               : " • connected, but this unit reported a different model ID."
           }`
@@ -2467,6 +2473,495 @@ export default function VendorDashboardPage() {
       setD110Status(
         error?.message ||
           "MintRadar could not send the D110_M test print."
+      );
+    } finally {
+      setD110Busy(false);
+    }
+  }
+
+  async function buildD110LabelCanvas() {
+    if (!qrItem) {
+      throw new Error(
+        "Open a MintRadar label first."
+      );
+    }
+
+    // --------------------------------------------------
+    // NIIMBOT D110_M • FIRST REAL MINT RADAR LABEL
+    // --------------------------------------------------
+    //
+    // Transport checkpoint already printed correctly at 96 px wide.
+    // Keep that proven printhead width and extend the feed axis to
+    // 320 px (~40 mm at 203 dpi) for the first real-label calibration.
+    //
+    // This is intentionally portrait and conservative:
+    //   96 × 320
+    //   vendor branding
+    //   condition / grade
+    //   large listing QR
+    //   price / scan-for-price
+    //
+    // Once this physically prints and scans, we calibrate margins only.
+    // --------------------------------------------------
+
+    const canvas =
+      document.createElement(
+        "canvas"
+      );
+
+    canvas.width = 96;
+    canvas.height = 320;
+
+    const ctx =
+      canvas.getContext(
+        "2d"
+      );
+
+    if (!ctx) {
+      throw new Error(
+        "MintRadar could not create the D110_M label image."
+      );
+    }
+
+    ctx.imageSmoothingEnabled =
+      false;
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
+
+    const graded =
+      isGraded(qrItem);
+
+    const condition =
+      graded
+        ? `${qrItem.grading_company || "Graded"} ${
+            qrItem.grade || ""
+          }`.trim()
+        : qrItem.condition ||
+          "Raw";
+
+    const price =
+      Number(
+        qrItem.price ?? 0
+      ).toFixed(2);
+
+    const bottomText =
+      showPriceOnLabel
+        ? `$${price}`
+        : "SCAN FOR PRICE";
+
+    const shortCode =
+      encodeListingId(
+        qrItem.id
+      );
+
+    const listingUrl =
+      `${window.location.origin}/l/${shortCode}`;
+
+    ctx.fillStyle = "#000000";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+
+    const safeLeft = 5;
+    const safeRight = 5;
+    const safeWidth =
+      canvas.width -
+      safeLeft -
+      safeRight;
+
+    const center =
+      canvas.width / 2;
+
+    // ------------------------------
+    // VENDOR BRANDING
+    // ------------------------------
+
+    let logo:
+      HTMLImageElement |
+      null = null;
+
+    if (
+      labelBrandingMode ===
+        "logo" &&
+      vendorLogoUrl
+    ) {
+      try {
+        const response =
+          await fetch(
+            vendorLogoUrl,
+            {
+              mode: "cors",
+              cache: "no-store",
+            }
+          );
+
+        if (!response.ok) {
+          throw new Error(
+            `Vendor logo request failed with status ${response.status}.`
+          );
+        }
+
+        const blob =
+          await response.blob();
+
+        const localDataUrl =
+          await new Promise<string>(
+            (
+              resolve,
+              reject
+            ) => {
+              const reader =
+                new FileReader();
+
+              reader.onload =
+                () => {
+                  if (
+                    typeof reader.result ===
+                    "string"
+                  ) {
+                    resolve(
+                      reader.result
+                    );
+                  } else {
+                    reject(
+                      new Error(
+                        "MintRadar could not convert the vendor logo into a local image."
+                      )
+                    );
+                  }
+                };
+
+              reader.onerror =
+                () =>
+                  reject(
+                    new Error(
+                      "MintRadar could not read the vendor logo."
+                    )
+                  );
+
+              reader.readAsDataURL(
+                blob
+              );
+            }
+          );
+
+        logo =
+          await loadLabelImage(
+            localDataUrl
+          );
+      } catch (error) {
+        console.warn(
+          "D110_M vendor logo could not be loaded safely. Falling back to business name.",
+          error
+        );
+      }
+    }
+
+    if (logo) {
+      const maxLogoWidth =
+        safeWidth;
+
+      const maxLogoHeight =
+        22;
+
+      const scale =
+        Math.min(
+          maxLogoWidth /
+            logo.naturalWidth,
+          maxLogoHeight /
+            logo.naturalHeight
+        );
+
+      const logoWidth =
+        Math.max(
+          1,
+          Math.round(
+            logo.naturalWidth *
+              scale
+          )
+        );
+
+      const logoHeight =
+        Math.max(
+          1,
+          Math.round(
+            logo.naturalHeight *
+              scale
+          )
+        );
+
+      ctx.drawImage(
+        logo,
+        Math.round(
+          center -
+            logoWidth / 2
+        ),
+        10,
+        logoWidth,
+        logoHeight
+      );
+    } else {
+      const vendorText =
+        vendorName.toUpperCase();
+
+      const vendorSize =
+        fitCanvasText(
+          ctx,
+          vendorText,
+          safeWidth,
+          14,
+          8,
+          900
+        );
+
+      ctx.font =
+        `900 ${vendorSize}px Arial, Helvetica, sans-serif`;
+
+      ctx.fillText(
+        vendorText,
+        center,
+        10
+      );
+    }
+
+    // ------------------------------
+    // CONDITION / GRADE
+    // ------------------------------
+
+    const conditionSize =
+      fitCanvasText(
+        ctx,
+        condition,
+        safeWidth,
+        13,
+        8,
+        800
+      );
+
+    ctx.font =
+      `800 ${conditionSize}px Arial, Helvetica, sans-serif`;
+
+    ctx.fillText(
+      condition,
+      center,
+      39
+    );
+
+    // ------------------------------
+    // LARGE LISTING QR
+    // ------------------------------
+
+    const qrRenderSize = 384;
+
+    const qrData =
+      await QRCode.toDataURL(
+        listingUrl,
+        {
+          width: qrRenderSize,
+          margin: 4,
+          errorCorrectionLevel:
+            "L",
+        }
+      );
+
+    const qr =
+      await loadLabelImage(
+        qrData
+      );
+
+    const qrSize = 86;
+
+    ctx.drawImage(
+      qr,
+      5,
+      62,
+      qrSize,
+      qrSize
+    );
+
+    // ------------------------------
+    // CARD IDENTITY
+    // ------------------------------
+
+    const cardName =
+      qrItem.cards?.name ||
+      "MintRadar Listing";
+
+    const cardNameSize =
+      fitCanvasText(
+        ctx,
+        cardName,
+        safeWidth,
+        13,
+        8,
+        900
+      );
+
+    ctx.font =
+      `900 ${cardNameSize}px Arial, Helvetica, sans-serif`;
+
+    ctx.fillText(
+      cardName,
+      center,
+      160
+    );
+
+    const setBits = [
+      qrItem.cards?.set_name,
+      qrItem.cards?.card_number
+        ? `#${qrItem.cards.card_number}`
+        : null,
+    ].filter(Boolean);
+
+    if (setBits.length) {
+      const setText =
+        setBits.join(" • ");
+
+      const setSize =
+        fitCanvasText(
+          ctx,
+          setText,
+          safeWidth,
+          10,
+          7,
+          700
+        );
+
+      ctx.font =
+        `700 ${setSize}px Arial, Helvetica, sans-serif`;
+
+      ctx.fillText(
+        setText,
+        center,
+        184
+      );
+    }
+
+    // ------------------------------
+    // PRICE / CTA
+    // ------------------------------
+
+    const bottomSize =
+      fitCanvasText(
+        ctx,
+        bottomText,
+        safeWidth,
+        18,
+        10,
+        900
+      );
+
+    ctx.font =
+      `900 ${bottomSize}px Arial, Helvetica, sans-serif`;
+
+    ctx.fillText(
+      bottomText,
+      center,
+      222
+    );
+
+    ctx.font =
+      "800 8px Arial, Helvetica, sans-serif";
+
+    ctx.fillText(
+      "SCAN • VIEW • BUY",
+      center,
+      252
+    );
+
+    // Bottom calibration bars make clipping/feed obvious on this first run.
+    ctx.fillRect(
+      10,
+      282,
+      76,
+      2
+    );
+
+    ctx.fillRect(
+      22,
+      294,
+      52,
+      2
+    );
+
+    return canvas;
+  }
+
+  async function printQrLabelD110Native() {
+    if (!mintRadarPrintService.native) {
+      setD110Status(
+        "D110_M native label printing is available in the MintRadar iPhone app."
+      );
+      return;
+    }
+
+    setD110Busy(true);
+    setD110Status("");
+
+    try {
+      if (!d110Connected) {
+        const connection =
+          await (mintRadarPrintService as any).connect(
+            "niimbot_d110"
+          );
+
+        setD110Connected(
+          Boolean(
+            connection?.connected
+          )
+        );
+
+        if (!connection?.connected) {
+          throw new Error(
+            "MintRadar could not connect to the D110_M."
+          );
+        }
+      }
+
+      const canvas =
+        await buildD110LabelCanvas();
+
+      const imageBase64 =
+        canvas.toDataURL(
+          "image/png"
+        );
+
+      const result =
+        await MintRadarNativePrinter.print({
+          printerModel:
+            "niimbot_d110",
+          imageBase64,
+          width:
+            canvas.width,
+          height:
+            canvas.height,
+          copies: 1,
+        });
+
+      setD110Connected(true);
+
+      setD110Status(
+        `Real MintRadar label sent to ${
+          result?.printerName ||
+          "NIIMBOT D110_M"
+        } • model ID ${
+          result?.modelId ?? 2320
+        }. Check orientation, clipping, and QR scan.`
+      );
+    } catch (error: any) {
+      console.error(
+        "D110_M real label print error:",
+        error
+      );
+
+      setD110Status(
+        error?.message ||
+          "MintRadar could not print the real label to the D110_M."
       );
     } finally {
       setD110Busy(false);
@@ -4603,15 +5098,15 @@ export default function VendorDashboardPage() {
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div>
                           <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">
-                            Native iPhone Bluetooth • Connection Test
+                            Native iPhone Bluetooth • D110_M
                           </p>
 
                           <p className="mt-1 text-sm font-black text-white">
-                            NIIMBOT D110_M • Identify Only
+                            NIIMBOT D110_M • Native B1
                           </p>
 
                           <p className="mt-1 text-xs leading-5 text-zinc-600">
-                            Connection checkpoint is GREEN at model ID 2320. The test-print button sends one tiny B1 diagnostic raster only; the real MintRadar label renderer is still untouched.
+                            Model ID 2320 and the bordered MR raster are physically GREEN. Real Label sends the first 96 × 320 MintRadar listing label through that same proven B1 transport.
                           </p>
                         </div>
 
@@ -4658,6 +5153,23 @@ export default function VendorDashboardPage() {
                           {d110Busy
                             ? "Working..."
                             : "Test Print D110_M"}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void printQrLabelD110Native()
+                          }
+                          disabled={
+                            d110Busy ||
+                            !d110Connected ||
+                            !qrItem
+                          }
+                          className="rounded-xl border border-white/20 bg-white px-4 py-3 text-sm font-black text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {d110Busy
+                            ? "Printing..."
+                            : "Print Real Label"}
                         </button>
                       </div>
 
