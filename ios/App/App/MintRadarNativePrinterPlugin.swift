@@ -791,8 +791,46 @@ public class MintRadarNativePrinterPlugin:
                     forTimeInterval: 0.150
                 )
 
-                let width = 96
-                let height = 160
+                let suppliedImageBase64 =
+                    call.getString(
+                        "imageBase64"
+                    )
+
+                let isRealLabel =
+                    suppliedImageBase64 != nil &&
+                    !(suppliedImageBase64 ?? "").isEmpty
+
+                let width =
+                    isRealLabel
+                        ? max(
+                            8,
+                            call.getInt(
+                                "width"
+                            ) ?? 96
+                        )
+                        : 96
+
+                let height =
+                    isRealLabel
+                        ? max(
+                            8,
+                            call.getInt(
+                                "height"
+                            ) ?? 320
+                        )
+                        : 160
+
+                guard width % 8 == 0 else {
+                    throw NSError(
+                        domain:
+                            "MintRadarD110",
+                        code: 1001,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "D110_M label width must be a multiple of 8 pixels."
+                        ]
+                    )
+                }
 
                 // B1 SetPageSize 6-byte payload:
                 // H(2), W(2), copies(2).
@@ -830,11 +868,50 @@ public class MintRadarNativePrinterPlugin:
                 // 3. Send a simple 96 × 160 "MR" diagnostic raster
                 // ----------------------------------------------------------
 
-                let bitmap =
-                    self.makeD110TestBitmap(
-                        width: width,
-                        height: height
+                let bitmap: [UInt8]
+
+                if
+                    isRealLabel,
+                    let suppliedImageBase64 =
+                        suppliedImageBase64,
+                    let imageData =
+                        self.decodeBase64Image(
+                            suppliedImageBase64
+                        ),
+                    let image =
+                        UIImage(
+                            data: imageData
+                        ),
+                    let rendered =
+                        self.makeD110BitmapFromImage(
+                            image,
+                            width: width,
+                            height: height
+                        )
+                {
+                    bitmap =
+                        rendered
+
+                    self.log(
+                        "D110_M real MintRadar label rasterized at \(width)×\(height)."
                     )
+                } else if isRealLabel {
+                    throw NSError(
+                        domain:
+                            "MintRadarD110",
+                        code: 1002,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "MintRadar could not decode the D110_M label image."
+                        ]
+                    )
+                } else {
+                    bitmap =
+                        self.makeD110TestBitmap(
+                            width: width,
+                            height: height
+                        )
+                }
 
                 let stride =
                     (width + 7) / 8
@@ -847,11 +924,7 @@ public class MintRadarNativePrinterPlugin:
                     let rowBytes =
                         Array(
                             bitmap[
-                                offset..<
-                                (
-                                    offset +
-                                    stride
-                                )
+                                offset..<(offset + stride)
                             ]
                         )
 
@@ -965,7 +1038,9 @@ public class MintRadarNativePrinterPlugin:
                         "testWidth":
                             width,
                         "testHeight":
-                            height
+                            height,
+                        "realLabel":
+                            isRealLabel
                     ])
 
                     self.pendingPrintCall =
@@ -1011,6 +1086,175 @@ public class MintRadarNativePrinterPlugin:
             peripheral: peripheral,
             characteristic: characteristic
         )
+    }
+
+    private func makeD110BitmapFromImage(
+        _ image: UIImage,
+        width: Int,
+        height: Int
+    ) -> [UInt8]? {
+        guard
+            let cgImage =
+                normalizedCGImage(
+                    image,
+                    width: width,
+                    height: height
+                )
+        else {
+            return nil
+        }
+
+        let bytesPerPixel = 4
+        let bytesPerRow =
+            width *
+            bytesPerPixel
+
+        let colorSpace =
+            CGColorSpaceCreateDeviceRGB()
+
+        guard
+            let context =
+                CGContext(
+                    data: nil,
+                    width: width,
+                    height: height,
+                    bitsPerComponent: 8,
+                    bytesPerRow: bytesPerRow,
+                    space: colorSpace,
+                    bitmapInfo:
+                        CGImageAlphaInfo
+                            .premultipliedLast
+                            .rawValue
+                )
+        else {
+            return nil
+        }
+
+        context.setFillColor(
+            UIColor.white.cgColor
+        )
+
+        context.fill(
+            CGRect(
+                x: 0,
+                y: 0,
+                width: width,
+                height: height
+            )
+        )
+
+        // UIKit/canvas labels are top-left oriented.
+        // Flip Core Graphics once so the packed raster keeps that same orientation.
+        context.saveGState()
+
+        context.translateBy(
+            x: CGFloat(width),
+            y: CGFloat(height)
+        )
+
+        context.scaleBy(
+            x: -1,
+            y: -1
+        )
+
+        context.draw(
+            cgImage,
+            in: CGRect(
+                x: 0,
+                y: 0,
+                width: width,
+                height: height
+            )
+        )
+
+        context.restoreGState()
+
+        guard
+            let rawData =
+                context.data
+        else {
+            return nil
+        }
+
+        let pixels =
+            rawData.bindMemory(
+                to: UInt8.self,
+                capacity:
+                    bytesPerRow *
+                    height
+            )
+
+        let stride =
+            (width + 7) / 8
+
+        var bitmap =
+            [UInt8](
+                repeating: 0,
+                count:
+                    stride *
+                    height
+            )
+
+        for y in 0..<height {
+            for x in 0..<width {
+                let pixelIndex =
+                    y *
+                    bytesPerRow +
+                    x *
+                    bytesPerPixel
+
+                let red =
+                    Double(
+                        pixels[
+                            pixelIndex
+                        ]
+                    )
+
+                let green =
+                    Double(
+                        pixels[
+                            pixelIndex + 1
+                        ]
+                    )
+
+                let blue =
+                    Double(
+                        pixels[
+                            pixelIndex + 2
+                        ]
+                    )
+
+                let alpha =
+                    pixels[
+                        pixelIndex + 3
+                    ]
+
+                let luminance =
+                    red *
+                        0.299 +
+                    green *
+                        0.587 +
+                    blue *
+                        0.114
+
+                if
+                    alpha > 32 &&
+                    luminance < 128
+                {
+                    bitmap[
+                        y *
+                        stride +
+                        (x >> 3)
+                    ] |=
+                        UInt8(
+                            0x80 >>
+                            (x & 7)
+                        )
+                }
+            }
+        }
+
+        return bitmap
     }
 
     private func makeD110TestBitmap(
