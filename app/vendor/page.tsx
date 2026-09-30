@@ -5509,27 +5509,12 @@ export default function VendorDashboardPage() {
                                   className="flex w-full items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-black px-3 py-3 text-left transition hover:border-emerald-400/40 hover:bg-emerald-400/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                   <div className="min-w-0 flex-1">
-                                    <div className="flex min-w-0 items-center gap-2">
-                                      <p className="min-w-0 truncate text-sm font-black text-white">
+                                    <div className="min-w-0">
+                                      <p className="truncate text-sm font-black text-white">
                                         {printer.deviceName ||
                                           profile?.displayName ||
                                           "Bluetooth Labeler"}
                                       </p>
-
-                                      {(() => {
-                                        const proximity =
-                                          getPrinterProximityLabel(
-                                            printer.rssi
-                                          );
-
-                                        return (
-                                          <span
-                                            className={`shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-wider ${proximity.tone}`}
-                                          >
-                                            {proximity.label}
-                                          </span>
-                                        );
-                                      })()}
                                     </div>
 
                                     <p className="mt-1 truncate text-[11px] font-bold text-zinc-600">
@@ -5539,17 +5524,34 @@ export default function VendorDashboardPage() {
                                     </p>
                                   </div>
 
-                                  <span
-                                    className={`shrink-0 rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${
-                                      printer.supported
-                                        ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
-                                        : "border-zinc-800 bg-zinc-950 text-zinc-600"
-                                    }`}
-                                  >
-                                    {printer.supported
-                                      ? "Supported"
-                                      : "Unknown"}
-                                  </span>
+                                  <div className="flex shrink-0 flex-col items-end gap-1.5">
+                                    <span
+                                      className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${
+                                        printer.supported
+                                          ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
+                                          : "border-zinc-800 bg-zinc-950 text-zinc-600"
+                                      }`}
+                                    >
+                                      {printer.supported
+                                        ? "Supported"
+                                        : "Unknown"}
+                                    </span>
+
+                                    {(() => {
+                                      const proximity =
+                                        getPrinterProximityLabel(
+                                          printer.rssi
+                                        );
+
+                                      return (
+                                        <span
+                                          className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${proximity.tone}`}
+                                        >
+                                          {proximity.label}
+                                        </span>
+                                      );
+                                    })()}
+                                  </div>
                                 </button>
                               );
                             }
