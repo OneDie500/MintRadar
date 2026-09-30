@@ -404,6 +404,13 @@ public class MintRadarNativePrinterPlugin:
         let printerModel =
             call.getString("printerModel") ?? ""
 
+        if printerModel == "niimbot_d110" {
+            performD110TestPrint(
+                call
+            )
+            return
+        }
+
         guard printerModel == "p31s" else {
             call.reject(
                 "Native printing for \(printerModel.uppercased()) is not implemented yet."
@@ -559,6 +566,663 @@ public class MintRadarNativePrinterPlugin:
             copies: copies,
             writeType: writeType
         )
+    }
+
+    // MARK: - NIIMBOT D110_M Native Test Print
+    //
+    // Controlled checkpoint only.
+    // This intentionally does NOT use the MintRadar label renderer yet.
+    //
+    // Physical device already identified itself as:
+    //   D110_M -> model ID 2320 / 0x0910
+    //
+    // The existing web driver proved the D110 family uses the B1 task:
+    //   handshake
+    //   SetDensity
+    //   SetLabelType
+    //   PrintStart (7-byte B1 form)
+    //   PageStart
+    //   SetPageSize (6-byte B1 form)
+    //   0x84 / 0x85 raster rows
+    //   PageEnd
+    //   PrintEnd
+    //
+    // We keep this test intentionally small: 96 × 160 dots at the D110 family's
+    // 203-dpi B1 path. It prints a simple bordered "MR" diagnostic raster.
+    //
+    // P31S code below is untouched.
+
+    private func performD110TestPrint(
+        _ call: CAPPluginCall
+    ) {
+        guard
+            let peripheral =
+                connectedPeripheral,
+            peripheral.state ==
+                .connected,
+            let characteristic =
+                writeCharacteristic
+        else {
+            call.reject(
+                "Connect to the NIIMBOT D110_M first."
+            )
+            return
+        }
+
+        guard
+            let modelId =
+                niimbotDetectedModelId
+        else {
+            call.reject(
+                "The NIIMBOT is connected, but MintRadar has not identified its model ID yet."
+            )
+            return
+        }
+
+        guard
+            modelId == 2320 ||
+            modelId == 2304
+        else {
+            call.reject(
+                "Test print is limited to the D110 family. This printer reported model ID \(modelId)."
+            )
+            return
+        }
+
+        guard !isPrinting else {
+            call.reject(
+                "A label is already printing."
+            )
+            return
+        }
+
+        let supportsWithoutResponse =
+            characteristic.properties.contains(
+                .writeWithoutResponse
+            )
+
+        let supportsWithResponse =
+            characteristic.properties.contains(
+                .write
+            )
+
+        guard
+            supportsWithoutResponse ||
+            supportsWithResponse
+        else {
+            call.reject(
+                "The NIIMBOT characteristic does not support Bluetooth writes."
+            )
+            return
+        }
+
+        pendingPrintCall =
+            call
+
+        isPrinting =
+            true
+
+        log(
+            "Starting NIIMBOT D110_M B1 test print for model ID \(modelId)."
+        )
+
+        DispatchQueue.global(
+            qos: .userInitiated
+        ).async { [weak self] in
+            guard let self = self else {
+                return
+            }
+
+            do {
+                // ----------------------------------------------------------
+                // 1. B1 post-connect handshake
+                // ----------------------------------------------------------
+
+                try self.sendNiimbotTestFrame(
+                    command: 0xA5,
+                    data: [0x01],
+                    peripheral: peripheral,
+                    characteristic: characteristic
+                )
+
+                Thread.sleep(
+                    forTimeInterval: 0.150
+                )
+
+                let infoSubcommands: [UInt8] = [
+                    0x08,
+                    0x0B,
+                    0x0D,
+                    0x0A,
+                    0x07,
+                    0x03,
+                    0x0C,
+                    0x09
+                ]
+
+                for subcommand in
+                    infoSubcommands
+                {
+                    try self.sendNiimbotTestFrame(
+                        command: 0x40,
+                        data: [subcommand],
+                        peripheral: peripheral,
+                        characteristic: characteristic
+                    )
+
+                    Thread.sleep(
+                        forTimeInterval: 0.080
+                    )
+                }
+
+                try self.sendNiimbotTestFrame(
+                    command: 0xDC,
+                    data: [0x04],
+                    peripheral: peripheral,
+                    characteristic: characteristic
+                )
+
+                Thread.sleep(
+                    forTimeInterval: 0.250
+                )
+
+                self.log(
+                    "D110_M B1 handshake sent."
+                )
+
+                // ----------------------------------------------------------
+                // 2. Configure one tiny B1 print job
+                // ----------------------------------------------------------
+
+                // SetDensity = 3
+                try self.sendNiimbotTestFrame(
+                    command: 0x21,
+                    data: [0x03],
+                    peripheral: peripheral,
+                    characteristic: characteristic
+                )
+
+                Thread.sleep(
+                    forTimeInterval: 0.150
+                )
+
+                // SetLabelType = 1 (gap stock)
+                try self.sendNiimbotTestFrame(
+                    command: 0x23,
+                    data: [0x01],
+                    peripheral: peripheral,
+                    characteristic: characteristic
+                )
+
+                Thread.sleep(
+                    forTimeInterval: 0.150
+                )
+
+                // B1 PrintStart:
+                // pages=1 + five zero bytes = 7-byte payload.
+                try self.sendNiimbotTestFrame(
+                    command: 0x01,
+                    data: [
+                        0x00,
+                        0x01,
+                        0x00,
+                        0x00,
+                        0x00,
+                        0x00,
+                        0x00
+                    ],
+                    peripheral: peripheral,
+                    characteristic: characteristic
+                )
+
+                Thread.sleep(
+                    forTimeInterval: 0.200
+                )
+
+                // B1 PageStart.
+                try self.sendNiimbotTestFrame(
+                    command: 0x03,
+                    data: [0x01],
+                    peripheral: peripheral,
+                    characteristic: characteristic
+                )
+
+                Thread.sleep(
+                    forTimeInterval: 0.150
+                )
+
+                let width = 96
+                let height = 160
+
+                // B1 SetPageSize 6-byte payload:
+                // H(2), W(2), copies(2).
+                try self.sendNiimbotTestFrame(
+                    command: 0x13,
+                    data: [
+                        UInt8(
+                            (height >> 8) &
+                            0xFF
+                        ),
+                        UInt8(
+                            height &
+                            0xFF
+                        ),
+                        UInt8(
+                            (width >> 8) &
+                            0xFF
+                        ),
+                        UInt8(
+                            width &
+                            0xFF
+                        ),
+                        0x00,
+                        0x01
+                    ],
+                    peripheral: peripheral,
+                    characteristic: characteristic
+                )
+
+                Thread.sleep(
+                    forTimeInterval: 0.250
+                )
+
+                // ----------------------------------------------------------
+                // 3. Send a simple 96 × 160 "MR" diagnostic raster
+                // ----------------------------------------------------------
+
+                let bitmap =
+                    self.makeD110TestBitmap(
+                        width: width,
+                        height: height
+                    )
+
+                let stride =
+                    (width + 7) / 8
+
+                for row in 0..<height {
+                    let offset =
+                        row *
+                        stride
+
+                    let rowBytes =
+                        Array(
+                            bitmap[
+                                offset..<
+                                (
+                                    offset +
+                                    stride
+                                )
+                            ]
+                        )
+
+                    let blackCount =
+                        self.countBlackBits(
+                            rowBytes
+                        )
+
+                    if blackCount == 0 {
+                        try self.sendNiimbotTestFrame(
+                            command: 0x84,
+                            data: [
+                                UInt8(
+                                    (row >> 8) &
+                                    0xFF
+                                ),
+                                UInt8(
+                                    row &
+                                    0xFF
+                                ),
+                                0x01
+                            ],
+                            peripheral: peripheral,
+                            characteristic: characteristic
+                        )
+                    } else {
+                        var rowPayload: [UInt8] = [
+                            UInt8(
+                                (row >> 8) &
+                                0xFF
+                            ),
+                            UInt8(
+                                row &
+                                0xFF
+                            ),
+                            0x00,
+                            UInt8(
+                                blackCount &
+                                0xFF
+                            ),
+                            UInt8(
+                                (blackCount >> 8) &
+                                0xFF
+                            ),
+                            0x01
+                        ]
+
+                        rowPayload.append(
+                            contentsOf:
+                                rowBytes
+                        )
+
+                        try self.sendNiimbotTestFrame(
+                            command: 0x85,
+                            data: rowPayload,
+                            peripheral: peripheral,
+                            characteristic: characteristic
+                        )
+                    }
+
+                    // D110 2304 was physically proven using paced writes.
+                    // Keep the same conservative pacing for D110_M 2320.
+                    Thread.sleep(
+                        forTimeInterval: 0.010
+                    )
+                }
+
+                self.log(
+                    "D110_M diagnostic raster sent."
+                )
+
+                // ----------------------------------------------------------
+                // 4. Close page + job
+                // ----------------------------------------------------------
+
+                try self.sendNiimbotTestFrame(
+                    command: 0xE3,
+                    data: [0x01],
+                    peripheral: peripheral,
+                    characteristic: characteristic
+                )
+
+                // D110-family PageEnd acknowledgement can take seconds.
+                Thread.sleep(
+                    forTimeInterval: 3.000
+                )
+
+                try self.sendNiimbotTestFrame(
+                    command: 0xF3,
+                    data: [0x01],
+                    peripheral: peripheral,
+                    characteristic: characteristic
+                )
+
+                Thread.sleep(
+                    forTimeInterval: 1.000
+                )
+
+                DispatchQueue.main.async {
+                    self.log(
+                        "NIIMBOT D110_M native test-print sequence completed."
+                    )
+
+                    self.pendingPrintCall?.resolve([
+                        "printed": true,
+                        "printerName":
+                            peripheral.name ??
+                            "NIIMBOT D110_M",
+                        "modelId":
+                            modelId,
+                        "testWidth":
+                            width,
+                        "testHeight":
+                            height
+                    ])
+
+                    self.pendingPrintCall =
+                        nil
+
+                    self.isPrinting =
+                        false
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.log(
+                        "NIIMBOT D110_M test print failed: \(error.localizedDescription)"
+                    )
+
+                    self.pendingPrintCall?.reject(
+                        "D110_M test print failed: \(error.localizedDescription)"
+                    )
+
+                    self.pendingPrintCall =
+                        nil
+
+                    self.isPrinting =
+                        false
+                }
+            }
+        }
+    }
+
+    private func sendNiimbotTestFrame(
+        command: UInt8,
+        data: [UInt8],
+        peripheral: CBPeripheral,
+        characteristic: CBCharacteristic
+    ) throws {
+        let frame =
+            packNiimbotFrame(
+                command: command,
+                data: data
+            )
+
+        try writeNiimbotData(
+            frame,
+            peripheral: peripheral,
+            characteristic: characteristic
+        )
+    }
+
+    private func makeD110TestBitmap(
+        width: Int,
+        height: Int
+    ) -> [UInt8] {
+        let stride =
+            (width + 7) / 8
+
+        var bitmap =
+            [UInt8](
+                repeating: 0,
+                count:
+                    stride *
+                    height
+            )
+
+        func setBlack(
+            x: Int,
+            y: Int
+        ) {
+            guard
+                x >= 0,
+                x < width,
+                y >= 0,
+                y < height
+            else {
+                return
+            }
+
+            let index =
+                y *
+                stride +
+                (x >> 3)
+
+            bitmap[index] |=
+                UInt8(
+                    0x80 >>
+                    (x & 7)
+                )
+        }
+
+        func fillRect(
+            x: Int,
+            y: Int,
+            w: Int,
+            h: Int
+        ) {
+            for yy in
+                y..<(y + h)
+            {
+                for xx in
+                    x..<(x + w)
+                {
+                    setBlack(
+                        x: xx,
+                        y: yy
+                    )
+                }
+            }
+        }
+
+        // Outer diagnostic border.
+        fillRect(
+            x: 4,
+            y: 4,
+            w: width - 8,
+            h: 3
+        )
+
+        fillRect(
+            x: 4,
+            y: height - 7,
+            w: width - 8,
+            h: 3
+        )
+
+        fillRect(
+            x: 4,
+            y: 4,
+            w: 3,
+            h: height - 8
+        )
+
+        fillRect(
+            x: width - 7,
+            y: 4,
+            w: 3,
+            h: height - 8
+        )
+
+        // Big block "M".
+        fillRect(
+            x: 16,
+            y: 38,
+            w: 6,
+            h: 62
+        )
+
+        fillRect(
+            x: 42,
+            y: 38,
+            w: 6,
+            h: 62
+        )
+
+        for step in 0..<14 {
+            fillRect(
+                x:
+                    22 +
+                    step,
+                y:
+                    40 +
+                    step,
+                w: 3,
+                h: 5
+            )
+
+            fillRect(
+                x:
+                    39 -
+                    step,
+                y:
+                    40 +
+                    step,
+                w: 3,
+                h: 5
+            )
+        }
+
+        // Big block "R".
+        fillRect(
+            x: 56,
+            y: 38,
+            w: 6,
+            h: 62
+        )
+
+        fillRect(
+            x: 56,
+            y: 38,
+            w: 24,
+            h: 6
+        )
+
+        fillRect(
+            x: 76,
+            y: 38,
+            w: 6,
+            h: 30
+        )
+
+        fillRect(
+            x: 56,
+            y: 63,
+            w: 24,
+            h: 6
+        )
+
+        for step in 0..<16 {
+            fillRect(
+                x:
+                    64 +
+                    step,
+                y:
+                    68 +
+                    step * 2,
+                w: 4,
+                h: 5
+            )
+        }
+
+        // Bottom alignment bars.
+        fillRect(
+            x: 16,
+            y: 122,
+            w: 64,
+            h: 4
+        )
+
+        fillRect(
+            x: 26,
+            y: 134,
+            w: 44,
+            h: 4
+        )
+
+        return bitmap
+    }
+
+    private func countBlackBits(
+        _ bytes: [UInt8]
+    ) -> Int {
+        var count = 0
+
+        for byte in bytes {
+            var value =
+                byte
+
+            while value != 0 {
+                count +=
+                    Int(
+                        value &
+                        0x01
+                    )
+
+                value >>=
+                    1
+            }
+        }
+
+        return count
     }
 
     // MARK: - Native P31S Print Pipeline

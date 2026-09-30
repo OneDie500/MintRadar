@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { registerPlugin } from "@capacitor/core";
 import Link from "next/link";
 import Image from "next/image";
 import TradeAnalyzer from "../components/TradeAnalyzer";
@@ -18,6 +19,24 @@ import {
   supportsNiimbotWebBluetooth,
 } from "../../lib/niimbot-web";
 import { encodeListingId } from "../../lib/listing-short-code";
+
+type MintRadarNativePrinterBridge = {
+  print(options: {
+    printerModel: string;
+    testPrint?: boolean;
+  }): Promise<{
+    printed?: boolean;
+    printerName?: string;
+    modelId?: number;
+    testWidth?: number;
+    testHeight?: number;
+  }>;
+};
+
+const MintRadarNativePrinter =
+  registerPlugin<MintRadarNativePrinterBridge>(
+    "MintRadarNativePrinter"
+  );
 
 type Card = {
   id: string;
@@ -2403,6 +2422,57 @@ export default function VendorDashboardPage() {
     }
   }
 
+  async function testPrintD110Native() {
+    if (!mintRadarPrintService.native) {
+      setD110Status(
+        "D110_M native test printing is available in the MintRadar iPhone app."
+      );
+      return;
+    }
+
+    if (!d110Connected) {
+      setD110Status(
+        "Connect and identify the D110_M first."
+      );
+      return;
+    }
+
+    setD110Busy(true);
+    setD110Status(
+      "Sending tiny D110_M B1 test print..."
+    );
+
+    try {
+      const result =
+        await MintRadarNativePrinter.print({
+          printerModel:
+            "niimbot_d110",
+          testPrint: true,
+        });
+
+      setD110Status(
+        `Test-print sequence sent to ${
+          result?.printerName ||
+          "NIIMBOT D110_M"
+        } • model ID ${
+          result?.modelId ?? 2320
+        }. Check the paper for the bordered MR test pattern.`
+      );
+    } catch (error: any) {
+      console.error(
+        "D110_M native test print error:",
+        error
+      );
+
+      setD110Status(
+        error?.message ||
+          "MintRadar could not send the D110_M test print."
+      );
+    } finally {
+      setD110Busy(false);
+    }
+  }
+
   async function buildD11HLabelCanvas() {
     if (!qrItem || !qrDataUrl) {
       throw new Error("Open a MintRadar label first.");
@@ -4541,7 +4611,7 @@ export default function VendorDashboardPage() {
                           </p>
 
                           <p className="mt-1 text-xs leading-5 text-zinc-600">
-                            First checkpoint only: connect to the D110_M and read the hardware model ID. No NIIMBOT print data is sent yet.
+                            Connection checkpoint is GREEN at model ID 2320. The test-print button sends one tiny B1 diagnostic raster only; the real MintRadar label renderer is still untouched.
                           </p>
                         </div>
 
@@ -4572,6 +4642,22 @@ export default function VendorDashboardPage() {
                             : d110Connected
                               ? "Identify D110_M Again"
                               : "Connect D110_M"}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void testPrintD110Native()
+                          }
+                          disabled={
+                            d110Busy ||
+                            !d110Connected
+                          }
+                          className="rounded-xl bg-emerald-400 px-4 py-3 text-sm font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {d110Busy
+                            ? "Working..."
+                            : "Test Print D110_M"}
                         </button>
                       </div>
 
