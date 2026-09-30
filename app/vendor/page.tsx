@@ -5194,7 +5194,7 @@ export default function VendorDashboardPage() {
                         >
                           {p31sBusy
                             ? "Connecting..."
-                            : "Connect P31S"}
+                            : "Connect"}
                         </button>
                       )}
 
@@ -5213,7 +5213,7 @@ export default function VendorDashboardPage() {
                           ? "Working..."
                           : p31sConnected
                             ? "Print to P31S"
-                            : "Connect & Print"}
+                            : "Print"}
                       </button>
                     </div>
 
@@ -5229,7 +5229,7 @@ export default function VendorDashboardPage() {
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div>
                           <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">
-                            Native iPhone Bluetooth • D110_M
+                            Direct Bluetooth
                           </p>
 
                           <p className="mt-1 text-sm font-black text-white">
@@ -5237,7 +5237,7 @@ export default function VendorDashboardPage() {
                           </p>
 
                           <p className="mt-1 text-xs leading-5 text-zinc-600">
-                            Model ID 2320 and the bordered MR raster are physically GREEN. Real Label sends the first 96 × 320 MintRadar listing label through that same proven B1 transport.
+                            
                           </p>
                         </div>
 
