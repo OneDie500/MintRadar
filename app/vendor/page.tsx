@@ -525,6 +525,9 @@ export default function VendorDashboardPage() {
   const [showPriceOnLabel, setShowPriceOnLabel] =
     useState(false);
 
+  const [selectedLabelPrinter, setSelectedLabelPrinter] =
+    useState<"p31s" | "d110" | "d11h">("p31s");
+
   const [
     p31sSupported,
     setP31sSupported,
@@ -5145,224 +5148,192 @@ export default function VendorDashboardPage() {
                   </div>
 
                   <div className="mt-5 rounded-2xl border border-zinc-800 bg-black p-4">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">
-                          Direct Bluetooth
-                        </p>
+                    <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">
+                      Direct Bluetooth
+                    </p>
 
-                        <p className="mt-1 text-sm font-black text-white">
-                          Polono P31S • Full-label Bluetooth print
-                        </p>
+                    <div className="mt-3">
+                      <label className="mb-2 block text-xs font-black uppercase tracking-[0.14em] text-zinc-500">
+                        Printer
+                      </label>
 
-                        <p className="mt-1 text-xs leading-5 text-zinc-600">
-                          Uses the full printable label area with an enlarged MintRadar QR code.
-                        </p>
-                      </div>
-
-                      <span
-                        className={`w-fit rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-wider ${
-                          p31sConnected
-                            ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
-                            : "border-zinc-800 bg-zinc-950 text-zinc-600"
-                        }`}
+                      <select
+                        value={selectedLabelPrinter}
+                        onChange={(event) =>
+                          setSelectedLabelPrinter(
+                            event.target.value as
+                              | "p31s"
+                              | "d110"
+                              | "d11h"
+                          )
+                        }
+                        className="w-full rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm font-black text-white outline-none transition focus:border-emerald-400"
                       >
-                        {p31sConnected
-                          ? "Connected"
-                          : "Not Connected"}
-                      </span>
+                        <option value="p31s">
+                          Polono P31S
+                        </option>
+
+                        {mintRadarPrintService.native && (
+                          <option value="d110">
+                            NIIMBOT D110_M
+                          </option>
+                        )}
+
+                        <option value="d11h">
+                          NIIMBOT D11_H
+                        </option>
+                      </select>
                     </div>
 
-                    {!p31sSupported && (
-                      <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs font-bold leading-5 text-amber-200">
-                        This browser/device does not expose Web Bluetooth. After MintRadar is deployed over HTTPS, open it in a Web Bluetooth-capable browser/device to test direct P31S printing.
-                      </div>
-                    )}
-
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {!p31sConnected && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            void connectP31S()
-                          }
-                          disabled={
-                            p31sBusy ||
-                            !p31sSupported
-                          }
-                          className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          {p31sBusy
-                            ? "Connecting..."
-                            : "Connect"}
-                        </button>
-                      )}
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void printQrLabelP31S()
-                        }
-                        disabled={
-                          p31sBusy ||
-                          !p31sSupported
-                        }
-                        className="rounded-xl bg-emerald-400 px-4 py-3 text-sm font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        {p31sBusy
-                          ? "Working..."
-                          : p31sConnected
-                            ? "Print to P31S"
-                            : "Print"}
-                      </button>
-                    </div>
-
-                    {p31sStatus && (
-                      <p className="mt-3 text-xs font-bold leading-5 text-zinc-500">
-                        {p31sStatus}
+                    <div className="mt-3 flex items-center justify-between gap-3">
+                      <p className="text-xs font-bold text-zinc-500">
+                        {selectedLabelPrinter === "p31s"
+                          ? "Polono P31S"
+                          : selectedLabelPrinter === "d110"
+                            ? "NIIMBOT D110_M"
+                            : "NIIMBOT D11_H"}
                       </p>
-                    )}
-                  </div>
-
-                  {mintRadarPrintService.native && (
-                    <div className="mt-5 rounded-2xl border border-zinc-800 bg-black p-4">
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                        <div>
-                          <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">
-                            Direct Bluetooth
-                          </p>
-
-                          <p className="mt-1 text-sm font-black text-white">
-                            NIIMBOT D110_M • Native B1
-                          </p>
-
-                          <p className="mt-1 text-xs leading-5 text-zinc-600">
-                            
-                          </p>
-                        </div>
-
-                        <span
-                          className={`w-fit rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-wider ${
-                            d110Connected
-                              ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
-                              : "border-zinc-800 bg-zinc-950 text-zinc-600"
-                          }`}
-                        >
-                          {d110Connected
-                            ? "Connected"
-                            : "Not Connected"}
-                        </span>
-                      </div>
-
-                      <div className="mt-4 flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            void connectD110Native()
-                          }
-                          disabled={d110Busy}
-                          className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          {d110Busy
-                            ? "Connecting..."
-                            : d110Connected
-                              ? "Reconnect"
-                              : "Connect"}
-                        </button>
-
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            void printQrLabelD110Native()
-                          }
-                          disabled={
-                            d110Busy ||
-                            !d110Connected ||
-                            !qrItem
-                          }
-                          className="rounded-xl border border-white/20 bg-white px-4 py-3 text-sm font-black text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          {d110Busy
-                            ? "Printing..."
-                            : "Print"}
-                        </button>
-                      </div>
-
-                      {d110Status && (
-                        <p className="mt-3 text-xs font-bold leading-5 text-zinc-500">
-                          {d110Status}
-                        </p>
-                      )}
-                    </div>
-                  )}
-
-                  <div className="mt-5 rounded-2xl border border-zinc-800 bg-black p-4">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">
-                          Direct Bluetooth
-                        </p>
-
-                        <p className="mt-1 text-sm font-black text-white">
-                          Niimbot D11_H • 12 × 40 mm
-                        </p>
-
-                        <p className="mt-1 text-xs leading-5 text-zinc-600">
-                          Uses the full D11_H printable area with a large QR code for easier scanning.
-                        </p>
-                      </div>
 
                       <span
                         className={`w-fit rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-wider ${
-                          niimbotConnected
+                          (
+                            selectedLabelPrinter === "p31s"
+                              ? p31sConnected
+                              : selectedLabelPrinter === "d110"
+                                ? d110Connected
+                                : niimbotConnected
+                          )
                             ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
                             : "border-zinc-800 bg-zinc-950 text-zinc-600"
                         }`}
                       >
-                        {niimbotConnected
+                        {(
+                          selectedLabelPrinter === "p31s"
+                            ? p31sConnected
+                            : selectedLabelPrinter === "d110"
+                              ? d110Connected
+                              : niimbotConnected
+                        )
                           ? "Connected"
                           : "Not Connected"}
                       </span>
                     </div>
 
-                    {!niimbotSupported && (
-                      <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs font-bold leading-5 text-amber-200">
-                        This browser/device does not expose Web Bluetooth. Open MintRadar over HTTPS in a supported Bluetooth browser/device to test the D11_H.
-                      </div>
-                    )}
-
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {!niimbotConnected && (
-                        <button
-                          type="button"
-                          onClick={() => void connectD11H()}
-                          disabled={niimbotBusy || !niimbotSupported}
-                          className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          {niimbotBusy
-                            ? "Connecting..."
-                            : "Connect D11_H"}
-                        </button>
+                    {selectedLabelPrinter === "p31s" &&
+                      !p31sSupported && (
+                        <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs font-bold leading-5 text-amber-200">
+                          Bluetooth printing is not available for this printer on this browser/device.
+                        </div>
                       )}
+
+                    {selectedLabelPrinter === "d11h" &&
+                      !niimbotSupported && (
+                        <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs font-bold leading-5 text-amber-200">
+                          Bluetooth printing is not available for this printer on this browser/device.
+                        </div>
+                      )}
+
+                    <div className="mt-4 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (
+                            selectedLabelPrinter ===
+                            "p31s"
+                          ) {
+                            void connectP31S();
+                            return;
+                          }
+
+                          if (
+                            selectedLabelPrinter ===
+                            "d110"
+                          ) {
+                            void connectD110Native();
+                            return;
+                          }
+
+                          void connectD11H();
+                        }}
+                        disabled={
+                          selectedLabelPrinter === "p31s"
+                            ? p31sBusy ||
+                              !p31sSupported
+                            : selectedLabelPrinter === "d110"
+                              ? d110Busy
+                              : niimbotBusy ||
+                                !niimbotSupported
+                        }
+                        className="flex-1 rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {(
+                          selectedLabelPrinter === "p31s"
+                            ? p31sBusy
+                            : selectedLabelPrinter === "d110"
+                              ? d110Busy
+                              : niimbotBusy
+                        )
+                          ? "Connecting..."
+                          : "Connect"}
+                      </button>
 
                       <button
                         type="button"
-                        onClick={() => void printQrLabelD11H()}
-                        disabled={niimbotBusy || !niimbotSupported}
-                        className="rounded-xl bg-emerald-400 px-4 py-3 text-sm font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+                        onClick={() => {
+                          if (
+                            selectedLabelPrinter ===
+                            "p31s"
+                          ) {
+                            void printQrLabelP31S();
+                            return;
+                          }
+
+                          if (
+                            selectedLabelPrinter ===
+                            "d110"
+                          ) {
+                            void printQrLabelD110Native();
+                            return;
+                          }
+
+                          void printQrLabelD11H();
+                        }}
+                        disabled={
+                          selectedLabelPrinter === "p31s"
+                            ? p31sBusy ||
+                              !p31sSupported
+                            : selectedLabelPrinter === "d110"
+                              ? d110Busy ||
+                                !d110Connected ||
+                                !qrItem
+                              : niimbotBusy ||
+                                !niimbotSupported
+                        }
+                        className="flex-1 rounded-xl bg-emerald-400 px-4 py-3 text-sm font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
                       >
-                        {niimbotBusy
+                        {(
+                          selectedLabelPrinter === "p31s"
+                            ? p31sBusy
+                            : selectedLabelPrinter === "d110"
+                              ? d110Busy
+                              : niimbotBusy
+                        )
                           ? "Working..."
-                          : niimbotConnected
-                            ? "Print to D11_H"
-                            : "Connect & Print"}
+                          : "Print"}
                       </button>
                     </div>
 
-                    {niimbotStatus && (
+                    {(selectedLabelPrinter === "p31s"
+                      ? p31sStatus
+                      : selectedLabelPrinter === "d110"
+                        ? d110Status
+                        : niimbotStatus) && (
                       <p className="mt-3 text-xs font-bold leading-5 text-zinc-500">
-                        {niimbotStatus}
+                        {selectedLabelPrinter === "p31s"
+                          ? p31sStatus
+                          : selectedLabelPrinter === "d110"
+                            ? d110Status
+                            : niimbotStatus}
                       </p>
                     )}
                   </div>
