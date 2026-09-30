@@ -2487,52 +2487,28 @@ export default function VendorDashboardPage() {
     }
 
     // --------------------------------------------------
-    // NIIMBOT D110_M • FIRST REAL MINT RADAR LABEL
+    // NIIMBOT D110_M • P31S-MATCHED + ORIENTATION-AWARE
     // --------------------------------------------------
     //
-    // Transport checkpoint already printed correctly at 96 px wide.
-    // Keep that proven printhead width and extend the feed axis to
-    // 320 px (~40 mm at 203 dpi) for the first real-label calibration.
+    // The physical D110_M transport remains 96 × 320.
     //
-    // This is intentionally portrait and conservative:
-    //   96 × 320
-    //   vendor branding
-    //   condition / grade
-    //   large listing QR
-    //   price / scan-for-price
+    // Vertical:
+    //   Render directly into the 96 × 320 transport canvas.
     //
-    // Once this physically prints and scans, we calibrate margins only.
+    // Horizontal:
+    //   Render a logical 320 × 96 horizontal label, then rotate that
+    //   finished label into the proven 96 × 320 transport raster.
+    //
+    // Native Swift / B1 transport does not need to know orientation.
     // --------------------------------------------------
 
-    const canvas =
+    const transportCanvas =
       document.createElement(
         "canvas"
       );
 
-    canvas.width = 96;
-    canvas.height = 320;
-
-    const ctx =
-      canvas.getContext(
-        "2d"
-      );
-
-    if (!ctx) {
-      throw new Error(
-        "MintRadar could not create the D110_M label image."
-      );
-    }
-
-    ctx.imageSmoothingEnabled =
-      false;
-
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(
-      0,
-      0,
-      canvas.width,
-      canvas.height
-    );
+    transportCanvas.width = 96;
+    transportCanvas.height = 320;
 
     const graded =
       isGraded(qrItem);
@@ -2563,6 +2539,354 @@ export default function VendorDashboardPage() {
     const listingUrl =
       `${window.location.origin}/l/${shortCode}`;
 
+    const loadD110VendorLogo =
+      async () => {
+        if (
+          labelBrandingMode !==
+            "logo" ||
+          !vendorLogoUrl
+        ) {
+          return null;
+        }
+
+        try {
+          const response =
+            await fetch(
+              vendorLogoUrl,
+              {
+                mode: "cors",
+                cache: "no-store",
+              }
+            );
+
+          if (!response.ok) {
+            throw new Error(
+              `Vendor logo request failed with status ${response.status}.`
+            );
+          }
+
+          const blob =
+            await response.blob();
+
+          const localDataUrl =
+            await new Promise<string>(
+              (
+                resolve,
+                reject
+              ) => {
+                const reader =
+                  new FileReader();
+
+                reader.onload =
+                  () => {
+                    if (
+                      typeof reader.result ===
+                      "string"
+                    ) {
+                      resolve(
+                        reader.result
+                      );
+                    } else {
+                      reject(
+                        new Error(
+                          "MintRadar could not convert the vendor logo into a local image."
+                        )
+                      );
+                    }
+                  };
+
+                reader.onerror =
+                  () =>
+                    reject(
+                      new Error(
+                        "MintRadar could not read the vendor logo."
+                      )
+                    );
+
+                reader.readAsDataURL(
+                  blob
+                );
+              }
+            );
+
+          return await loadLabelImage(
+            localDataUrl
+          );
+        } catch (error) {
+          console.warn(
+            "D110_M vendor logo could not be loaded safely. Falling back to business name.",
+            error
+          );
+
+          return null;
+        }
+      };
+
+    const [
+      vendorLogo,
+      qrData,
+    ] =
+      await Promise.all([
+        loadD110VendorLogo(),
+        QRCode.toDataURL(
+          listingUrl,
+          {
+            width: 416,
+            margin: 4,
+            errorCorrectionLevel:
+              "L",
+          }
+        ),
+      ]);
+
+    const qr =
+      await loadLabelImage(
+        qrData
+      );
+
+    if (
+      labelOrientation ===
+      "horizontal"
+    ) {
+      // ----------------------------------------------
+      // LOGICAL HORIZONTAL LABEL • 320 × 96
+      // ----------------------------------------------
+
+      const logicalCanvas =
+        document.createElement(
+          "canvas"
+        );
+
+      logicalCanvas.width = 320;
+      logicalCanvas.height = 96;
+
+      const ctx =
+        logicalCanvas.getContext(
+          "2d"
+        );
+
+      if (!ctx) {
+        throw new Error(
+          "MintRadar could not create the horizontal D110_M label image."
+        );
+      }
+
+      ctx.imageSmoothingEnabled =
+        false;
+
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(
+        0,
+        0,
+        logicalCanvas.width,
+        logicalCanvas.height
+      );
+
+      ctx.fillStyle = "#000000";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+
+      // QR stays large and isolated on the left, matching the
+      // horizontal P31S information hierarchy.
+      const qrSize = 86;
+
+      ctx.drawImage(
+        qr,
+        5,
+        5,
+        qrSize,
+        qrSize
+      );
+
+      const contentLeft = 104;
+      const contentRight = 312;
+      const contentWidth =
+        contentRight -
+        contentLeft;
+
+      // Vendor branding.
+      if (vendorLogo) {
+        const maxLogoWidth =
+          contentWidth;
+
+        const maxLogoHeight =
+          24;
+
+        const scale =
+          Math.min(
+            maxLogoWidth /
+              vendorLogo.naturalWidth,
+            maxLogoHeight /
+              vendorLogo.naturalHeight
+          );
+
+        const logoWidth =
+          Math.max(
+            1,
+            Math.round(
+              vendorLogo.naturalWidth *
+                scale
+            )
+          );
+
+        const logoHeight =
+          Math.max(
+            1,
+            Math.round(
+              vendorLogo.naturalHeight *
+                scale
+            )
+          );
+
+        ctx.drawImage(
+          vendorLogo,
+          contentLeft,
+          8,
+          logoWidth,
+          logoHeight
+        );
+      } else {
+        const vendorText =
+          vendorName.toUpperCase();
+
+        const vendorSize =
+          fitCanvasText(
+            ctx,
+            vendorText,
+            contentWidth,
+            15,
+            8,
+            900
+          );
+
+        ctx.font =
+          `900 ${vendorSize}px Arial, Helvetica, sans-serif`;
+
+        ctx.fillText(
+          vendorText,
+          contentLeft,
+          8
+        );
+      }
+
+      // Condition / grade.
+      const conditionSize =
+        fitCanvasText(
+          ctx,
+          condition,
+          contentWidth,
+          14,
+          8,
+          800
+        );
+
+      ctx.font =
+        `800 ${conditionSize}px Arial, Helvetica, sans-serif`;
+
+      ctx.fillText(
+        condition,
+        contentLeft,
+        39
+      );
+
+      // Price / scan CTA.
+      const bottomSize =
+        fitCanvasText(
+          ctx,
+          bottomText,
+          contentWidth,
+          20,
+          10,
+          900
+        );
+
+      ctx.font =
+        `900 ${bottomSize}px Arial, Helvetica, sans-serif`;
+
+      ctx.fillText(
+        bottomText,
+        contentLeft,
+        65
+      );
+
+      // ----------------------------------------------
+      // ROTATE LOGICAL 320 × 96 INTO PHYSICAL 96 × 320
+      // ----------------------------------------------
+
+      const transportCtx =
+        transportCanvas.getContext(
+          "2d"
+        );
+
+      if (!transportCtx) {
+        throw new Error(
+          "MintRadar could not create the D110_M transport image."
+        );
+      }
+
+      transportCtx.imageSmoothingEnabled =
+        false;
+
+      transportCtx.fillStyle =
+        "#ffffff";
+
+      transportCtx.fillRect(
+        0,
+        0,
+        transportCanvas.width,
+        transportCanvas.height
+      );
+
+      transportCtx.save();
+
+      // Clockwise 90° rotation:
+      // logical 320×96 -> physical transport 96×320.
+      transportCtx.translate(
+        96,
+        0
+      );
+
+      transportCtx.rotate(
+        Math.PI / 2
+      );
+
+      transportCtx.drawImage(
+        logicalCanvas,
+        0,
+        0
+      );
+
+      transportCtx.restore();
+
+      return transportCanvas;
+    }
+
+    // ----------------------------------------------
+    // VERTICAL LABEL • DIRECT 96 × 320
+    // ----------------------------------------------
+
+    const ctx =
+      transportCanvas.getContext(
+        "2d"
+      );
+
+    if (!ctx) {
+      throw new Error(
+        "MintRadar could not create the vertical D110_M label image."
+      );
+    }
+
+    ctx.imageSmoothingEnabled =
+      false;
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(
+      0,
+      0,
+      transportCanvas.width,
+      transportCanvas.height
+    );
+
     ctx.fillStyle = "#000000";
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
@@ -2570,118 +2894,34 @@ export default function VendorDashboardPage() {
     const safeLeft = 5;
     const safeRight = 5;
     const safeWidth =
-      canvas.width -
+      transportCanvas.width -
       safeLeft -
       safeRight;
 
     const center =
-      canvas.width / 2;
+      transportCanvas.width / 2;
 
-    // ------------------------------
-    // VENDOR BRANDING
-    // ------------------------------
-
-    let logo:
-      HTMLImageElement |
-      null = null;
-
-    if (
-      labelBrandingMode ===
-        "logo" &&
-      vendorLogoUrl
-    ) {
-      try {
-        const response =
-          await fetch(
-            vendorLogoUrl,
-            {
-              mode: "cors",
-              cache: "no-store",
-            }
-          );
-
-        if (!response.ok) {
-          throw new Error(
-            `Vendor logo request failed with status ${response.status}.`
-          );
-        }
-
-        const blob =
-          await response.blob();
-
-        const localDataUrl =
-          await new Promise<string>(
-            (
-              resolve,
-              reject
-            ) => {
-              const reader =
-                new FileReader();
-
-              reader.onload =
-                () => {
-                  if (
-                    typeof reader.result ===
-                    "string"
-                  ) {
-                    resolve(
-                      reader.result
-                    );
-                  } else {
-                    reject(
-                      new Error(
-                        "MintRadar could not convert the vendor logo into a local image."
-                      )
-                    );
-                  }
-                };
-
-              reader.onerror =
-                () =>
-                  reject(
-                    new Error(
-                      "MintRadar could not read the vendor logo."
-                    )
-                  );
-
-              reader.readAsDataURL(
-                blob
-              );
-            }
-          );
-
-        logo =
-          await loadLabelImage(
-            localDataUrl
-          );
-      } catch (error) {
-        console.warn(
-          "D110_M vendor logo could not be loaded safely. Falling back to business name.",
-          error
-        );
-      }
-    }
-
-    if (logo) {
+    // Vendor branding.
+    if (vendorLogo) {
       const maxLogoWidth =
         safeWidth;
 
       const maxLogoHeight =
-        22;
+        26;
 
       const scale =
         Math.min(
           maxLogoWidth /
-            logo.naturalWidth,
+            vendorLogo.naturalWidth,
           maxLogoHeight /
-            logo.naturalHeight
+            vendorLogo.naturalHeight
         );
 
       const logoWidth =
         Math.max(
           1,
           Math.round(
-            logo.naturalWidth *
+            vendorLogo.naturalWidth *
               scale
           )
         );
@@ -2690,18 +2930,18 @@ export default function VendorDashboardPage() {
         Math.max(
           1,
           Math.round(
-            logo.naturalHeight *
+            vendorLogo.naturalHeight *
               scale
           )
         );
 
       ctx.drawImage(
-        logo,
+        vendorLogo,
         Math.round(
           center -
             logoWidth / 2
         ),
-        10,
+        12,
         logoWidth,
         logoHeight
       );
@@ -2714,7 +2954,7 @@ export default function VendorDashboardPage() {
           ctx,
           vendorText,
           safeWidth,
-          14,
+          15,
           8,
           900
         );
@@ -2725,20 +2965,17 @@ export default function VendorDashboardPage() {
       ctx.fillText(
         vendorText,
         center,
-        10
+        12
       );
     }
 
-    // ------------------------------
-    // CONDITION / GRADE
-    // ------------------------------
-
+    // Condition / grade.
     const conditionSize =
       fitCanvasText(
         ctx,
         condition,
         safeWidth,
-        13,
+        14,
         8,
         800
       );
@@ -2749,109 +2986,27 @@ export default function VendorDashboardPage() {
     ctx.fillText(
       condition,
       center,
-      39
+      50
     );
 
-    // ------------------------------
-    // LARGE LISTING QR
-    // ------------------------------
-
-    const qrRenderSize = 384;
-
-    const qrData =
-      await QRCode.toDataURL(
-        listingUrl,
-        {
-          width: qrRenderSize,
-          margin: 4,
-          errorCorrectionLevel:
-            "L",
-        }
-      );
-
-    const qr =
-      await loadLabelImage(
-        qrData
-      );
-
+    // Listing QR.
     const qrSize = 86;
 
     ctx.drawImage(
       qr,
       5,
-      62,
+      82,
       qrSize,
       qrSize
     );
 
-    // ------------------------------
-    // CARD IDENTITY
-    // ------------------------------
-
-    const cardName =
-      qrItem.cards?.name ||
-      "MintRadar Listing";
-
-    const cardNameSize =
-      fitCanvasText(
-        ctx,
-        cardName,
-        safeWidth,
-        13,
-        8,
-        900
-      );
-
-    ctx.font =
-      `900 ${cardNameSize}px Arial, Helvetica, sans-serif`;
-
-    ctx.fillText(
-      cardName,
-      center,
-      160
-    );
-
-    const setBits = [
-      qrItem.cards?.set_name,
-      qrItem.cards?.card_number
-        ? `#${qrItem.cards.card_number}`
-        : null,
-    ].filter(Boolean);
-
-    if (setBits.length) {
-      const setText =
-        setBits.join(" • ");
-
-      const setSize =
-        fitCanvasText(
-          ctx,
-          setText,
-          safeWidth,
-          10,
-          7,
-          700
-        );
-
-      ctx.font =
-        `700 ${setSize}px Arial, Helvetica, sans-serif`;
-
-      ctx.fillText(
-        setText,
-        center,
-        184
-      );
-    }
-
-    // ------------------------------
-    // PRICE / CTA
-    // ------------------------------
-
+    // Price / scan CTA.
     const bottomSize =
       fitCanvasText(
         ctx,
         bottomText,
         safeWidth,
-        18,
+        19,
         10,
         900
       );
@@ -2862,34 +3017,10 @@ export default function VendorDashboardPage() {
     ctx.fillText(
       bottomText,
       center,
-      222
+      196
     );
 
-    ctx.font =
-      "800 8px Arial, Helvetica, sans-serif";
-
-    ctx.fillText(
-      "SCAN • VIEW • BUY",
-      center,
-      252
-    );
-
-    // Bottom calibration bars make clipping/feed obvious on this first run.
-    ctx.fillRect(
-      10,
-      282,
-      76,
-      2
-    );
-
-    ctx.fillRect(
-      22,
-      294,
-      52,
-      2
-    );
-
-    return canvas;
+    return transportCanvas;
   }
 
   async function printQrLabelD110Native() {
