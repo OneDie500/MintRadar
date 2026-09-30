@@ -5264,27 +5264,12 @@ export default function VendorDashboardPage() {
                           className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
                         >
                           {d110Busy
-                            ? "Connecting & Identifying..."
+                            ? "Connecting..."
                             : d110Connected
-                              ? "Identify D110_M Again"
-                              : "Connect D110_M"}
+                              ? "Reconnect"
+                              : "Connect"}
                         </button>
 
-                        <button
-                          type="button"
-                          onClick={() =>
-                            void testPrintD110Native()
-                          }
-                          disabled={
-                            d110Busy ||
-                            !d110Connected
-                          }
-                          className="rounded-xl bg-emerald-400 px-4 py-3 text-sm font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          {d110Busy
-                            ? "Working..."
-                            : "Test Print D110_M"}
-                        </button>
 
                         <button
                           type="button"
@@ -5300,7 +5285,7 @@ export default function VendorDashboardPage() {
                         >
                           {d110Busy
                             ? "Printing..."
-                            : "Print Real Label"}
+                            : "Print"}
                         </button>
                       </div>
 
@@ -5383,32 +5368,6 @@ export default function VendorDashboardPage() {
                   </div>
 
                   <div className="sticky bottom-0 z-10 -mx-5 mt-5 border-t border-zinc-900 bg-zinc-950/95 px-5 pb-1 pt-4 backdrop-blur">
-                    <div className="grid grid-cols-3 gap-2">
-                      <button
-                        type="button"
-                        onClick={closeQrLabel}
-                        className="rounded-xl border border-zinc-800 bg-black px-3 py-3 text-sm font-black text-zinc-400 transition hover:border-zinc-600 hover:text-white"
-                      >
-                        Close
-                      </button>
-
-                      <a
-                        href={`/listing/${qrItem.id}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="rounded-xl border border-zinc-800 bg-black px-3 py-3 text-center text-sm font-black text-zinc-300 transition hover:border-zinc-600 hover:text-white"
-                      >
-                        Preview
-                      </a>
-
-                      <button
-                        type="button"
-                        onClick={printQrLabel}
-                        className="rounded-xl bg-emerald-400 px-3 py-3 text-sm font-black text-black transition hover:bg-emerald-300"
-                      >
-                        Print
-                      </button>
-                    </div>
                   </div>
 
                   <p className="mt-4 text-center text-xs text-zinc-600">
