@@ -5437,9 +5437,6 @@ export default function VendorDashboardPage() {
                             Nearby Labelers
                           </p>
 
-                          <p className="mt-1 text-xs font-bold leading-5 text-zinc-500">
-                            Scan for supported labelers without connecting to them.
-                          </p>
                         </div>
 
                         <button
@@ -5511,17 +5508,14 @@ export default function VendorDashboardPage() {
                                   }}
                                   className="flex w-full items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-black px-3 py-3 text-left transition hover:border-emerald-400/40 hover:bg-emerald-400/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
                                 >
-                                  <div className="min-w-0">
-                                    <p className="truncate text-sm font-black text-white">
-                                      {printer.deviceName ||
-                                        profile?.displayName ||
-                                        "Bluetooth Labeler"}
-                                    </p>
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex min-w-0 items-center gap-2">
+                                      <p className="min-w-0 truncate text-sm font-black text-white">
+                                        {printer.deviceName ||
+                                          profile?.displayName ||
+                                          "Bluetooth Labeler"}
+                                      </p>
 
-                                    <p className="mt-1 truncate text-[11px] font-bold text-zinc-600">
-                                      {profile
-                                        ? `${profile.manufacturer} • ${profile.displayName}`
-                                        : "Unrecognized labeler"}
                                       {(() => {
                                         const proximity =
                                           getPrinterProximityLabel(
@@ -5530,12 +5524,18 @@ export default function VendorDashboardPage() {
 
                                         return (
                                           <span
-                                            className={`mt-2 inline-flex rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${proximity.tone}`}
+                                            className={`shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-wider ${proximity.tone}`}
                                           >
-                                            🟢 {proximity.label}
+                                            {proximity.label}
                                           </span>
                                         );
                                       })()}
+                                    </div>
+
+                                    <p className="mt-1 truncate text-[11px] font-bold text-zinc-600">
+                                      {profile
+                                        ? `${profile.manufacturer} • ${profile.displayName}`
+                                        : "Unrecognized labeler"}
                                     </p>
                                   </div>
 
