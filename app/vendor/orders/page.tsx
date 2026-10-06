@@ -105,6 +105,8 @@ export default function VendorOrdersPage() {
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
   const [savingOrderId, setSavingOrderId] = useState<string | null>(null);
+  const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null);
+  const [deletingAllOrders, setDeletingAllOrders] = useState(false);
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -226,6 +228,74 @@ export default function VendorOrdersPage() {
     }
   }
 
+  async function deleteOrder(order: VendorOrder) {
+    if (deletingOrderId || savingOrderId) return;
+
+    const confirmed = window.confirm(
+      `Delete order #${shortId(order.id)} permanently?\n\nThis will remove the order and its transaction items. This cannot be undone.`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      setDeletingOrderId(order.id);
+      setErrorMessage("");
+
+      const { error } = await supabase.rpc("delete_vendor_order", {
+        p_order_id: order.id,
+      });
+
+      if (error) throw error;
+
+      setOrders((current) =>
+        current.filter((entry) => entry.id !== order.id)
+      );
+
+      setExpandedOrderId((current) =>
+        current === order.id ? null : current
+      );
+    } catch (error: any) {
+      console.error("Order delete error:", error);
+      setErrorMessage(
+        error?.message || "The order could not be deleted."
+      );
+    } finally {
+      setDeletingOrderId(null);
+    }
+  }
+
+  async function deleteAllOrders() {
+    if (deletingAllOrders || deletingOrderId || savingOrderId || !vendorId || orders.length === 0) return;
+
+    const confirmation = window.prompt(
+      `Delete ALL ${orders.length} orders for ${vendorName}?\n\nThis permanently removes every order and its transaction items. This cannot be undone.\n\nType DELETE to continue.`
+    );
+
+    if (confirmation !== "DELETE") return;
+
+    try {
+      setDeletingAllOrders(true);
+      setErrorMessage("");
+
+      const { error } = await supabase.rpc("delete_all_vendor_orders", {
+        p_vendor_id: vendorId,
+      });
+
+      if (error) throw error;
+
+      setOrders([]);
+      setExpandedOrderId(null);
+      setFilter("all");
+    } catch (error: any) {
+      console.error("Delete all orders error:", error);
+      setErrorMessage(
+        error?.message || "MintRadar could not delete all vendor orders."
+      );
+    } finally {
+      setDeletingAllOrders(false);
+    }
+  }
+
   async function updateStatus(order: VendorOrder, status: OrderStatus) {
     if (savingOrderId) return;
 
@@ -337,6 +407,19 @@ export default function VendorOrdersPage() {
           </div>
 
           <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={
+                deletingAllOrders ||
+                deletingOrderId !== null ||
+                savingOrderId !== null ||
+                orders.length === 0
+              }
+              onClick={() => void deleteAllOrders()}
+              className="rounded-xl border border-red-900/70 bg-red-950/20 px-4 py-2.5 text-sm font-black text-red-300 transition hover:bg-red-950/40 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {deletingAllOrders ? "Deleting All..." : "Delete All Orders"}
+            </button>
             <Link
               href="/vendor"
               className="rounded-xl border border-zinc-700 px-4 py-2.5 text-sm font-black hover:bg-zinc-900"
@@ -484,7 +567,7 @@ export default function VendorOrdersPage() {
                         <div className="flex flex-wrap gap-2 sm:justify-end">
                           <StatusActions
                             order={order}
-                            busy={savingOrderId === order.id}
+                            busy={savingOrderId === order.id || deletingAllOrders}
                             onUpdate={updateStatus}
                           />
 
@@ -498,6 +581,21 @@ export default function VendorOrdersPage() {
                             className="rounded-xl border border-zinc-700 px-4 py-2.5 text-sm font-black hover:bg-zinc-800"
                           >
                             {expanded ? "Hide Details" : "View Order"}
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={
+                              deletingAllOrders ||
+                              deletingOrderId === order.id ||
+                              savingOrderId === order.id
+                            }
+                            onClick={() => void deleteOrder(order)}
+                            className="rounded-xl border border-red-900/60 bg-red-950/10 px-4 py-2.5 text-sm font-black text-red-300 transition hover:bg-red-950/30 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {deletingOrderId === order.id
+                              ? "Deleting..."
+                              : "Delete Order"}
                           </button>
                         </div>
                       </div>
