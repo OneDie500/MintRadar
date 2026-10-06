@@ -720,11 +720,6 @@ function buildNotes({
     );
   }
 
-  if (portfolioName.trim()) {
-    parts.push(
-      `Portfolio: ${portfolioName.trim()}`
-    );
-  }
 
   return parts.join(" • ");
 }
