@@ -9,6 +9,10 @@ type PokemonTcgCard = {
   set?: {
     id?: string;
     name?: string;
+    cardCount?: {
+      official?: number;
+      total?: number;
+    };
   };
   images?: {
     small?: string;
@@ -72,6 +76,11 @@ function normalizeCardNumber(value?: string | null) {
   return (value || "")
     .trim()
     .replace(/^#/, "")
+    .trim();
+}
+
+function shortCardNumber(value?: string | null) {
+  return normalizeCardNumber(value)
     .split("/")[0]
     .trim();
 }
@@ -84,9 +93,9 @@ function normalizeSet(value?: string | null) {
     .replace(/\bpokemon\b/g, " ")
     .replace(/\btrading card game\b/g, " ")
     .replace(/\bbase set\b/g, " ")
-    .replace(/\btrainer gallery\b/g, " ")
-    .replace(/\bgalarian gallery\b/g, " ")
-    .replace(/\bshiny vault\b/g, " ")
+    .replace(/\btrainer gallery\b/g, " trainer gallery ")
+    .replace(/\bgalarian gallery\b/g, " galarian gallery ")
+    .replace(/\bshiny vault\b/g, " shiny vault ")
     .replace(/\bpromo cards?\b/g, " promo ")
     .replace(/\bblack star promos?\b/g, " promo ")
     .replace(/\bblack star\b/g, " promo ")
@@ -189,67 +198,139 @@ const VARIANT_HINTS = [
   "secret rare",
   "rainbow rare",
   "gold",
+  "stamp",
+  "stamped",
+  "blister",
+  "blisters",
+  "checklane",
+  "check lane",
+  "prerelease",
+  "pre release",
+  "build and battle",
+  "build & battle",
 ];
+
+const LANGUAGE_TAGS: Record<string, string> = {
+  en: "EN",
+  eng: "EN",
+  english: "EN",
+  jp: "JP",
+  jpn: "JP",
+  japanese: "JP",
+  cn: "CN",
+  chn: "CN",
+  chinese: "CN",
+};
+
+const GENERIC_SET_NAMES = [
+  "miscellaneous cards products",
+  "miscellaneous cards and products",
+  "miscellaneous promos",
+  "promotional cards",
+  "promo cards",
+  "alternate art promos",
+  "alternate art promo",
+  "alternate arts",
+  "alternate art",
+  "other",
+  "unknown",
+];
+
+function normalizeMetadataText(value?: string | null) {
+  return (value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isGenericSetName(value?: string | null) {
+  const normalized = normalizeMetadataText(value);
+
+  if (!normalized) {
+    return false;
+  }
+
+  return GENERIC_SET_NAMES.some(
+    (candidate) =>
+      normalized === candidate ||
+      normalized.includes(candidate)
+  );
+}
+
+function variantSetHint(variant?: string | null) {
+  if (!variant) {
+    return null;
+  }
+
+  const withoutDescriptor = variant
+    .replace(/\b(?:promo\s+)?stamp(?:ed)?\b/gi, " ")
+    .replace(/\b(?:triple|single|three[ -]?pack|3[ -]?pack)?\s*blisters?\b/gi, " ")
+    .replace(/\bcheck\s*lane\s*blisters?\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return withoutDescriptor || null;
+}
 
 function splitCanonicalNameAndVariant(
   value: string
 ) {
   const original = value.trim();
+  let workingName = original;
+  const variants: string[] = [];
+  let language: string | null = null;
 
-  const match =
-    original.match(
+  while (workingName) {
+    const match = workingName.match(
       /^(.*?)\s*\(([^()]+)\)\s*$/
     );
 
-  if (!match) {
-    return {
-      canonicalName: original,
-      variant: null as string | null,
-    };
-  }
+    if (!match) {
+      break;
+    }
 
-  const possibleName =
-    match[1].trim();
+    const possibleName = match[1].trim();
+    const metadata = match[2].trim();
+    const normalizedMetadata =
+      normalizeMetadataText(metadata);
 
-  const possibleVariant =
-    match[2].trim();
+    const languageTag =
+      LANGUAGE_TAGS[normalizedMetadata];
 
-  const normalizedVariant =
-    possibleVariant
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
+    if (languageTag) {
+      language = language || languageTag;
+      workingName = possibleName;
+      continue;
+    }
 
-  const looksLikeVariant =
-    VARIANT_HINTS.some(
-      (hint) =>
-        normalizedVariant ===
-          hint.replace(
-            /[^a-z0-9]+/g,
-            " "
-          ) ||
-        normalizedVariant.includes(
-          hint.replace(
-            /[^a-z0-9]+/g,
-            " "
-          )
-        )
-    );
+    const looksLikeVariant =
+      VARIANT_HINTS.some((hint) => {
+        const normalizedHint =
+          normalizeMetadataText(hint);
 
-  if (
-    !possibleName ||
-    !looksLikeVariant
-  ) {
-    return {
-      canonicalName: original,
-      variant: null as string | null,
-    };
+        return (
+          normalizedMetadata === normalizedHint ||
+          normalizedMetadata.includes(normalizedHint)
+        );
+      });
+
+    if (!possibleName || !looksLikeVariant) {
+      break;
+    }
+
+    variants.unshift(metadata);
+    workingName = possibleName;
   }
 
   return {
-    canonicalName: possibleName,
-    variant: possibleVariant,
+    canonicalName: workingName || original,
+    variant: variants.length
+      ? variants.join(" / ")
+      : null,
+    language,
   };
 }
 
@@ -292,6 +373,35 @@ function namesMatch(
     exact: false,
   };
 }
+
+function localizedNameLooksCompatible(
+  wantedName: string,
+  actualName?: string | null
+) {
+  const wanted = normalize(wantedName);
+  const actual = normalize(actualName);
+
+  if (!wanted || !actual) {
+    return false;
+  }
+
+  // If TCGdex returns a Latin/English-compatible name, require it to
+  // identify the same Pokémon/card name. Fully localized JP/CN names
+  // cannot be compared safely here, so they are validated later by
+  // collector number + set confidence instead of being guessed by name.
+  const actualHasLatinLetters = /[a-z]/i.test(actualName || "");
+
+  if (!actualHasLatinLetters) {
+    return true;
+  }
+
+  return (
+    actual === wanted ||
+    actual.includes(wanted) ||
+    wanted.includes(actual)
+  );
+}
+
 
 function findKnownImageOverride({
   name,
@@ -348,54 +458,68 @@ function findKnownImageOverride({
 function buildCollectorNumberVariants(
   value?: string | null
 ) {
-  const normalized =
+  const full =
     normalizeCardNumber(value);
 
-  if (!normalized) {
+  if (!full) {
     return [] as string[];
   }
 
-  const compact =
-    normalized
-      .replace(/\s+/g, "")
-      .toUpperCase();
+  const short =
+    shortCardNumber(full);
 
   const variants =
     new Set<string>([
-      normalized,
-      compact,
+      full,
+      short,
     ]);
 
-  const prefixed =
-    compact.match(
-      /^([A-Z]+)0*(\d+)$/
-    );
+  for (
+    const source of
+    [full, short]
+  ) {
+    const compact =
+      source
+        .replace(/\s+/g, "")
+        .toUpperCase();
 
-  if (prefixed) {
-    const prefix = prefixed[1];
-    const digits = prefixed[2];
+    if (!compact) {
+      continue;
+    }
 
-    variants.add(
-      `${prefix}${digits}`
-    );
+    variants.add(compact);
 
-    if (
-      ["SVP", "SWSH", "SM", "XY", "CC"]
-        .includes(prefix)
-    ) {
+    const prefixed =
+      compact.match(
+        /^([A-Z]+)0*(\d+)$/
+      );
+
+    if (prefixed) {
+      const prefix = prefixed[1];
+      const digits = prefixed[2];
+
       variants.add(
-        String(Number(digits))
+        `${prefix}${digits}`
+      );
+
+      if (
+        ["SVP", "SWSH", "SM", "XY", "CC"]
+          .includes(prefix)
+      ) {
+        variants.add(
+          String(Number(digits))
+        );
+      }
+    }
+
+    const numeric =
+      compact.match(/^0*(\d+)$/);
+
+    if (numeric) {
+      variants.add(
+        String(Number(numeric[1]))
       );
     }
-  }
-
-  const numeric =
-    compact.match(/^0*(\d+)$/);
-
-  if (numeric) {
-    variants.add(
-      String(Number(numeric[1]))
-    );
   }
 
   return Array.from(variants)
@@ -429,18 +553,30 @@ function scoreCard(
     return -1;
   }
 
-  const wantedNumber =
-    normalize(
-      normalizeCardNumber(
+  const wantedNumbers =
+    new Set(
+      buildCollectorNumberVariants(
         cardNumber
+      ).map((value) =>
+        normalize(value)
       )
     );
 
-  const cardNumberValue =
-    normalize(
-      normalizeCardNumber(
+  const cardNumberValues =
+    new Set(
+      buildCollectorNumberVariants(
         card.number
+      ).map((value) =>
+        normalize(value)
       )
+    );
+
+  const numberMatches =
+    wantedNumbers.size === 0 ||
+    Array.from(
+      wantedNumbers
+    ).some((value) =>
+      cardNumberValues.has(value)
     );
 
   let score =
@@ -448,11 +584,8 @@ function scoreCard(
       ? 1000
       : 250;
 
-  if (wantedNumber) {
-    if (
-      cardNumberValue ===
-      wantedNumber
-    ) {
+  if (wantedNumbers.size) {
+    if (numberMatches) {
       score += 700;
     } else {
       score -= 500;
@@ -475,6 +608,75 @@ function scoreCard(
   return score;
 }
 
+
+async function verifiedPokemonTcgVariantImageUrl({
+  cardId,
+  requestedCardNumber,
+}: {
+  cardId?: string | null;
+  requestedCardNumber?: string | null;
+}) {
+  const shortRequested =
+    shortCardNumber(requestedCardNumber)
+      .replace(/\s+/g, "")
+      .toLowerCase();
+
+  const alternateMatch =
+    shortRequested.match(/^(\d+)([a-z])$/i);
+
+  if (!alternateMatch || !cardId) {
+    return null;
+  }
+
+  const baseNumber = alternateMatch[1];
+
+  const idMatch =
+    cardId.match(/^(.+)-(\d+)$/i);
+
+  if (!idMatch) {
+    return null;
+  }
+
+  const setId = idMatch[1];
+  const providerBaseNumber = idMatch[2];
+
+  if (
+    String(Number(providerBaseNumber)) !==
+    String(Number(baseNumber))
+  ) {
+    return null;
+  }
+
+  const imageUrl =
+    `https://images.pokemontcg.io/${encodeURIComponent(
+      setId
+    )}/${encodeURIComponent(
+      shortRequested
+    )}_hires.png`;
+
+  const controller = new AbortController();
+
+  const timeout = setTimeout(
+    () => controller.abort(),
+    5000
+  );
+
+  try {
+    const response = await fetch(imageUrl, {
+      method: "HEAD",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+
+    return response.ok
+      ? imageUrl
+      : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 function tcgdexImageUrl(
   imageBase?: string | null
@@ -531,7 +733,18 @@ async function fetchJsonWithTimeout<T>(
   }
 }
 
-async function resolveTcgdexImage({
+type TcgdexLanguage = "en" | "ja" | "zh-cn" | "zh-tw";
+
+type TcgdexSetBrief = {
+  id?: string | null;
+  name?: string | null;
+};
+
+const JP_SET_NAME_ALIASES: Record<string, string[]> = {
+  "eevee heroes": ["イーブイヒーローズ"],
+};
+
+async function resolveJapaneseSetScopedImage({
   name,
   setName,
   cardNumber,
@@ -539,6 +752,1609 @@ async function resolveTcgdexImage({
   name: string;
   setName?: string | null;
   cardNumber?: string | null;
+}) {
+  const normalizedSet =
+    normalizeMetadataText(setName || "");
+
+  const aliases =
+    JP_SET_NAME_ALIASES[normalizedSet] || [];
+
+  if (!setName || !aliases.length || !cardNumber) {
+    return null;
+  }
+
+  const sets =
+    await fetchJsonWithTimeout<TcgdexSetBrief[]>(
+      "https://api.tcgdex.net/v2/ja/sets"
+    );
+
+  if (!Array.isArray(sets)) {
+    return null;
+  }
+
+  const matchingSets =
+    sets.filter((set) => {
+      const actual =
+        (set?.name || "").trim();
+
+      return aliases.some(
+        (alias) =>
+          actual === alias ||
+          actual.includes(alias) ||
+          alias.includes(actual)
+      );
+    });
+
+  if (matchingSets.length !== 1) {
+    return null;
+  }
+
+  const setId =
+    matchingSets[0]?.id;
+
+  if (!setId) {
+    return null;
+  }
+
+  type TcgdexSetDetail = {
+    id?: string | null;
+    name?: string | null;
+    cards?: TcgdexCardBrief[];
+  };
+
+  // TCGdex's set/card endpoint is keyed by the provider's localId, not by
+  // marketplace full-number notation such as "082/069". Resolve the set first
+  // and inspect its own card list so the number can never escape this set.
+  const setDetail =
+    await fetchJsonWithTimeout<TcgdexSetDetail>(
+      `https://api.tcgdex.net/v2/ja/sets/${encodeURIComponent(
+        setId
+      )}`
+    );
+
+  if (
+    !setDetail ||
+    !Array.isArray(setDetail.cards)
+  ) {
+    return null;
+  }
+
+  const requestedNumbers =
+    new Set(
+      buildCollectorNumberVariants(
+        cardNumber
+      ).map((value) =>
+        normalize(value)
+      )
+    );
+
+  const matchingCards =
+    setDetail.cards.filter((card) => {
+      const candidateNumbers =
+        new Set(
+          buildCollectorNumberVariants(
+            card.localId
+          ).map((value) =>
+            normalize(value)
+          )
+        );
+
+      return Array.from(
+        requestedNumbers
+      ).some((value) =>
+        candidateNumbers.has(value)
+      );
+    });
+
+  if (matchingCards.length !== 1) {
+    return null;
+  }
+
+  const matchedBrief =
+    matchingCards[0];
+
+  if (
+    !matchedBrief?.id ||
+    !matchedBrief?.localId
+  ) {
+    return null;
+  }
+
+  const card =
+    await fetchJsonWithTimeout<TcgdexCardDetail>(
+      `https://api.tcgdex.net/v2/ja/cards/${encodeURIComponent(
+        matchedBrief.id
+      )}`
+    );
+
+  if (!card || !card.id || !card.localId) {
+    return null;
+  }
+
+  const actualSetName =
+    card.set?.name ||
+    setDetail.name ||
+    matchingSets[0]?.name ||
+    "";
+
+  const setMatches =
+    aliases.some(
+      (alias) =>
+        actualSetName === alias ||
+        actualSetName.includes(alias) ||
+        alias.includes(actualSetName)
+    );
+
+  if (!setMatches) {
+    return null;
+  }
+
+  const imageUrl =
+    tcgdexImageUrl(
+      card.image ||
+      matchedBrief.image
+    );
+
+  if (!imageUrl) {
+    return null;
+  }
+
+  return {
+    imageUrl,
+    provider: "tcgdex-jp-set-scoped",
+    match: {
+      id: card.id,
+      name:
+        card.name ||
+        matchedBrief.name ||
+        name,
+      setName:
+        actualSetName ||
+        setName,
+      cardNumber:
+        card.localId ||
+        matchedBrief.localId ||
+        cardNumber,
+    },
+    setId,
+  };
+}
+
+
+type PokemonJapanCard = {
+  cardID?: string | number | null;
+  cardThumbFile?: string | null;
+  cardNameAltText?: string | null;
+};
+
+type PokemonJapanSearchResponse = {
+  hitCnt?: number | null;
+  maxPage?: number | null;
+  cardList?: PokemonJapanCard[] | null;
+};
+
+function normalizePrintedCollectorNumber(
+  value?: string | null
+) {
+  return (value || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, "")
+    .replace(/^#/, "")
+    .trim()
+    .toUpperCase();
+}
+
+function officialJapanDetailMatchesIdentity({
+  html,
+  setId,
+  cardNumber,
+}: {
+  html: string;
+  setId: string;
+  cardNumber: string;
+}) {
+  const wantedSet =
+    setId.trim().toUpperCase();
+
+  const wantedNumber =
+    normalizePrintedCollectorNumber(
+      cardNumber
+    );
+
+  if (!wantedSet || !wantedNumber) {
+    return false;
+  }
+
+  const wantedParts =
+    wantedNumber.match(
+      /^([^/]+)\/([^/]+)$/
+    );
+
+  if (!wantedParts) {
+    return false;
+  }
+
+  const numerator =
+    wantedParts[1]
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  const denominator =
+    wantedParts[2]
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  const escapedSet =
+    wantedSet
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  // The official Japanese card detail page prints the set code and
+  // collector number together, e.g. "S6a 082 / 069". Require both.
+  const identityPattern =
+    new RegExp(
+      `${escapedSet}\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*` +
+      `${numerator}\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*\\/` +
+      `\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*${denominator}`,
+      "i"
+    );
+
+  if (identityPattern.test(html)) {
+    return true;
+  }
+
+  // Some responses separate the set icon/alt text from the printed
+  // collector number. In that case, still require BOTH signals to
+  // appear in the same official detail document.
+  const setPattern =
+    new RegExp(
+      `(?:alt=["'][^"']*${escapedSet}[^"']*["']|>${escapedSet}<|\\b${escapedSet}\\b)`,
+      "i"
+    );
+
+  const numberPattern =
+    new RegExp(
+      `${numerator}\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*\\/` +
+      `\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*${denominator}`,
+      "i"
+    );
+
+  return (
+    setPattern.test(html) &&
+    numberPattern.test(html)
+  );
+}
+
+async function fetchOfficialJapanDetail(
+  cardId: string
+) {
+  const controller =
+    new AbortController();
+
+  const timeout = setTimeout(
+    () => controller.abort(),
+    7000
+  );
+
+  try {
+    const response = await fetch(
+      `https://www.pokemon-card.com/card-search/details.php/card/${encodeURIComponent(
+        cardId
+      )}/regu/all`,
+      {
+        method: "GET",
+        headers: {
+          Accept:
+            "text/html,application/xhtml+xml",
+          "Accept-Language":
+            "ja,en-US;q=0.9,en;q=0.8",
+          "User-Agent":
+            "Mozilla/5.0",
+        },
+        cache: "no-store",
+        signal: controller.signal,
+      }
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return await response.text();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function resolveOfficialPokemonJapanImage({
+  setId,
+  cardNumber,
+  name,
+  setName,
+}: {
+  setId?: string | null;
+  cardNumber?: string | null;
+  name: string;
+  setName?: string | null;
+}) {
+  if (!setId || !cardNumber) {
+    return null;
+  }
+
+  const wantedNumber =
+    normalizePrintedCollectorNumber(
+      cardNumber
+    );
+
+  if (
+    !wantedNumber ||
+    !wantedNumber.includes("/")
+  ) {
+    return null;
+  }
+
+  let page = 1;
+  let maxPage = 1;
+
+  while (page <= maxPage && page <= 20) {
+    const url = new URL(
+      "https://www.pokemon-card.com/card-search/resultAPI.php"
+    );
+
+    url.searchParams.set("keyword", "");
+    url.searchParams.set("se_ta", "");
+    url.searchParams.set(
+      "regulation_sidebar_form",
+      "all"
+    );
+    url.searchParams.set("illust", "");
+    url.searchParams.set(
+      "sm_and_keyword",
+      "true"
+    );
+    url.searchParams.set("pg", setId);
+    url.searchParams.set(
+      "page",
+      String(page)
+    );
+
+    const controller =
+      new AbortController();
+
+    const timeout = setTimeout(
+      () => controller.abort(),
+      7000
+    );
+
+    let response: Response;
+
+    try {
+      response = await fetch(
+        url.toString(),
+        {
+          method: "GET",
+          headers: {
+            Accept:
+              "application/json, text/javascript, */*; q=0.01",
+            "Accept-Language":
+              "ja,en-US;q=0.9,en;q=0.8",
+            Referer:
+              "https://www.pokemon-card.com/card-search/",
+            "X-Requested-With":
+              "XMLHttpRequest",
+            "User-Agent":
+              "Mozilla/5.0",
+          },
+          cache: "no-store",
+          signal: controller.signal,
+        }
+      );
+    } catch {
+      clearTimeout(timeout);
+      return null;
+    }
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      return null;
+    }
+
+    let payload: PokemonJapanSearchResponse;
+
+    try {
+      payload =
+        (await response.json()) as PokemonJapanSearchResponse;
+    } catch {
+      return null;
+    }
+
+    const cards =
+      Array.isArray(payload.cardList)
+        ? payload.cardList
+        : [];
+
+    maxPage =
+      typeof payload.maxPage === "number" &&
+      payload.maxPage > 0
+        ? payload.maxPage
+        : 1;
+
+    // Search only cards returned by the already-verified Japanese set.
+    // Detail pages are the authority for the actual printed collector
+    // number; search-result ordering is never treated as card identity.
+    const candidates =
+      cards.filter(
+        (card) =>
+          card.cardID != null &&
+          Boolean(
+            (card.cardThumbFile || "").trim()
+          )
+      );
+
+    const batchSize = 6;
+
+    for (
+      let index = 0;
+      index < candidates.length;
+      index += batchSize
+    ) {
+      const batch =
+        candidates.slice(
+          index,
+          index + batchSize
+        );
+
+      const checked =
+        await Promise.all(
+          batch.map(async (card) => {
+            const cardId =
+              String(card.cardID);
+
+            const html =
+              await fetchOfficialJapanDetail(
+                cardId
+              );
+
+            if (
+              !html ||
+              !officialJapanDetailMatchesIdentity({
+                html,
+                setId,
+                cardNumber,
+              })
+            ) {
+              return null;
+            }
+
+            return card;
+          })
+        );
+
+      const matches =
+        checked.filter(
+          (
+            card
+          ): card is PokemonJapanCard =>
+            Boolean(card)
+        );
+
+      if (matches.length > 1) {
+        // Never guess if the official site somehow returns more than one
+        // card with the same verified set + printed collector number.
+        return null;
+      }
+
+      if (matches.length === 1) {
+        const card = matches[0];
+
+        const thumb =
+          (card.cardThumbFile || "").trim();
+
+        if (!thumb) {
+          return null;
+        }
+
+        const imageUrl =
+          thumb.startsWith("http")
+            ? thumb
+            : `https://www.pokemon-card.com${
+                thumb.startsWith("/")
+                  ? thumb
+                  : `/${thumb}`
+              }`;
+
+        return {
+          imageUrl,
+          provider:
+            "pokemon-japan-official",
+          match: {
+            id:
+              card.cardID != null
+                ? String(card.cardID)
+                : null,
+            name:
+              card.cardNameAltText ||
+              name,
+            setName:
+              setName || null,
+            cardNumber,
+            setId,
+          },
+        };
+      }
+    }
+
+    page += 1;
+  }
+
+  return null;
+}
+
+
+type SimplifiedChineseSetIdentity = {
+  providerSetCode: string;
+  displaySetName: string;
+};
+
+const SIMPLIFIED_CHINESE_SET_IDENTITIES: Record<
+  string,
+  SimplifiedChineseSetIdentity
+> = {
+  "gem pack 2": {
+    providerSetCode: "CBB2C",
+    displaySetName: "Chinese Gem Pack 2",
+  },
+  "gem pack vol 2": {
+    providerSetCode: "CBB2C",
+    displaySetName: "Chinese Gem Pack 2",
+  },
+  "gem pack volume 2": {
+    providerSetCode: "CBB2C",
+    displaySetName: "Chinese Gem Pack 2",
+  },
+  "chinese gem pack 2": {
+    providerSetCode: "CBB2C",
+    displaySetName: "Chinese Gem Pack 2",
+  },
+};
+
+function simplifiedChineseSetIdentity(
+  setName?: string | null
+) {
+  const normalized =
+    normalizeMetadataText(setName || "");
+
+  return (
+    SIMPLIFIED_CHINESE_SET_IDENTITIES[
+      normalized
+    ] || null
+  );
+}
+
+function parseCbb2cCollectorNumber(
+  cardNumber?: string | null
+) {
+  const normalized =
+    normalizeCardNumber(cardNumber)
+      .replace(/\s+/g, "")
+      .toUpperCase();
+
+  const match =
+    normalized.match(
+      /^(\d{2})(\d{2})\/(\d{1,2})$/
+    );
+
+  if (!match) {
+    return null;
+  }
+
+  const family = match[1];
+  const printing = match[2];
+  const denominator =
+    match[3].padStart(2, "0");
+
+  return {
+    family,
+    printing,
+    denominator,
+    providerNumber:
+      `${family} ${printing}/${denominator}`,
+    compactNumber:
+      `${family}${printing}/${denominator}`,
+  };
+}
+
+function normalizeChineseVariant(
+  value?: string | null
+) {
+  const normalized =
+    normalizeMetadataText(value || "");
+
+  if (!normalized) {
+    return null;
+  }
+
+  if (
+    normalized.includes("poke ball") ||
+    normalized.includes("pokeball")
+  ) {
+    return "poke-ball";
+  }
+
+  if (
+    normalized.includes("master ball") ||
+    normalized.includes("masterball")
+  ) {
+    return "master-ball";
+  }
+
+  if (
+    normalized.includes("rotary") ||
+    normalized.includes("ripple") ||
+    normalized.includes("prismatic")
+  ) {
+    return "rotary";
+  }
+
+  if (
+    normalized.includes("star pattern") ||
+    normalized.includes("stars") ||
+    normalized.includes("glitter")
+  ) {
+    return "stars";
+  }
+
+  if (
+    normalized.includes("stamp")
+  ) {
+    return "stamp";
+  }
+
+  if (
+    normalized.includes("energy")
+  ) {
+    return "energy";
+  }
+
+  return normalized;
+}
+
+function cbb2cExpectedVariant(
+  printing: string
+) {
+  const value = Number(printing);
+
+  if (value === 1 || value === 2) {
+    return "energy";
+  }
+
+  if (value === 3 || value === 4) {
+    return "poke-ball";
+  }
+
+  if (value === 5 || value === 6) {
+    return "stars";
+  }
+
+  if (value === 7 || value === 8) {
+    return "rotary";
+  }
+
+  if (value === 9 || value === 10) {
+    return "master-ball";
+  }
+
+  if (value === 11 || value === 12) {
+    return "stamp";
+  }
+
+  // 13+ are distinct V / VMAX / special printings and are identified
+  // by exact set + collector number rather than a foil-pattern bucket.
+  return null;
+}
+
+function simplifiedTcgSlugPart(
+  value: string
+) {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function htmlEntityDecodeBasic(
+  value: string
+) {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&nbsp;/g, " ");
+}
+
+function absoluteSimplifiedTcgUrl(
+  value: string
+) {
+  const clean =
+    htmlEntityDecodeBasic(value.trim());
+
+  if (!clean) {
+    return null;
+  }
+
+  if (/^https?:\/\//i.test(clean)) {
+    return clean;
+  }
+
+  return `https://simplifiedtcg.com${
+    clean.startsWith("/") ? clean : `/${clean}`
+  }`;
+}
+
+async function fetchTextWithTimeout(
+  url: string,
+  timeoutMs = 7000
+) {
+  const controller =
+    new AbortController();
+
+  const timeout = setTimeout(
+    () => controller.abort(),
+    timeoutMs
+  );
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept:
+          "text/html,application/xhtml+xml",
+        "Accept-Language":
+          "en-US,en;q=0.9",
+        "User-Agent":
+          "Mozilla/5.0",
+      },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return await response.text();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function simplifiedTcgPageMatchesIdentity({
+  html,
+  providerSetCode,
+  providerNumber,
+  name,
+}: {
+  html: string;
+  providerSetCode: string;
+  providerNumber: string;
+  name: string;
+}) {
+  const text =
+    htmlEntityDecodeBasic(
+      html.replace(/<[^>]+>/g, " ")
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const normalizedText =
+    text.toLowerCase();
+
+  const wantedSet =
+    providerSetCode.toLowerCase();
+
+  const wantedNumber =
+    providerNumber
+      .replace(/\s+/g, "")
+      .toLowerCase();
+
+  const compactText =
+    text
+      .replace(/\s+/g, "")
+      .toLowerCase();
+
+  const wantedName =
+    normalizeMetadataText(name);
+
+  const pageNameCompatible =
+    !wantedName ||
+    normalizeMetadataText(text)
+      .includes(wantedName);
+
+  return (
+    normalizedText.includes(wantedSet) &&
+    compactText.includes(wantedNumber) &&
+    pageNameCompatible
+  );
+}
+
+function extractSimplifiedTcgImage(
+  html: string
+) {
+  const patterns = [
+    /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i,
+    /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+
+    if (match?.[1]) {
+      const absolute =
+        absoluteSimplifiedTcgUrl(
+          match[1]
+        );
+
+      if (absolute) {
+        return absolute;
+      }
+    }
+  }
+
+  // Fallback for card-image markup if social metadata is unavailable.
+  const imgMatches =
+    Array.from(
+      html.matchAll(
+        /<img[^>]+(?:src|data-src)=["']([^"']+)["'][^>]*>/gi
+      )
+    );
+
+  for (const match of imgMatches) {
+    const candidate =
+      absoluteSimplifiedTcgUrl(
+        match[1] || ""
+      );
+
+    if (
+      candidate &&
+      /(?:card|pokemon|cbb2c)/i.test(
+        candidate
+      )
+    ) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+
+const PRICECHARTING_CN_VARIANT_SLUGS = [
+  {
+    slug: "pokeball",
+    labels: [
+      "pokeball",
+      "poke ball",
+      "poke ball pattern",
+      "reverse holo",
+    ],
+  },
+  {
+    slug: "masterball",
+    labels: [
+      "masterball",
+      "master ball",
+      "master ball pattern",
+    ],
+  },
+  {
+    slug: "rotary",
+    labels: [
+      "rotary",
+      "rotary pattern",
+      "ripple",
+    ],
+  },
+];
+
+function priceChartingChineseNumber(
+  cardNumber?: string | null
+) {
+  const compact =
+    normalizeCardNumber(cardNumber)
+      .replace(/\s+/g, "")
+      .toUpperCase();
+
+  const match =
+    compact.match(
+      /^0*(\d+)\/\d+$/
+    );
+
+  if (!match) {
+    return null;
+  }
+
+  return String(Number(match[1]));
+}
+
+function priceChartingPageProvesCnIdentity({
+  html,
+  name,
+  cardNumber,
+  variantLabels,
+}: {
+  html: string;
+  name: string;
+  cardNumber: string;
+  variantLabels: string[];
+}) {
+  const decoded =
+    htmlEntityDecodeBasic(
+      html.replace(/<[^>]+>/g, " ")
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const normalized =
+    normalizeMetadataText(decoded);
+
+  const wantedName =
+    normalizeMetadataText(name);
+
+  const wantedFullNumber =
+    normalizeCardNumber(cardNumber)
+      .replace(/\s+/g, "")
+      .toLowerCase();
+
+  const compactText =
+    decoded
+      .replace(/\s+/g, "")
+      .toLowerCase();
+
+  const numberWithoutLeadingZeroes =
+    priceChartingChineseNumber(
+      cardNumber
+    );
+
+  const hasName =
+    Boolean(wantedName) &&
+    normalized.includes(wantedName);
+
+  const hasSetIdentity =
+    normalized.includes(
+      "chinese gem pack 2"
+    ) ||
+    normalized.includes(
+      "gem pack vol 2"
+    ) ||
+    normalized.includes(
+      "gem pack volume 2"
+    ) ||
+    normalized.includes("cbb2c") ||
+    normalized.includes("cbb2");
+
+  const hasExactFullNumber =
+    compactText.includes(
+      wantedFullNumber
+    );
+
+  const hasMarketplaceNumber =
+    Boolean(numberWithoutLeadingZeroes) &&
+    (
+      normalized.includes(
+        `#${numberWithoutLeadingZeroes}`
+      ) ||
+      normalized.includes(
+        ` ${numberWithoutLeadingZeroes} `
+      )
+    );
+
+  const hasVariant =
+    variantLabels.length === 0 ||
+    variantLabels.some((label) =>
+      normalized.includes(
+        normalizeMetadataText(label)
+      )
+    );
+
+  return (
+    hasName &&
+    hasSetIdentity &&
+    (hasExactFullNumber ||
+      hasMarketplaceNumber) &&
+    hasVariant
+  );
+}
+
+function extractPriceChartingCardImage(
+  html: string
+) {
+  // PriceCharting's verified product page exposes the card art directly
+  // as an <img itemprop="image"> hosted on images.pricecharting.com.
+  // Prefer that product image over logos, set icons, and other page art.
+  const itemPropPatterns = [
+    /<img\b[^>]*\bitemprop=["']image["'][^>]*\bsrc=["']([^"']+)["'][^>]*>/i,
+    /<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*\bitemprop=["']image["'][^>]*>/i,
+  ];
+
+  for (const pattern of itemPropPatterns) {
+    const match = html.match(pattern);
+
+    if (!match?.[1]) {
+      continue;
+    }
+
+    const value =
+      htmlEntityDecodeBasic(
+        match[1].trim()
+      );
+
+    if (
+      /^https:\/\/storage\.googleapis\.com\/images\.pricecharting\.com\//i.test(
+        value
+      )
+    ) {
+      // The product page commonly renders 240.jpg but also exposes the
+      // same asset at 1600.jpg. Prefer the larger copy for MintRadar.
+      return value.replace(
+        /\/240\.jpg(?:[?#].*)?$/i,
+        "/1600.jpg"
+      );
+    }
+  }
+
+  // Secondary exact-host fallback in case PriceCharting changes the
+  // attribute ordering/markup while keeping its product-image CDN.
+  const hostedImageMatch =
+    html.match(
+      /https:\/\/storage\.googleapis\.com\/images\.pricecharting\.com\/[^"'<>\\\s]+\/(?:1600|240)\.jpg/i
+    );
+
+  if (hostedImageMatch?.[0]) {
+    return htmlEntityDecodeBasic(
+      hostedImageMatch[0]
+    ).replace(
+      /\/240\.jpg(?:[?#].*)?$/i,
+      "/1600.jpg"
+    );
+  }
+
+  // Retain social metadata as a final fallback.
+  const patterns = [
+    /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i,
+    /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+
+    if (!match?.[1]) {
+      continue;
+    }
+
+    const value =
+      htmlEntityDecodeBasic(
+        match[1].trim()
+      );
+
+    if (
+      value &&
+      /^https?:\/\//i.test(value)
+    ) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+
+type CnProviderAttempt = {
+  provider: string;
+  pageUrl?: string | null;
+  pageFetched: boolean;
+  httpStatus?: number | null;
+  fetchError?: string | null;
+  identityMatched: boolean;
+  imageFound: boolean;
+  imageUrl?: string | null;
+  rejectionReason?: string | null;
+};
+
+async function fetchTextDiagnostic(
+  url: string,
+  timeoutMs = 7000
+) {
+  const controller = new AbortController();
+
+  const timeout = setTimeout(
+    () => controller.abort(),
+    timeoutMs
+  );
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept:
+          "text/html,application/xhtml+xml",
+        "Accept-Language":
+          "en-US,en;q=0.9",
+        "User-Agent":
+          "Mozilla/5.0",
+      },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+
+    const text = await response.text();
+
+    return {
+      ok: response.ok,
+      status: response.status,
+      text,
+      error: null as string | null,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: null as number | null,
+      text: null as string | null,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Unknown fetch error",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+
+async function resolvePriceChartingChineseImage({
+  name,
+  cardNumber,
+  variant,
+}: {
+  name: string;
+  cardNumber?: string | null;
+  variant?: string | null;
+}) {
+  const attempts: CnProviderAttempt[] = [];
+
+  if (!cardNumber) {
+    return {
+      match: null,
+      attempts,
+      rejectionReason: "missing-card-number",
+    };
+  }
+
+  const marketNumber =
+    priceChartingChineseNumber(cardNumber);
+
+  const nameSlug =
+    simplifiedTcgSlugPart(name);
+
+  if (!marketNumber || !nameSlug) {
+    return {
+      match: null,
+      attempts,
+      rejectionReason:
+        "could-not-build-market-identity",
+    };
+  }
+
+  const requestedVariant =
+    normalizeChineseVariant(variant);
+
+  const candidates =
+    requestedVariant
+      ? PRICECHARTING_CN_VARIANT_SLUGS.filter(
+          (candidate) =>
+            candidate.labels.some(
+              (label) =>
+                normalizeChineseVariant(label) ===
+                requestedVariant
+            )
+        )
+      : [
+          {
+            slug: "",
+            labels: [] as string[],
+          },
+        ];
+
+  if (!candidates.length) {
+    return {
+      match: null,
+      attempts,
+      rejectionReason:
+        "no-supported-variant-candidate",
+    };
+  }
+
+  const verified: Array<{
+    imageUrl: string;
+    pageUrl: string;
+    variantSlug: string;
+  }> = [];
+
+  for (const candidate of candidates) {
+    const productSlug =
+      candidate.slug
+        ? `${nameSlug}-${candidate.slug}-${marketNumber}`
+        : `${nameSlug}-${marketNumber}`;
+
+    const pageUrl =
+      `https://www.pricecharting.com/game/` +
+      `pokemon-chinese-gem-pack-2/` +
+      productSlug;
+
+    const fetched =
+      await fetchTextDiagnostic(pageUrl);
+
+    if (!fetched.ok || !fetched.text) {
+      attempts.push({
+        provider: "pricecharting-cn-exact",
+        pageUrl,
+        pageFetched: false,
+        httpStatus: fetched.status,
+        fetchError: fetched.error,
+        identityMatched: false,
+        imageFound: false,
+        rejectionReason:
+          fetched.status
+            ? `http-${fetched.status}`
+            : "fetch-failed",
+      });
+      continue;
+    }
+
+    const identityMatched =
+      priceChartingPageProvesCnIdentity({
+        html: fetched.text,
+        name,
+        cardNumber,
+        variantLabels: candidate.labels,
+      });
+
+    if (!identityMatched) {
+      attempts.push({
+        provider: "pricecharting-cn-exact",
+        pageUrl,
+        pageFetched: true,
+        httpStatus: fetched.status,
+        fetchError: null,
+        identityMatched: false,
+        imageFound: false,
+        rejectionReason:
+          "page-identity-did-not-match",
+      });
+      continue;
+    }
+
+    const imageUrl =
+      extractPriceChartingCardImage(
+        fetched.text
+      );
+
+    attempts.push({
+      provider: "pricecharting-cn-exact",
+      pageUrl,
+      pageFetched: true,
+      httpStatus: fetched.status,
+      fetchError: null,
+      identityMatched: true,
+      imageFound: Boolean(imageUrl),
+      imageUrl: imageUrl || null,
+      rejectionReason:
+        imageUrl
+          ? null
+          : "identity-matched-but-image-not-found",
+    });
+
+    if (!imageUrl) {
+      continue;
+    }
+
+    verified.push({
+      imageUrl,
+      pageUrl,
+      variantSlug: candidate.slug,
+    });
+
+    if (verified.length > 1) {
+      return {
+        match: null,
+        attempts,
+        rejectionReason:
+          "multiple-exact-variant-pages-matched",
+      };
+    }
+  }
+
+  if (verified.length !== 1) {
+    return {
+      match: null,
+      attempts,
+      rejectionReason:
+        attempts.length
+          ? attempts[
+              attempts.length - 1
+            ].rejectionReason ||
+            "no-exact-pricecharting-match"
+          : "no-pricecharting-attempts",
+    };
+  }
+
+  const match = verified[0];
+
+  return {
+    match: {
+      imageUrl: match.imageUrl,
+      provider:
+        "pricecharting-cn-exact",
+      match: {
+        name,
+        setName:
+          "Chinese Gem Pack 2",
+        cardNumber:
+          normalizeCardNumber(cardNumber),
+        variant:
+          match.variantSlug || null,
+        setId: "CBB2C",
+      },
+      sourcePage: match.pageUrl,
+    },
+    attempts,
+    rejectionReason: null,
+  };
+}
+
+async function resolveSimplifiedChineseImage({
+  name,
+  setName,
+  cardNumber,
+  variant,
+}: {
+  name: string;
+  setName?: string | null;
+  cardNumber?: string | null;
+  variant?: string | null;
+}) {
+  const attempts: CnProviderAttempt[] = [];
+
+  const setIdentity =
+    simplifiedChineseSetIdentity(setName);
+
+  if (!setIdentity || !cardNumber) {
+    return {
+      match: null,
+      attempts,
+      rejectionReason:
+        !setIdentity
+          ? "unrecognized-cn-set"
+          : "missing-card-number",
+    };
+  }
+
+  if (
+    setIdentity.providerSetCode ===
+    "CBB2C"
+  ) {
+    const parsed =
+      parseCbb2cCollectorNumber(
+        cardNumber
+      );
+
+    if (!parsed) {
+      return {
+        match: null,
+        attempts,
+        rejectionReason:
+          "collector-number-parse-failed",
+      };
+    }
+
+    const expectedVariant =
+      cbb2cExpectedVariant(
+        parsed.printing
+      );
+
+    const requestedVariant =
+      normalizeChineseVariant(variant);
+
+    if (
+      expectedVariant &&
+      requestedVariant &&
+      expectedVariant !==
+        requestedVariant
+    ) {
+      return {
+        match: null,
+        attempts,
+        rejectionReason:
+          "variant-conflicts-with-legacy-cbb2c-rule",
+      };
+    }
+
+    const slugName =
+      simplifiedTcgSlugPart(name);
+
+    if (!slugName) {
+      return {
+        match: null,
+        attempts,
+        rejectionReason:
+          "could-not-build-name-slug",
+      };
+    }
+
+    const pageUrl =
+      `https://simplifiedtcg.com/tcg/pokemon/simplified/` +
+      `${setIdentity.providerSetCode.toLowerCase()}/` +
+      `${slugName}-${parsed.family}-${parsed.printing}-${parsed.denominator}/`;
+
+    const fetched =
+      await fetchTextDiagnostic(pageUrl);
+
+    if (!fetched.ok || !fetched.text) {
+      attempts.push({
+        provider: "simplifiedtcg-cn-exact",
+        pageUrl,
+        pageFetched: false,
+        httpStatus: fetched.status,
+        fetchError: fetched.error,
+        identityMatched: false,
+        imageFound: false,
+        rejectionReason:
+          fetched.status
+            ? `http-${fetched.status}`
+            : "fetch-failed",
+      });
+
+      return {
+        match: null,
+        attempts,
+        rejectionReason:
+          attempts[0].rejectionReason,
+      };
+    }
+
+    const identityMatched =
+      simplifiedTcgPageMatchesIdentity({
+        html: fetched.text,
+        providerSetCode:
+          setIdentity.providerSetCode,
+        providerNumber:
+          parsed.providerNumber,
+        name,
+      });
+
+    if (!identityMatched) {
+      attempts.push({
+        provider: "simplifiedtcg-cn-exact",
+        pageUrl,
+        pageFetched: true,
+        httpStatus: fetched.status,
+        fetchError: null,
+        identityMatched: false,
+        imageFound: false,
+        rejectionReason:
+          "page-identity-did-not-match",
+      });
+
+      return {
+        match: null,
+        attempts,
+        rejectionReason:
+          "page-identity-did-not-match",
+      };
+    }
+
+    const imageUrl =
+      extractSimplifiedTcgImage(
+        fetched.text
+      );
+
+    attempts.push({
+      provider: "simplifiedtcg-cn-exact",
+      pageUrl,
+      pageFetched: true,
+      httpStatus: fetched.status,
+      fetchError: null,
+      identityMatched: true,
+      imageFound: Boolean(imageUrl),
+      imageUrl: imageUrl || null,
+      rejectionReason:
+        imageUrl
+          ? null
+          : "identity-matched-but-image-not-found",
+    });
+
+    if (!imageUrl) {
+      return {
+        match: null,
+        attempts,
+        rejectionReason:
+          "identity-matched-but-image-not-found",
+      };
+    }
+
+    return {
+      match: {
+        imageUrl,
+        provider:
+          "simplifiedtcg-cn-exact",
+        match: {
+          name,
+          setName:
+            setIdentity.displaySetName,
+          cardNumber:
+            parsed.compactNumber,
+          providerCardNumber:
+            parsed.providerNumber,
+          variant:
+            expectedVariant ||
+            requestedVariant ||
+            null,
+          setId:
+            setIdentity.providerSetCode,
+        },
+        sourcePage: pageUrl,
+      },
+      attempts,
+      rejectionReason: null,
+    };
+  }
+
+  return {
+    match: null,
+    attempts,
+    rejectionReason:
+      "unsupported-cn-set",
+  };
+}
+
+function normalizeTcgdexLanguage(value?: string | null): TcgdexLanguage {
+  const normalized = (value || "").trim().toLowerCase();
+
+  if (["jp", "jpn", "ja", "japanese"].includes(normalized)) {
+    return "ja";
+  }
+
+  if (["cn-tw", "zh-tw", "tw", "traditional chinese"].includes(normalized)) {
+    return "zh-tw";
+  }
+
+  if (["cn", "chn", "zh-cn", "chinese", "simplified chinese"].includes(normalized)) {
+    return "zh-cn";
+  }
+
+  return "en";
+}
+
+async function resolveTcgdexImage({
+  name,
+  setName,
+  cardNumber,
+  language = "en",
+}: {
+  name: string;
+  setName?: string | null;
+  cardNumber?: string | null;
+  language?: TcgdexLanguage;
 }) {
   const numberVariants =
     buildCollectorNumberVariants(
@@ -567,6 +2383,7 @@ async function resolveTcgdexImage({
       setScore: number;
       finalScore: number;
       numberMatches: boolean;
+      localizedNameCompatible?: boolean;
     }>;
     rejectionReason: string | null;
   } = {
@@ -585,7 +2402,7 @@ async function resolveTcgdexImage({
 
   for (const numberVariant of numberVariants) {
     const url = new URL(
-      "https://api.tcgdex.net/v2/en/cards"
+      `https://api.tcgdex.net/v2/${language}/cards`
     );
 
     url.searchParams.set(
@@ -598,10 +2415,24 @@ async function resolveTcgdexImage({
     );
 
     listAttempts.push(url);
+
+    // Localized TCGdex catalogs use localized card names. For JP/CN, the
+    // imported display name may intentionally remain English, so collector
+    // number must be allowed to discover candidates without a name filter.
+    if (language !== "en") {
+      const numberOnlyUrl = new URL(
+        `https://api.tcgdex.net/v2/${language}/cards`
+      );
+      numberOnlyUrl.searchParams.set(
+        "localId",
+        numberVariant
+      );
+      listAttempts.push(numberOnlyUrl);
+    }
   }
 
   const broadUrl = new URL(
-    "https://api.tcgdex.net/v2/en/cards"
+    `https://api.tcgdex.net/v2/${language}/cards`
   );
   broadUrl.searchParams.set(
     "name",
@@ -666,9 +2497,7 @@ async function resolveTcgdexImage({
   const wantedNumbers =
     new Set(
       numberVariants.map((value) =>
-        normalize(
-          normalizeCardNumber(value)
-        )
+        normalize(value)
       )
     );
 
@@ -676,11 +2505,21 @@ async function resolveTcgdexImage({
     .map((card) => {
       const candidateName =
         normalize(card.name);
-      const candidateNumber =
-        normalize(
-          normalizeCardNumber(
+      const candidateNumbers =
+        new Set(
+          buildCollectorNumberVariants(
             card.localId
+          ).map((value) =>
+            normalize(value)
           )
+        );
+
+      const candidateNumberMatches =
+        !wantedNumbers.size ||
+        Array.from(
+          wantedNumbers
+        ).some((value) =>
+          candidateNumbers.has(value)
         );
 
       let score = 0;
@@ -698,17 +2537,15 @@ async function resolveTcgdexImage({
         )
       ) {
         score += 250;
-      } else {
+      } else if (language === "en") {
         score -= 1000;
       }
 
       if (
         wantedNumbers.size &&
-        wantedNumbers.has(
-          candidateNumber
-        )
+        candidateNumberMatches
       ) {
-        score += 800;
+        score += language === "en" ? 800 : 1200;
       } else if (
         wantedNumbers.size
       ) {
@@ -737,6 +2574,127 @@ async function resolveTcgdexImage({
   diagnostics.shortlistedCandidates =
     shortlist.length;
 
+  // Some official alternate printings use an alphabetic collector suffix
+  // (for example 92a/145) while TCGdex only exposes the base printing (92).
+  // Never collapse the alternate into the base artwork. Instead, use an exact
+  // name + exact base-number candidate only to discover the provider set ID,
+  // then verify that the actual suffixed artwork exists on the Pokemon TCG
+  // image CDN before accepting it.
+  const requestedShortNumber =
+    shortCardNumber(cardNumber)
+      .replace(/\s+/g, "")
+      .toLowerCase();
+
+  const alphabeticVariant =
+    requestedShortNumber.match(
+      /^(\d+)([a-z])$/i
+    );
+
+  if (
+    alphabeticVariant &&
+    wantedName
+  ) {
+    const baseNumber =
+      String(
+        Number(alphabeticVariant[1])
+      );
+
+    const exactBaseCandidates =
+      briefs.filter((card) => {
+        const candidateName =
+          normalize(card.name);
+
+        const candidateShort =
+          shortCardNumber(card.localId)
+            .replace(/\s+/g, "")
+            .toLowerCase();
+
+        const candidateNumeric =
+          candidateShort.match(
+            /^0*(\d+)$/
+          );
+
+        return (
+          candidateName === wantedName &&
+          candidateNumeric &&
+          String(
+            Number(candidateNumeric[1])
+          ) === baseNumber
+        );
+      });
+
+    if (exactBaseCandidates.length === 1) {
+      const baseCard =
+        exactBaseCandidates[0];
+
+      const verifiedVariantImage =
+        await verifiedPokemonTcgVariantImageUrl({
+          cardId: baseCard.id,
+          requestedCardNumber: cardNumber,
+        });
+
+      if (
+        verifiedVariantImage &&
+        baseCard.id
+      ) {
+        const detail =
+          await fetchJsonWithTimeout<
+            TcgdexCardDetail
+          >(
+            `https://api.tcgdex.net/v2/${language}/cards/${encodeURIComponent(
+              baseCard.id
+            )}`
+          );
+
+        diagnostics.rejectionReason = null;
+
+        diagnostics.topCandidates = [
+          {
+            id: baseCard.id || null,
+            name: baseCard.name || null,
+            setName:
+              detail?.set?.name || null,
+            cardNumber:
+              requestedShortNumber,
+            imageBase:
+              verifiedVariantImage,
+            imageUrl:
+              verifiedVariantImage,
+            baseScore: 1800,
+            setScore: 0,
+            finalScore: 1800,
+            numberMatches: true,
+          },
+          ...diagnostics.topCandidates,
+        ].slice(0, 8);
+
+        return {
+          match: {
+            imageUrl:
+              verifiedVariantImage,
+            provider:
+              "pokemon-tcg-image-cdn",
+            match: {
+              id:
+                `${baseCard.id.slice(
+                  0,
+                  baseCard.id.lastIndexOf("-") + 1
+                )}${requestedShortNumber}`,
+              name:
+                baseCard.name || null,
+              setName:
+                detail?.set?.name || null,
+              cardNumber:
+                requestedShortNumber,
+              score: 1800,
+            },
+          },
+          diagnostics,
+        };
+      }
+    }
+  }
+
   const detailed = await Promise.all(
     shortlist.map(
       async ({ card, score }) => {
@@ -748,7 +2706,7 @@ async function resolveTcgdexImage({
           await fetchJsonWithTimeout<
             TcgdexCardDetail
           >(
-            `https://api.tcgdex.net/v2/en/cards/${encodeURIComponent(
+            `https://api.tcgdex.net/v2/${language}/cards/${encodeURIComponent(
               card.id
             )}`
           );
@@ -763,18 +2721,30 @@ async function resolveTcgdexImage({
             detail.set?.name
           );
 
-        const candidateNumber =
-          normalize(
-            normalizeCardNumber(
+        const candidateNumbers =
+          new Set(
+            buildCollectorNumberVariants(
               detail.localId
+            ).map((value) =>
+              normalize(value)
             )
           );
 
         const numberMatches =
           !wantedNumbers.size ||
-          wantedNumbers.has(
-            candidateNumber
+          Array.from(
+            wantedNumbers
+          ).some((value) =>
+            candidateNumbers.has(value)
           );
+
+        const localizedNameCompatible =
+          language === "en"
+            ? true
+            : localizedNameLooksCompatible(
+                name,
+                detail.name
+              );
 
         return {
           card: detail,
@@ -782,6 +2752,7 @@ async function resolveTcgdexImage({
           score: score + setScore,
           setScore,
           numberMatches,
+          localizedNameCompatible,
         };
       }
     )
@@ -825,6 +2796,8 @@ async function resolveTcgdexImage({
           entry.score,
         numberMatches:
           entry.numberMatches,
+        localizedNameCompatible:
+          entry.localizedNameCompatible,
       }));
 
   const best = ranked[0];
@@ -858,11 +2831,11 @@ async function resolveTcgdexImage({
             finalScore: score,
             numberMatches:
               !wantedNumbers.size ||
-              wantedNumbers.has(
-                normalize(
-                  normalizeCardNumber(
-                    card.localId
-                  )
+              buildCollectorNumberVariants(
+                card.localId
+              ).some((value) =>
+                wantedNumbers.has(
+                  normalize(value)
                 )
               ),
           }));
@@ -888,6 +2861,34 @@ async function resolveTcgdexImage({
   }
 
   if (
+    language !== "en" &&
+    !best.localizedNameCompatible
+  ) {
+    diagnostics.rejectionReason =
+      "localized-name-mismatch";
+
+    return {
+      match: null,
+      diagnostics,
+    };
+  }
+
+  if (
+    language !== "en" &&
+    setName &&
+    best.setScore <= 0
+  ) {
+    diagnostics.rejectionReason =
+      "localized-set-mismatch";
+
+    return {
+      match: null,
+      diagnostics,
+    };
+  }
+
+  if (
+    language === "en" &&
     setName &&
     best.setScore <= 0
   ) {
@@ -1116,8 +3117,37 @@ export async function GET(request: NextRequest) {
     const canonicalName =
       parsedName.canonicalName;
 
+    const explicitVariant =
+      request.nextUrl.searchParams
+        .get("variant")
+        ?.trim() || null;
+
     const variant =
+      explicitVariant ||
       parsedName.variant;
+
+    const requestedLanguage =
+      request.nextUrl.searchParams
+        .get("language")
+        ?.trim() || null;
+
+    const language =
+      requestedLanguage ||
+      parsedName.language ||
+      "EN";
+
+    const tcgdexLanguage =
+      normalizeTcgdexLanguage(language);
+
+    const inferredSetHint =
+      isGenericSetName(setName)
+        ? variantSetHint(variant)
+        : null;
+
+    const resolverSetName =
+      isGenericSetName(setName)
+        ? inferredSetHint
+        : setName;
 
     if (!name) {
       return NextResponse.json(
@@ -1157,14 +3187,300 @@ export async function GET(request: NextRequest) {
     }
 
     // -----------------------------------------
+    // JAPANESE SET-SCOPED IMAGE RESOLVER
+    // -----------------------------------------
+
+    if (tcgdexLanguage === "ja") {
+      const jpSetScoped =
+        await resolveJapaneseSetScopedImage({
+          name: canonicalName,
+          setName: resolverSetName,
+          cardNumber,
+        });
+
+      if (jpSetScoped) {
+        return NextResponse.json({
+          ok: true,
+          imageUrl:
+            jpSetScoped.imageUrl,
+          provider:
+            jpSetScoped.provider,
+          match:
+            jpSetScoped.match,
+          parsedIdentity: {
+            originalName: name,
+            canonicalName,
+            variant,
+            language,
+            suppliedSetName: setName,
+            resolverSetName,
+            resolvedSetName:
+              jpSetScoped.match.setName || null,
+            resolvedSetId:
+              jpSetScoped.setId,
+          },
+        });
+      }
+
+      // TCGdex may know the Japanese set but have no card rows/images for it.
+      // Once the set identity is uniquely verified, use that exact Japanese
+      // set code against the official Pokémon Japan card-search API. Each
+      // candidate is then verified against its official detail page using
+      // the full printed collector number. Never search outside this set.
+      const normalizedJpSet =
+        normalizeMetadataText(
+          resolverSetName || ""
+        );
+
+      const jpAliases =
+        JP_SET_NAME_ALIASES[
+          normalizedJpSet
+        ] || [];
+
+      if (jpAliases.length) {
+        const jpSets =
+          await fetchJsonWithTimeout<
+            TcgdexSetBrief[]
+          >(
+            "https://api.tcgdex.net/v2/ja/sets"
+          );
+
+        if (Array.isArray(jpSets)) {
+          const matchingJpSets =
+            jpSets.filter((candidate) => {
+              const actual =
+                (
+                  candidate?.name || ""
+                ).trim();
+
+              return jpAliases.some(
+                (alias) =>
+                  actual === alias ||
+                  actual.includes(alias) ||
+                  alias.includes(actual)
+              );
+            });
+
+          if (
+            matchingJpSets.length === 1 &&
+            matchingJpSets[0]?.id
+          ) {
+            const officialJapan =
+              await resolveOfficialPokemonJapanImage({
+                setId:
+                  matchingJpSets[0].id,
+                cardNumber,
+                name: canonicalName,
+                setName:
+                  resolverSetName,
+              });
+
+            if (officialJapan) {
+              return NextResponse.json({
+                ok: true,
+                imageUrl:
+                  officialJapan.imageUrl,
+                provider:
+                  officialJapan.provider,
+                match:
+                  officialJapan.match,
+                parsedIdentity: {
+                  originalName: name,
+                  canonicalName,
+                  variant,
+                  language,
+                  suppliedSetName:
+                    setName,
+                  resolverSetName,
+                  resolvedSetName:
+                    resolverSetName,
+                  resolvedSetId:
+                    matchingJpSets[0].id,
+                },
+              });
+            }
+          }
+        }
+      }
+
+      // Critical safety rule: when a JP card has a recognized set identity,
+      // do not fall through to the global localId search. The same collector
+      // number can exist in many Japanese sets.
+      const recognizedJpSet =
+        Boolean(
+          JP_SET_NAME_ALIASES[
+            normalizeMetadataText(
+              resolverSetName || ""
+            )
+          ]?.length
+        );
+
+      if (recognizedJpSet) {
+        return NextResponse.json({
+          ok: false,
+          imageUrl: null,
+          provider:
+            "tcgdex-jp-set-scoped",
+          reason:
+            "no-confident-jp-set-scoped-match",
+          diagnostics: {
+            requestedName: name,
+            canonicalName,
+            language,
+            requestedSet:
+              setName || null,
+            resolverSetName:
+              resolverSetName || null,
+            requestedNumber:
+              cardNumber || null,
+          },
+        });
+      }
+    }
+
+    // -----------------------------------------
+    // SIMPLIFIED CHINESE EXACT IMAGE RESOLVER
+    // -----------------------------------------
+
+    if (tcgdexLanguage === "zh-cn") {
+      const cnSetIdentity =
+        simplifiedChineseSetIdentity(
+          resolverSetName
+        );
+
+      if (cnSetIdentity) {
+        const simplifiedChineseResult =
+          await resolveSimplifiedChineseImage({
+            name: canonicalName,
+            setName: resolverSetName,
+            cardNumber,
+            variant,
+          });
+
+        if (simplifiedChineseResult.match) {
+          const simplifiedChinese =
+            simplifiedChineseResult.match;
+
+          return NextResponse.json({
+            ok: true,
+            imageUrl:
+              simplifiedChinese.imageUrl,
+            provider:
+              simplifiedChinese.provider,
+            match:
+              simplifiedChinese.match,
+            parsedIdentity: {
+              originalName: name,
+              canonicalName,
+              variant,
+              language,
+              suppliedSetName:
+                setName,
+              resolverSetName,
+              resolvedSetName:
+                simplifiedChinese.match
+                  .setName,
+              resolvedSetId:
+                simplifiedChinese.match
+                  .setId,
+              providerCardNumber:
+                simplifiedChinese.match
+                  .providerCardNumber,
+            },
+            cnDiagnostics: {
+              simplifiedTcg:
+                simplifiedChineseResult,
+            },
+          });
+        }
+
+        const priceChartingChineseResult =
+          await resolvePriceChartingChineseImage({
+            name: canonicalName,
+            cardNumber,
+            variant,
+          });
+
+        if (priceChartingChineseResult.match) {
+          const priceChartingChinese =
+            priceChartingChineseResult.match;
+
+          return NextResponse.json({
+            ok: true,
+            imageUrl:
+              priceChartingChinese.imageUrl,
+            provider:
+              priceChartingChinese.provider,
+            match:
+              priceChartingChinese.match,
+            parsedIdentity: {
+              originalName: name,
+              canonicalName,
+              variant,
+              language,
+              suppliedSetName:
+                setName,
+              resolverSetName,
+              resolvedSetName:
+                priceChartingChinese.match
+                  .setName,
+              resolvedSetId:
+                priceChartingChinese.match
+                  .setId,
+            },
+            cnDiagnostics: {
+              simplifiedTcg:
+                simplifiedChineseResult,
+              priceCharting:
+                priceChartingChineseResult,
+            },
+          });
+        }
+
+        // Critical safety rule: recognized Simplified Chinese sets never
+        // fall through to global/localized collector-number matching.
+        // Exact regional set + exact split collector identity must resolve,
+        // otherwise MintRadar intentionally shows No Image.
+        return NextResponse.json({
+          ok: false,
+          imageUrl: null,
+          provider:
+            "simplifiedtcg-cn-exact",
+          reason:
+            "no-confident-cn-exact-match",
+          diagnostics: {
+            requestedName: name,
+            canonicalName,
+            language,
+            requestedSet:
+              setName || null,
+            resolverSetName:
+              resolverSetName || null,
+            requestedNumber:
+              cardNumber || null,
+            variant:
+              variant || null,
+            expectedSetId:
+              cnSetIdentity.providerSetCode,
+            simplifiedTcg:
+              simplifiedChineseResult,
+            priceCharting:
+              priceChartingChineseResult,
+          },
+        });
+      }
+    }
+
+    // -----------------------------------------
     // TCGDEX PRIMARY IMAGE RESOLVER
     // -----------------------------------------
 
     const tcgdexResult =
       await resolveTcgdexImage({
         name: canonicalName,
-        setName,
+        setName: resolverSetName,
         cardNumber,
+        language: tcgdexLanguage,
       });
 
     if (tcgdexResult.match) {
@@ -1172,9 +3488,21 @@ export async function GET(request: NextRequest) {
         ok: true,
         imageUrl:
           tcgdexResult.match.imageUrl,
-        provider: "tcgdex",
+        provider:
+          tcgdexResult.match.provider ||
+          "tcgdex",
         match:
           tcgdexResult.match.match,
+        parsedIdentity: {
+          originalName: name,
+          canonicalName,
+          variant,
+          language,
+          suppliedSetName: setName,
+          resolverSetName,
+          resolvedSetName:
+            tcgdexResult.match.match.setName || null,
+        },
         tcgdexDiagnostics:
           tcgdexResult.diagnostics,
       });
@@ -1182,6 +3510,28 @@ export async function GET(request: NextRequest) {
 
     const tcgdexDiagnostics =
       tcgdexResult.diagnostics;
+
+    // PokemonTCG.io is primarily an English catalog. Never let a failed
+    // localized lookup silently substitute English artwork for a JP/CN card.
+    if (tcgdexLanguage !== "en") {
+      return NextResponse.json({
+        ok: false,
+        imageUrl: null,
+        provider: "tcgdex",
+        reason: "no-confident-localized-match",
+        diagnostics: {
+          requestedName: name,
+          canonicalName,
+          variant,
+          language,
+          tcgdexLanguage,
+          requestedSet: setName || null,
+          resolverSetName: resolverSetName || null,
+          requestedNumber: cardNumber || null,
+        },
+        tcgdexDiagnostics,
+      });
+    }
 
     // -----------------------------------------
     // POKEMON TCG API FALLBACK
@@ -1273,7 +3623,7 @@ export async function GET(request: NextRequest) {
               card,
               {
                 name: canonicalName,
-                setName,
+                setName: resolverSetName,
                 cardNumber,
               }
             ),
@@ -1336,7 +3686,7 @@ export async function GET(request: NextRequest) {
             card,
             {
               name: canonicalName,
-              setName,
+              setName: resolverSetName,
               cardNumber,
             }
           ),
@@ -1366,7 +3716,7 @@ export async function GET(request: NextRequest) {
               card,
               {
                 name: canonicalName,
-                setName,
+                setName: resolverSetName,
                 cardNumber,
               }
             ),
@@ -1407,6 +3757,9 @@ export async function GET(request: NextRequest) {
           variant,
           requestedSet:
             setName || null,
+          resolverSetName:
+            resolverSetName || null,
+          language,
           requestedNumber:
             cardNumber || null,
           candidatesChecked:
@@ -1439,6 +3792,9 @@ export async function GET(request: NextRequest) {
           variant,
           requestedSet:
             setName || null,
+          resolverSetName:
+            resolverSetName || null,
+          language,
           candidatesChecked:
             allCards.length,
         },
@@ -1469,6 +3825,13 @@ export async function GET(request: NextRequest) {
         requestedName: name,
         canonicalName,
         variant,
+        language,
+        suppliedSetName:
+          setName || null,
+        resolverSetName:
+          resolverSetName || null,
+        resolvedSetName:
+          best.set?.name || null,
         requestedNumber:
           cardNumber || null,
         candidatesChecked:

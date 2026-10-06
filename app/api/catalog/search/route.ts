@@ -506,33 +506,40 @@ async function searchCardsByName(
     return [];
   }
 
-  // Treat a standalone numeric / collector-number token as a card
-  // number instead of forcing every token into the card name.
+  // Treat a standalone collector-number token as a card number
+  // instead of forcing every token into the card name.
   //
-  // Examples:
+  // Supports both numeric and prefixed Pokémon collector numbers.
+  // normalizeText() already removes punctuation, so these all become
+  // the same searchable collector identity where appropriate:
+  //
   //   "Gastly 177"       -> name: Gastly, number: 177
   //   "Gastly #177"      -> name: Gastly, number: 177
   //   "177 Gastly"       -> name: Gastly, number: 177
   //   "Gastly 177/162"   -> name: Gastly, number: 177
+  //   "Flareon TG01"     -> name: Flareon, number: TG01
+  //   "Flareon TG#01"    -> name: Flareon, number: TG01
+  //   "Flareon #TG01"    -> name: Flareon, number: TG01
   //
-  // We only do this when there is at least one non-number token so
-  // normal card-name searching remains the primary behavior.
-  const numberTokens =
+  // Require at least one digit so ordinary card-name words are never
+  // mistaken for collector numbers. Prefixes such as TG, GG, SV, SWSH,
+  // and future alphanumeric catalog prefixes work without a hardcoded list.
+  const collectorNumberTokens =
     words.filter((word) =>
-      /^\d+(?:[a-z]+)?$/.test(word)
+      /^(?=[a-z0-9]*\d)[a-z]*\d+[a-z]*$/.test(word)
     );
 
   const nameWords =
     words.filter(
       (word) =>
-        !numberTokens.includes(word)
+        !collectorNumberTokens.includes(word)
     );
 
   const cardNumber =
     nameWords.length > 0 &&
-    numberTokens.length > 0
-      ? numberTokens[
-          numberTokens.length - 1
+    collectorNumberTokens.length > 0
+      ? collectorNumberTokens[
+          collectorNumberTokens.length - 1
         ]
       : null;
 
@@ -1069,6 +1076,18 @@ function normalizeText(
     .replace(
       /pokémon/g,
       "pokemon"
+    )
+    // Collector-number shorthand:
+    //   TG#01 / #TG01 / #177 -> TG01 / TG01 / 177
+    // Do this before general punctuation normalization so the collector
+    // number remains one token instead of becoming "tg 01".
+    .replace(
+      /#(?=[a-z0-9])/g,
+      ""
+    )
+    .replace(
+      /(?<=[a-z0-9])#(?=[a-z0-9])/g,
+      ""
     )
     .replace(
       /[^a-z0-9]+/g,

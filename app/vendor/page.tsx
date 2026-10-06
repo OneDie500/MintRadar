@@ -67,6 +67,8 @@ type Card = {
   category?: string | null;
   edition?: string | null;
   finish?: string | null;
+  language?: string | null;
+  variant?: string | null;
 };
 
 type InventoryItem = {
@@ -228,32 +230,200 @@ function isSportsCategory(value?: string | null) {
   ].some((term) => normalized.includes(term));
 }
 
+function isPokemonCategory(value?: string | null) {
+  const normalized = normalizeImageCategory(value);
+
+  return (
+    normalized.includes("pokemon") ||
+    normalized.includes("pokémon")
+  );
+}
+
 function VendorCardImage({
   card,
 }: {
   card?: Card | null;
 }) {
+  const sportsCard =
+    isSportsCategory(card?.category);
+
+  const pokemonCard =
+    isPokemonCategory(card?.category);
+
+  const nonEnglishPokemonCard =
+    pokemonCard &&
+    Boolean(card?.language?.trim()) &&
+    card?.language?.trim().toUpperCase() !== "EN";
+
   const [currentSrc, setCurrentSrc] =
-    useState<string | null>(card?.image_url || null);
+    useState<string | null>(
+      nonEnglishPokemonCard
+        ? null
+        : card?.image_url || null
+    );
 
   const [sportsFallbackAttempted, setSportsFallbackAttempted] =
+    useState(false);
+
+  const [pokemonFallbackAttempted, setPokemonFallbackAttempted] =
     useState(false);
 
   const [imageFailed, setImageFailed] =
     useState(false);
 
-  const sportsCard =
-    isSportsCategory(card?.category);
+  function buildPokemonFallbackUrl() {
+    if (
+      !pokemonCard ||
+      !card?.name?.trim()
+    ) {
+      return null;
+    }
+
+    const params =
+      new URLSearchParams();
+
+    params.set(
+      "name",
+      card.name.trim()
+    );
+
+    if (card.set_name?.trim()) {
+      params.set(
+        "setName",
+        card.set_name.trim()
+      );
+    }
+
+    if (card.card_number?.trim()) {
+      params.set(
+        "cardNumber",
+        card.card_number.trim()
+      );
+    }
+
+    if (card.language?.trim()) {
+      params.set(
+        "language",
+        card.language.trim()
+      );
+    }
+
+    if (card.variant?.trim()) {
+      params.set(
+        "variant",
+        card.variant.trim()
+      );
+    }
+
+    return (
+      `/api/catalog/pokemon-image-fallback?${params.toString()}`
+    );
+  }
 
   useEffect(() => {
-    setCurrentSrc(card?.image_url || null);
+    let active = true;
+
     setSportsFallbackAttempted(false);
+    setPokemonFallbackAttempted(false);
     setImageFailed(false);
+
+    // Localized Pokémon artwork is not an optional fallback. Older imported
+    // image_url values may point to valid English artwork, so JP/CN cards must
+    // resolve from their complete localized identity every time that identity
+    // changes.
+    if (nonEnglishPokemonCard) {
+      setCurrentSrc(null);
+
+      const fallbackUrl =
+        buildPokemonFallbackUrl();
+
+      if (!fallbackUrl) {
+        setImageFailed(true);
+
+        return () => {
+          active = false;
+        };
+      }
+
+      setPokemonFallbackAttempted(true);
+
+      void (async () => {
+        try {
+          const response =
+            await fetch(
+              fallbackUrl,
+              {
+                method: "GET",
+                cache: "no-store",
+              }
+            );
+
+          if (!response.ok) {
+            if (active) {
+              setImageFailed(true);
+            }
+
+            return;
+          }
+
+          const payload =
+            (await response.json()) as {
+              ok?: boolean;
+              imageUrl?: string | null;
+            };
+
+          if (
+            active &&
+            payload.ok &&
+            typeof payload.imageUrl === "string" &&
+            payload.imageUrl.trim()
+          ) {
+            setCurrentSrc(
+              payload.imageUrl.trim()
+            );
+
+            setImageFailed(false);
+            return;
+          }
+
+          if (active) {
+            setImageFailed(true);
+          }
+        } catch (error) {
+          console.warn(
+            "Localized Pokemon inventory image lookup failed:",
+            error
+          );
+
+          if (active) {
+            setImageFailed(true);
+          }
+        }
+      })();
+
+      return () => {
+        active = false;
+      };
+    }
+
+    setCurrentSrc(
+      card?.image_url || null
+    );
+
+    return () => {
+      active = false;
+    };
   }, [
     card?.id,
     card?.external_id,
     card?.image_url,
     card?.category,
+    card?.name,
+    card?.set_name,
+    card?.card_number,
+    card?.language,
+    card?.variant,
+    nonEnglishPokemonCard,
   ]);
 
   function trySportsFallback() {
@@ -276,22 +446,96 @@ function VendorCardImage({
     );
   }
 
+  async function tryPokemonFallback() {
+    if (
+      !pokemonCard ||
+      nonEnglishPokemonCard ||
+      pokemonFallbackAttempted
+    ) {
+      setImageFailed(true);
+      return;
+    }
+
+    const fallbackUrl =
+      buildPokemonFallbackUrl();
+
+    if (!fallbackUrl) {
+      setImageFailed(true);
+      return;
+    }
+
+    setPokemonFallbackAttempted(true);
+    setImageFailed(false);
+
+    try {
+      const response =
+        await fetch(
+          fallbackUrl,
+          {
+            method: "GET",
+            cache: "no-store",
+          }
+        );
+
+      if (!response.ok) {
+        setImageFailed(true);
+        return;
+      }
+
+      const payload =
+        (await response.json()) as {
+          ok?: boolean;
+          imageUrl?: string | null;
+        };
+
+      if (
+        payload.ok &&
+        typeof payload.imageUrl === "string" &&
+        payload.imageUrl.trim()
+      ) {
+        setCurrentSrc(
+          payload.imageUrl.trim()
+        );
+
+        return;
+      }
+
+      setImageFailed(true);
+    } catch (error) {
+      console.warn(
+        "Pokemon inventory image fallback failed:",
+        error
+      );
+
+      setImageFailed(true);
+    }
+  }
+
   useEffect(() => {
     if (
-      !currentSrc &&
-      !sportsFallbackAttempted &&
-      !imageFailed
+      nonEnglishPokemonCard ||
+      currentSrc ||
+      sportsFallbackAttempted ||
+      pokemonFallbackAttempted ||
+      imageFailed
     ) {
-      if (sportsCard) {
-        trySportsFallback();
-      } else {
-        setImageFailed(true);
-      }
+      return;
+    }
+
+    if (sportsCard) {
+      trySportsFallback();
+    } else if (pokemonCard) {
+      void tryPokemonFallback();
+    } else {
+      setImageFailed(true);
     }
   }, [
     currentSrc,
     sportsCard,
+    pokemonCard,
+    nonEnglishPokemonCard,
     sportsFallbackAttempted,
+    pokemonFallbackAttempted,
     imageFailed,
   ]);
 
@@ -301,6 +545,7 @@ function VendorCardImage({
         <p className="text-emerald-400 text-[9px] font-black uppercase tracking-[0.12em]">
           MintRadar
         </p>
+
         <p className="text-zinc-700 text-[10px] mt-1">
           No Image
         </p>
@@ -335,12 +580,21 @@ function VendorCardImage({
           return;
         }
 
+        if (
+          pokemonCard &&
+          !nonEnglishPokemonCard &&
+          !pokemonFallbackAttempted
+        ) {
+          setCurrentSrc(null);
+          void tryPokemonFallback();
+          return;
+        }
+
         setImageFailed(true);
       }}
     />
   );
 }
-
 
 function DashboardCompButtons({
   item,
@@ -364,6 +618,10 @@ function DashboardCompButtons({
       ? `#${card.card_number}`
       : null,
     card.edition,
+    card.language && card.language !== "EN"
+      ? card.language
+      : null,
+    card.variant,
     card.finish,
   ]
     .filter(Boolean)
@@ -905,7 +1163,9 @@ export default function VendorDashboardPage() {
               rarity,
               category,
               edition,
-              finish
+              finish,
+              language,
+              variant
             )
           `)
           .eq("vendor_id", vendorId)
@@ -4447,6 +4707,11 @@ export default function VendorDashboardPage() {
                               card?.card_number
                                 ? `#${card.card_number}`
                                 : null,
+                              card?.language &&
+                              card.language !== "EN"
+                                ? card.language
+                                : null,
+                              card?.variant,
                               card?.finish,
                             ]
                               .filter(Boolean)

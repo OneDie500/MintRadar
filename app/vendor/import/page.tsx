@@ -4,6 +4,7 @@ import {
   useMemo,
   useState,
   useEffect,
+  useRef,
 } from "react";
 import Image from "next/image";
 import Link from "next/link";
@@ -40,6 +41,8 @@ type NormalizedRow = {
 
   edition: string;
   finish: string;
+  language: string;
+  variant: string;
 
   listingType: ListingType;
   condition: string;
@@ -724,6 +727,276 @@ function buildNotes({
   return parts.join(" • ");
 }
 
+type CardLanguage =
+  | "EN"
+  | "JP"
+  | "CN-TW"
+  | "CN";
+
+function normalizeCardLanguage(
+  value: string
+): CardLanguage | "" {
+  const raw = value
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, "-");
+
+  if (!raw) return "";
+
+  if (
+    raw === "en" ||
+    raw === "eng" ||
+    raw === "english"
+  ) {
+    return "EN";
+  }
+
+  if (
+    raw === "jp" ||
+    raw === "jpn" ||
+    raw === "ja" ||
+    raw === "japanese"
+  ) {
+    return "JP";
+  }
+
+  if (
+    raw === "cn-tw" ||
+    raw === "zh-tw" ||
+    raw === "tw" ||
+    raw.includes("traditional")
+  ) {
+    return "CN-TW";
+  }
+
+  if (
+    raw === "cn" ||
+    raw === "zh-cn" ||
+    raw === "chs" ||
+    raw.includes("simplified") ||
+    raw === "chinese"
+  ) {
+    return "CN";
+  }
+
+  return "";
+}
+
+function detectTaggedLanguage(
+  ...values: string[]
+): CardLanguage | "" {
+  const combined =
+    values
+      .filter(Boolean)
+      .join(" ");
+
+  if (
+    /(?:^|[\s([])(?:jp|jpn|ja|japanese)(?=$|[\s)\]])/i.test(
+      combined
+    )
+  ) {
+    return "JP";
+  }
+
+  if (
+    /(?:^|[\s([])(?:cn-tw|zh-tw|traditional chinese|tw)(?=$|[\s)\]])/i.test(
+      combined
+    )
+  ) {
+    return "CN-TW";
+  }
+
+  if (
+    /(?:^|[\s([])(?:cn|zh-cn|simplified chinese|chinese)(?=$|[\s)\]])/i.test(
+      combined
+    )
+  ) {
+    return "CN";
+  }
+
+  return "";
+}
+
+function stripTrailingLanguageTag(
+  value: string
+) {
+  return value
+    .replace(
+      /\s*\((?:jp|jpn|ja|japanese|cn|cn-tw|zh-cn|zh-tw|chinese|traditional chinese|simplified chinese)\)\s*$/i,
+      ""
+    )
+    .trim();
+}
+
+function pokemonProviderLanguage(
+  language: string
+) {
+  switch (
+    normalizeCardLanguage(language)
+  ) {
+    case "JP":
+      return "ja";
+    case "CN-TW":
+      return "zh-tw";
+    case "CN":
+      return "zh-cn";
+    default:
+      return "en";
+  }
+}
+
+function extractTrailingVariant(
+  value: string
+) {
+  let displayName =
+    value.trim();
+
+  const variants: string[] = [];
+
+  for (
+    let index = 0;
+    index < 4;
+    index += 1
+  ) {
+    const match =
+      displayName.match(
+        /\s*\(([^()]*)\)\s*$/
+      );
+
+    if (!match) {
+      break;
+    }
+
+    const descriptor =
+      match[1].trim();
+
+    const lower =
+      descriptor.toLowerCase();
+
+    const isLanguage =
+      Boolean(
+        normalizeCardLanguage(
+          descriptor
+        )
+      );
+
+    const looksLikeVariant =
+      !isLanguage &&
+      (
+        lower.includes("poke ball") ||
+        lower.includes("pokeball") ||
+        lower.includes("master ball") ||
+        lower.includes("masterball") ||
+        lower.includes("rotary pattern") ||
+        lower.includes("stamp") ||
+        lower.includes("stamped") ||
+        lower.includes("cosmos") ||
+        lower.includes("galaxy") ||
+        lower.includes("cracked ice") ||
+        lower.includes("alternate") ||
+        lower.includes("alt art") ||
+        lower.includes("illustration rare") ||
+        lower.includes("special illustration") ||
+        lower.includes("promo")
+      );
+
+    if (!looksLikeVariant) {
+      break;
+    }
+
+    variants.unshift(descriptor);
+
+    displayName =
+      displayName
+        .slice(
+          0,
+          match.index
+        )
+        .trim();
+  }
+
+  return {
+    name: displayName,
+    variant:
+      variants.join(" • "),
+  };
+}
+
+function preserveRegionalPokemonSetName(
+  sourceSetName: string,
+  resolvedSetName: string | null,
+  language: string
+) {
+  const regionalLanguage =
+    normalizeCardLanguage(language);
+
+  const regionalSourceSet =
+    normalizeKey(sourceSetName);
+
+  // Normalize the entire Simplified Chinese Gem Pack 2 family at the set
+  // level. Marketplace exports often omit the regional "Chinese" prefix.
+  if (
+    regionalLanguage === "CN" &&
+    (
+      regionalSourceSet === "gempack2" ||
+      regionalSourceSet === "gempackvol2" ||
+      regionalSourceSet === "gempackvolume2" ||
+      regionalSourceSet === "chinesegempack2"
+    )
+  ) {
+    return "Chinese Gem Pack 2";
+  }
+
+
+  const source =
+    sourceSetName.trim();
+
+  const resolved =
+    String(
+      resolvedSetName || ""
+    ).trim();
+
+  const normalizedLanguage =
+    normalizeCardLanguage(
+      language
+    ) || "EN";
+
+  // For JP inventory, keep the source regional set label as the stored
+  // MintRadar identity. The image provider may return the localized Japanese
+  // set title, but that localized display text must never rewrite a supplied
+  // source set such as "Eevee Heroes".
+  if (
+    normalizedLanguage === "JP" &&
+    source
+  ) {
+    return source;
+  }
+
+  // Regional/export set naming is meaningful inventory identity. A provider
+  // may know the underlying expansion as "Gem Pack 2", but MintRadar should
+  // retain "Chinese Gem Pack 2" when that is what the source identifies.
+  if (
+    normalizedLanguage !== "EN" &&
+    source
+  ) {
+    const lower =
+      source.toLowerCase();
+
+    const hasRegionalIdentity =
+      lower.includes("chinese") ||
+      lower.includes("japanese") ||
+      /\b(?:cn|jp|jpn)\b/i.test(
+        source
+      );
+
+    if (hasRegionalIdentity) {
+      return source;
+    }
+  }
+
+  return resolved || source;
+}
+
 function normalizeRows({
   rows,
   preset,
@@ -743,6 +1016,8 @@ function normalizeRows({
       let rarity = "";
       let edition = "";
       let finish = "";
+      let language = "";
+      let variant = "";
       let listingType:
         ListingType = "raw";
       let condition = "NM";
@@ -1271,6 +1546,71 @@ function normalizeRows({
       }
 
 
+      const explicitLanguage =
+        normalizeCardLanguage(
+          getByAliases(
+            row,
+            [
+              "Language",
+              "Card Language",
+              "Printing Language",
+            ]
+          )
+        );
+
+      const taggedLanguage =
+        detectTaggedLanguage(
+          name,
+          setName,
+          notes
+        );
+
+      language =
+        explicitLanguage ||
+        taggedLanguage ||
+        "EN";
+
+      variant =
+        getByAliases(
+          row,
+          [
+            "Variant",
+            "Card Variant",
+            "Parallel",
+            "Parallel Name",
+          ]
+        ).trim();
+
+      if (
+        category
+          .trim()
+          .toLowerCase() ===
+        "pokemon"
+      ) {
+        // First remove only the trailing language marker. Then peel recognized
+        // printing/parallel descriptors into the dedicated variant field.
+        const languageCleanName =
+          stripTrailingLanguageTag(
+            name
+          );
+
+        const parsedVariant =
+          extractTrailingVariant(
+            languageCleanName
+          );
+
+        name =
+          parsedVariant.name;
+
+        if (
+          !variant &&
+          parsedVariant.variant
+        ) {
+          variant =
+            parsedVariant.variant;
+        }
+      }
+
       const errors: string[] =
         [];
       const warnings: string[] =
@@ -1350,6 +1690,8 @@ function normalizeRows({
 
         edition,
         finish,
+        language,
+        variant,
 
         listingType,
         condition,
@@ -1423,20 +1765,49 @@ function itemLabel(
   return row.condition || "Raw";
 }
 
-function normalizeImportCardNumber(
+function fullImportCardNumber(
   value: string
 ) {
   return value
     .trim()
     .replace(/^#/, "")
+    .trim();
+}
+
+function shortImportCardNumber(
+  value: string
+) {
+  return fullImportCardNumber(value)
     .split("/")[0]
     .trim();
+}
+
+function importCardNumberVariants(
+  value: string
+) {
+  const variants = [
+    fullImportCardNumber(value),
+    shortImportCardNumber(value),
+  ].filter(Boolean);
+
+  return Array.from(
+    new Set(variants)
+  );
+}
+
+function normalizeImportCardNumber(
+  value: string
+) {
+  // Keep the historical helper name for matching code, but make the full
+  // collector number the primary identity. Provider-specific short forms are
+  // generated explicitly through importCardNumberVariants().
+  return fullImportCardNumber(value);
 }
 
 function compactImportCardNumber(
   value: string
 ) {
-  return normalizeImportCardNumber(value)
+  return shortImportCardNumber(value)
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "");
 }
@@ -1449,9 +1820,9 @@ function normalizeSetForMatch(
     .replace(/\bpokemon\b/g, " ")
     .replace(/\btrading card game\b/g, " ")
     .replace(/\bbase set\b/g, " ")
-    .replace(/\btrainer gallery\b/g, " ")
-    .replace(/\bgalarian gallery\b/g, " ")
-    .replace(/\bshiny vault\b/g, " ")
+    .replace(/\btrainer gallery\b/g, " trainer gallery ")
+    .replace(/\bgalarian gallery\b/g, " galarian gallery ")
+    .replace(/\bshiny vault\b/g, " shiny vault ")
     .replace(/\bpromo cards?\b/g, " promo ")
     .replace(/\bblack star\b/g, " promo ")
     .replace(/\bsv\b/g, " scarlet violet ")
@@ -1575,6 +1946,673 @@ function candidateCardNumber(
   );
 }
 
+
+type PokemonImportResolution = {
+  imageUrl: string | null;
+  canonicalName: string | null;
+  variant: string | null;
+  language: string | null;
+  resolvedSetName: string | null;
+};
+
+async function resolvePokemonImportIdentity(
+  row: NormalizedRow
+): Promise<NormalizedRow> {
+  try {
+    const numberVariants =
+      importCardNumberVariants(
+        row.cardNumber || ""
+      );
+
+    // The CSV set can be a marketplace grouping ("Alternate Art Promos",
+    // "Miscellaneous Cards & Products", etc.) rather than the canonical set.
+    // Try the full collector identity first, then progressively relax the set
+    // hint while keeping the card name + number anchored.
+    const attempts: Array<{
+      setName: string;
+      cardNumber: string;
+    }> = [];
+
+    for (
+      const cardNumber of
+      numberVariants
+    ) {
+      attempts.push({
+        setName: row.setName.trim(),
+        cardNumber,
+      });
+
+      // Non-English Pokemon collector numbers are not globally unique across
+      // regional sets. Never drop a supplied JP/CN set constraint just to get
+      // a provider hit; that can rewrite Eevee Heroes #082 as another JP set.
+      if (
+        normalizeCardLanguage(
+          row.language
+        ) === "EN"
+      ) {
+        attempts.push({
+          setName: "",
+          cardNumber,
+        });
+      }
+    }
+
+    // Last-resort provider attempt for cards whose source export omitted a
+    // usable number. This remains confidence-checked by the fallback route.
+    attempts.push({
+      setName: row.setName.trim(),
+      cardNumber: "",
+    });
+
+    const seen =
+      new Set<string>();
+
+    for (const attempt of attempts) {
+      const key =
+        `${attempt.setName}|${attempt.cardNumber}`
+          .toLowerCase();
+
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+
+      const params =
+        new URLSearchParams({
+          name: row.name,
+          language:
+            pokemonProviderLanguage(
+              row.language
+            ),
+        });
+
+      if (attempt.setName) {
+        params.set(
+          "setName",
+          attempt.setName
+        );
+      }
+
+      if (attempt.cardNumber) {
+        params.set(
+          "cardNumber",
+          attempt.cardNumber
+        );
+      }
+
+      const response = await fetch(
+        `/api/catalog/pokemon-image-fallback?${params.toString()}`,
+        {
+          cache: "no-store",
+        }
+      );
+
+      if (!response.ok) {
+        continue;
+      }
+
+      const payload =
+        await response.json();
+
+      if (!payload?.ok) {
+        continue;
+      }
+
+      const parsedIdentity =
+        payload?.parsedIdentity || {};
+
+      const resolution:
+        PokemonImportResolution = {
+        imageUrl:
+          payload?.imageUrl
+            ? String(payload.imageUrl)
+            : null,
+        canonicalName:
+          parsedIdentity?.canonicalName
+            ? String(
+                parsedIdentity.canonicalName
+              )
+            : null,
+        variant:
+          parsedIdentity?.variant
+            ? String(
+                parsedIdentity.variant
+              )
+            : null,
+        language:
+          parsedIdentity?.language
+            ? String(
+                parsedIdentity.language
+              )
+            : null,
+        resolvedSetName:
+          parsedIdentity?.resolvedSetName
+            ? String(
+                parsedIdentity.resolvedSetName
+              )
+            : payload?.match?.setName
+              ? String(
+                  payload.match.setName
+                )
+              : null,
+      };
+
+      return {
+        ...row,
+
+        // Preserve the source display name until MintRadar has dedicated
+        // variant/language columns. The resolver can still use the canonical
+        // identity internally without throwing away source metadata.
+        name: row.name,
+
+        // A confidently provider-resolved set outranks marketplace/source
+        // groupings such as "Alternate Art Promos".
+        setName:
+          preserveRegionalPokemonSetName(
+            row.setName,
+            resolution.resolvedSetName,
+            row.language
+          ),
+
+        // Preserve the full source collector number exactly as imported.
+        cardNumber: row.cardNumber,
+
+        // Reuse provider-backed artwork during the actual write.
+        imageUrl:
+          resolution.imageUrl ||
+          row.imageUrl,
+
+        language:
+          normalizeCardLanguage(
+            resolution.language || ""
+          ) ||
+          row.language ||
+          "EN",
+
+        variant:
+          row.variant ||
+          resolution.variant ||
+          "",
+      };
+    }
+
+    return row;
+  } catch (error) {
+    console.warn(
+      `Pokémon import identity resolution skipped for "${row.name}":`,
+      error
+    );
+
+    return row;
+  }
+}
+
+function normalizeOnePieceCardNumber(
+  value: string
+) {
+  return value
+    .trim()
+    .toUpperCase()
+    .replace(/^#/, "")
+    .replace(/[\s_]+/g, "-")
+    .replace(
+      /^([A-Z]+)-?(\d{2})-?(\d{3})$/,
+      "$1$2-$3"
+    );
+}
+
+function onePieceNameBase(
+  value: string
+) {
+  let current =
+    value.trim();
+
+  // These are display/printing descriptors commonly appended by source
+  // exports. Peel only trailing parenthetical metadata; never rewrite the
+  // actual provider result or bracketed identity.
+  for (
+    let index = 0;
+    index < 4;
+    index += 1
+  ) {
+    const match =
+      current.match(
+        /\s*\(([^()]*)\)\s*$/
+      );
+
+    if (!match) {
+      break;
+    }
+
+    const descriptor =
+      match[1]
+        .trim()
+        .toLowerCase();
+
+    const looksLikeVariant =
+      descriptor.includes("alternate") ||
+      descriptor.includes("alt art") ||
+      descriptor.includes("manga") ||
+      descriptor === "sp" ||
+      descriptor.includes("special") ||
+      descriptor.includes("parallel") ||
+      descriptor.includes("gold") ||
+      descriptor.includes("promo") ||
+      descriptor.includes("winner") ||
+      descriptor.includes("championship") ||
+      descriptor.includes("anniversary") ||
+      descriptor === "jp" ||
+      descriptor === "jpn" ||
+      descriptor === "en";
+
+    if (!looksLikeVariant) {
+      break;
+    }
+
+    current =
+      current
+        .slice(
+          0,
+          match.index
+        )
+        .trim();
+  }
+
+  return current;
+}
+
+function normalizeOnePieceName(
+  value: string
+) {
+  return onePieceNameBase(value)
+    .toLowerCase()
+    .replace(
+      /[’']/g,
+      ""
+    )
+    .replace(
+      /[^a-z0-9]+/g,
+      " "
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function onePieceNameScore(
+  sourceName: string,
+  candidateName: string
+) {
+  const source =
+    normalizeOnePieceName(
+      sourceName
+    );
+
+  const sourceBase =
+    normalizeOnePieceName(
+      onePieceNameBase(
+        sourceName
+      )
+    );
+
+  const candidate =
+    normalizeOnePieceName(
+      candidateName
+    );
+
+  if (
+    !source ||
+    !candidate
+  ) {
+    return -1;
+  }
+
+  if (candidate === source) {
+    return 1400;
+  }
+
+  if (
+    sourceBase &&
+    candidate === sourceBase
+  ) {
+    return 1250;
+  }
+
+  if (
+    sourceBase &&
+    (
+      candidate.includes(
+        sourceBase
+      ) ||
+      sourceBase.includes(
+        candidate
+      )
+    )
+  ) {
+    return 700;
+  }
+
+  return -1;
+}
+
+function scoreOnePieceCandidate(
+  row: NormalizedRow,
+  candidate: any
+) {
+  const nameScore =
+    onePieceNameScore(
+      row.name,
+      String(
+        candidate?.name || ""
+      )
+    );
+
+  if (nameScore < 0) {
+    return -1;
+  }
+
+  let score =
+    nameScore;
+
+  const rowNumber =
+    normalizeOnePieceCardNumber(
+      row.cardNumber || ""
+    );
+
+  const candidateNumber =
+    normalizeOnePieceCardNumber(
+      candidateCardNumber(
+        candidate
+      )
+    );
+
+  if (
+    rowNumber &&
+    candidateNumber
+  ) {
+    if (
+      rowNumber ===
+      candidateNumber
+    ) {
+      score += 1200;
+    } else {
+      // One Piece card numbers are strong identity keys. A conflicting
+      // explicit number should not win because the character name matches.
+      return -1;
+    }
+  }
+
+  const setScore =
+    setSimilarityScore(
+      row.setName || "",
+      candidateSetName(
+        candidate
+      )
+    );
+
+  score += setScore;
+
+  if (
+    candidateImageUrl(
+      candidate
+    )
+  ) {
+    score += 100;
+  }
+
+  if (
+    candidate?.external_id &&
+    candidate?.data_source ===
+      "optcgapi"
+  ) {
+    score += 100;
+  }
+
+  return score;
+}
+
+function bestConfidentOnePieceCandidate(
+  row: NormalizedRow,
+  candidates: any[]
+) {
+  const ranked =
+    candidates
+      .map((candidate: any) => ({
+        candidate,
+        score:
+          scoreOnePieceCandidate(
+            row,
+            candidate
+          ),
+      }))
+      .filter(
+        ({ score }) =>
+          score >= 1800
+      )
+      .sort(
+        (a, b) =>
+          b.score - a.score
+      );
+
+  if (ranked.length === 0) {
+    return null;
+  }
+
+  const best =
+    ranked[0];
+
+  const second =
+    ranked[1];
+
+  // If two provider printings remain essentially tied, preserve the CSV
+  // rather than attaching the wrong artwork/set.
+  if (
+    second &&
+    best.score -
+      second.score <
+      150
+  ) {
+    return null;
+  }
+
+  return best.candidate;
+}
+
+async function fetchOnePieceCatalogCandidates(
+  query: string
+) {
+  const cleanQuery =
+    query.trim();
+
+  if (!cleanQuery) {
+    return [];
+  }
+
+  const allCandidates:
+    any[] = [];
+
+  try {
+    let page = 1;
+
+    while (page <= 5) {
+      const response =
+        await fetch(
+          `/api/catalog/onepiece?q=${encodeURIComponent(
+            cleanQuery
+          )}&page=${page}`,
+          {
+            cache:
+              "no-store",
+          }
+        );
+
+      if (!response.ok) {
+        break;
+      }
+
+      const payload =
+        await response.json();
+
+      const results =
+        Array.isArray(
+          payload?.results
+        )
+          ? payload.results
+          : [];
+
+      allCandidates.push(
+        ...results
+      );
+
+      if (
+        !payload?.hasMore ||
+        results.length === 0
+      ) {
+        break;
+      }
+
+      page += 1;
+    }
+  } catch (error) {
+    console.warn(
+      `Local One Piece catalog lookup skipped for "${cleanQuery}":`,
+      error
+    );
+  }
+
+  return allCandidates;
+}
+
+async function resolveOnePieceImportIdentity(
+  row: NormalizedRow
+): Promise<NormalizedRow> {
+  const number =
+    normalizeOnePieceCardNumber(
+      row.cardNumber || ""
+    );
+
+  const baseName =
+    onePieceNameBase(
+      row.name
+    );
+
+  const queries =
+    [
+      number,
+      [
+        baseName,
+        number,
+      ]
+        .filter(Boolean)
+        .join(" "),
+      baseName,
+      row.name,
+    ].filter(Boolean);
+
+  const seenQueries =
+    new Set<string>();
+
+  const candidates:
+    any[] = [];
+
+  for (const query of queries) {
+    const key =
+      query
+        .trim()
+        .toLowerCase();
+
+    if (
+      !key ||
+      seenQueries.has(key)
+    ) {
+      continue;
+    }
+
+    seenQueries.add(key);
+
+    const found =
+      await fetchOnePieceCatalogCandidates(
+        query
+      );
+
+    candidates.push(
+      ...found
+    );
+
+    const best =
+      bestConfidentOnePieceCandidate(
+        row,
+        candidates
+      );
+
+    if (best) {
+      return {
+        ...row,
+
+        // Preserve source display naming until variant/language have
+        // dedicated database fields.
+        name: row.name,
+
+        // Provider-backed actual set and artwork are safe to improve.
+        setName:
+          candidateSetName(
+            best
+          ) ||
+          row.setName,
+
+        imageUrl:
+          candidateImageUrl(
+            best
+          ) ||
+          row.imageUrl,
+
+        rarity:
+          String(
+            best?.rarity ||
+            row.rarity ||
+            ""
+          ),
+
+        // Keep CSV finish when present. Otherwise reuse the provider's
+        // normalized One Piece variant (Manga / Alternate Art / SP / Gold).
+        finish:
+          row.finish ||
+          String(
+            best?.finish || ""
+          ),
+      };
+    }
+  }
+
+  // No confident provider result: leave the source record exactly alone.
+  return row;
+}
+
+async function resolveImportIdentity(
+  row: NormalizedRow
+): Promise<NormalizedRow> {
+  const category =
+    (row.category || "")
+      .trim()
+      .toLowerCase();
+
+  if (category === "pokemon") {
+    return resolvePokemonImportIdentity(
+      row
+    );
+  }
+
+  if (
+    category === "one piece"
+  ) {
+    return resolveOnePieceImportIdentity(
+      row
+    );
+  }
+
+  return row;
+}
+
 function scoreImportedCardCandidate(
   row: NormalizedRow,
   candidate: any
@@ -1636,6 +2674,63 @@ function scoreImportedCardCandidate(
     row.setName || "",
     candidateSetName(candidate)
   );
+
+  const rowVariant =
+    normalizeKey(
+      row.variant || ""
+    );
+
+  const candidateVariant =
+    normalizeKey(
+      String(
+        candidate?.variant || ""
+      )
+    );
+
+  if (
+    rowVariant &&
+    candidateVariant
+  ) {
+    if (
+      rowVariant ===
+      candidateVariant
+    ) {
+      score += 450;
+    } else {
+      score -= 500;
+    }
+  } else if (
+    rowVariant &&
+    !candidateVariant
+  ) {
+    score -= 150;
+  }
+
+  const rowFinish =
+    normalizeKey(
+      row.finish || ""
+    );
+
+  const candidateFinish =
+    normalizeKey(
+      String(
+        candidate?.finish || ""
+      )
+    );
+
+  if (
+    rowFinish &&
+    candidateFinish
+  ) {
+    if (
+      rowFinish ===
+      candidateFinish
+    ) {
+      score += 150;
+    } else {
+      score -= 175;
+    }
+  }
 
   if (candidateImageUrl(candidate)) {
     score += 50;
@@ -1719,7 +2814,7 @@ async function findExistingCard(
     } = await supabase
       .from("cards")
       .select(
-        "id,name,set_name,card_number,image_url,external_id,data_source"
+        "id,name,set_name,card_number,image_url,external_id,data_source,language,variant,finish"
       )
       .ilike(
         "name",
@@ -1728,6 +2823,10 @@ async function findExistingCard(
       .eq(
         "category",
         "Pokemon"
+      )
+      .eq(
+        "language",
+        row.language || "EN"
       )
       .limit(150);
 
@@ -1751,7 +2850,7 @@ async function findExistingCard(
   let query = supabase
     .from("cards")
     .select(
-      "id,name,set_name,card_number,image_url,external_id,data_source"
+      "id,name,set_name,card_number,image_url,external_id,data_source,language,variant,finish"
     )
     .ilike(
       "name",
@@ -1769,6 +2868,13 @@ async function findExistingCard(
     query = query.ilike(
       "card_number",
       row.cardNumber.trim()
+    );
+  }
+
+  if (row.language.trim()) {
+    query = query.eq(
+      "language",
+      row.language.trim()
     );
   }
 
@@ -1843,15 +2949,18 @@ async function fetchPokemonCatalogCandidates(
 async function searchLocalPokemonImage(
   row: NormalizedRow
 ): Promise<string | null> {
-  const normalizedNumber =
-    normalizeImportCardNumber(
+  const numberVariants =
+    importCardNumberVariants(
       row.cardNumber || ""
     );
 
   const queries = [
-    [row.name, normalizedNumber]
-      .filter(Boolean)
-      .join(" "),
+    ...numberVariants.map(
+      (cardNumber) =>
+        [row.name, cardNumber]
+          .filter(Boolean)
+          .join(" ")
+    ),
     [row.name, row.setName]
       .filter(Boolean)
       .join(" "),
@@ -1915,6 +3024,10 @@ async function requestPokemonFallbackImage(
     const params =
       new URLSearchParams({
         name: row.name,
+        language:
+          pokemonProviderLanguage(
+            row.language
+          ),
       });
 
     const setName =
@@ -2002,31 +3115,24 @@ async function resolveImportImage(
     return localImage;
   }
 
-  const originalNumber =
-    (row.cardNumber || "")
-      .trim();
-
-  const normalizedNumber =
-    normalizeImportCardNumber(
-      originalNumber
+  const numberVariants =
+    importCardNumberVariants(
+      row.cardNumber || ""
     );
 
   const fallbackAttempts = [
-    {
-      setName: row.setName,
-      cardNumber:
-        normalizedNumber,
-    },
-    {
-      setName: row.setName,
-      cardNumber:
-        originalNumber,
-    },
-    {
-      setName: "",
-      cardNumber:
-        normalizedNumber,
-    },
+    ...numberVariants.map(
+      (cardNumber) => ({
+        setName: row.setName,
+        cardNumber,
+      })
+    ),
+    ...numberVariants.map(
+      (cardNumber) => ({
+        setName: "",
+        cardNumber,
+      })
+    ),
     {
       setName: row.setName,
       cardNumber: "",
@@ -2065,20 +3171,24 @@ async function resolveImportImage(
 }
 
 async function createImportedCard(
-  row: NormalizedRow
+  row: NormalizedRow,
+  options?: {
+    canonicalReplacement?: boolean;
+  }
 ) {
   const resolvedImageUrl =
     await resolveImportImage(row);
 
-  const fallbackExternalId =
-    row.sourceExternalId ||
+  const canonicalIdentity =
     [
       row.category,
+      row.language,
       row.setName,
       row.name,
       row.cardNumber,
-      row.edition,
+      row.variant,
       row.finish,
+      row.edition,
     ]
       .map(
         (value) =>
@@ -2086,14 +3196,25 @@ async function createImportedCard(
       )
       .join(":");
 
+  // A canonical replacement is intentionally a separate MintRadar card row.
+  // Never reuse the source external ID here: the stale card may already own it
+  // under a UNIQUE constraint, which would make the repair import fail.
+  const fallbackExternalId =
+    options?.canonicalReplacement
+      ? `canonical:${canonicalIdentity}`
+      : row.sourceExternalId ||
+        canonicalIdentity;
+
   const dataSource =
-    row.source === "tcgplayer"
-      ? "tcgplayer_import"
-      : row.source === "collectr"
-        ? "collectr_import"
-        : row.source === "pricecharting"
-          ? "pricecharting_import"
-          : "csv_import";
+    options?.canonicalReplacement
+      ? "csv_import_canonical"
+      : row.source === "tcgplayer"
+        ? "tcgplayer_import"
+        : row.source === "collectr"
+          ? "collectr_import"
+          : row.source === "pricecharting"
+            ? "pricecharting_import"
+            : "csv_import";
 
   const {
     data,
@@ -2118,6 +3239,10 @@ async function createImportedCard(
         row.edition || null,
       finish:
         row.finish || null,
+      language:
+        row.language || "EN",
+      variant:
+        row.variant || null,
 
       external_id:
         fallbackExternalId,
@@ -2131,6 +3256,29 @@ async function createImportedCard(
     .single();
 
   if (error) {
+    // Marketplace/source IDs are not language/variant-aware enough to be the
+    // sole identity for multilingual imports. If an older card already owns
+    // the same (data_source, external_id), preserve the database uniqueness
+    // constraint and retry this exact canonical printing under MintRadar's
+    // language/set/number/variant/finish identity instead.
+    if (
+      error?.code === "23505" &&
+      String(
+        error?.message || ""
+      ).includes(
+        "cards_data_source_external_id_unique"
+      ) &&
+      !options?.canonicalReplacement
+    ) {
+      return createImportedCard(
+        row,
+        {
+          canonicalReplacement:
+            true,
+        }
+      );
+    }
+
     throw error;
   }
 
@@ -2144,29 +3292,202 @@ async function getOrCreateCard(
     await findExistingCard(row);
 
   if (existing?.id) {
-    if (!existing.image_url) {
-      const resolvedImageUrl =
-        await resolveImportImage(
-          row
+    const resolvedImageUrl =
+      existing.image_url
+        ? null
+        : await resolveImportImage(
+            row
+          );
+
+    const updates: Record<
+      string,
+      string | null
+    > = {};
+
+    // resolveImportIdentity() runs before this function. For Pokémon, the
+    // row therefore carries provider-confirmed canonical identity whenever
+    // the resolver found one. Reusing an older imported card must not keep
+    // stale marketplace grouping metadata such as "Alternate Art Promos".
+    if (
+      row.category
+        .trim()
+        .toLowerCase() ===
+      "pokemon"
+    ) {
+      if (
+        row.setName.trim() &&
+        row.setName.trim() !==
+          String(
+            existing.set_name || ""
+          ).trim()
+      ) {
+        updates.set_name =
+          row.setName.trim();
+      }
+
+      if (
+        row.cardNumber.trim() &&
+        row.cardNumber.trim() !==
+          String(
+            existing.card_number || ""
+          ).trim()
+      ) {
+        updates.card_number =
+          row.cardNumber.trim();
+      }
+
+      if (
+        row.language.trim() &&
+        row.language.trim() !==
+          String(
+            existing.language || "EN"
+          ).trim()
+      ) {
+        updates.language =
+          row.language.trim();
+      }
+
+      if (
+        row.variant.trim() !==
+        String(
+          existing.variant || ""
+        ).trim()
+      ) {
+        updates.variant =
+          row.variant.trim() || null;
+      }
+    }
+
+    if (resolvedImageUrl) {
+      updates.image_url =
+        resolvedImageUrl;
+    }
+
+    if (
+      Object.keys(updates)
+        .length > 0
+    ) {
+      const {
+        data: updatedCard,
+        error: updateError,
+      } = await supabase
+        .from("cards")
+        .update(updates)
+        .eq(
+          "id",
+          existing.id
+        )
+        .select(
+          "id,set_name,card_number,image_url,language,variant"
+        )
+        .maybeSingle();
+
+      if (updateError) {
+        console.warn(
+          `CSV canonical card update could not repair ${row.name}; creating a canonical import card instead:`,
+          updateError
         );
 
-      if (resolvedImageUrl) {
-        const { error: imageUpdateError } =
-          await supabase
-            .from("cards")
-            .update({
-              image_url:
-                resolvedImageUrl,
-            })
-            .eq(
-              "id",
-              existing.id
-            );
+        return createImportedCard(
+          row,
+          {
+            canonicalReplacement:
+              true,
+          }
+        );
+      }
 
-        if (imageUpdateError) {
+      // Supabase/RLS can allow an UPDATE request to complete without an
+      // explicit error while matching zero writable rows. Never knowingly
+      // return the stale card in that case.
+      if (!updatedCard?.id) {
+        console.warn(
+          `CSV canonical card update matched no writable row for ${row.name}; creating a canonical import card instead.`
+        );
+
+        return createImportedCard(
+          row,
+          {
+            canonicalReplacement:
+              true,
+          }
+        );
+      }
+
+      const pokemonRow =
+        row.category
+          .trim()
+          .toLowerCase() ===
+        "pokemon";
+
+      if (pokemonRow) {
+        const expectedSet =
+          row.setName.trim();
+
+        const actualSet =
+          String(
+            updatedCard.set_name || ""
+          ).trim();
+
+        const expectedNumber =
+          row.cardNumber.trim();
+
+        const actualNumber =
+          String(
+            updatedCard.card_number || ""
+          ).trim();
+
+        const setWasRepaired =
+          !expectedSet ||
+          expectedSet === actualSet;
+
+        const numberWasRepaired =
+          !expectedNumber ||
+          expectedNumber ===
+            actualNumber;
+
+        const expectedLanguage =
+          row.language.trim() ||
+          "EN";
+
+        const actualLanguage =
+          String(
+            updatedCard.language ||
+            "EN"
+          ).trim();
+
+        const languageWasRepaired =
+          expectedLanguage ===
+          actualLanguage;
+
+        const expectedVariant =
+          row.variant.trim();
+
+        const actualVariant =
+          String(
+            updatedCard.variant || ""
+          ).trim();
+
+        const variantWasRepaired =
+          expectedVariant ===
+          actualVariant;
+
+        if (
+          !setWasRepaired ||
+          !numberWasRepaired ||
+          !languageWasRepaired ||
+          !variantWasRepaired
+        ) {
           console.warn(
-            `CSV image save skipped for ${row.name}:`,
-            imageUpdateError
+            `CSV canonical card update did not persist the resolved identity for ${row.name}; creating a canonical import card instead.`
+          );
+
+          return createImportedCard(
+            row,
+            {
+              canonicalReplacement:
+                true,
+            }
           );
         }
       }
@@ -2248,6 +3569,21 @@ export default function VendorImportPage() {
     importing,
     setImporting,
   ] = useState(false);
+
+  const [
+    cancelingImport,
+    setCancelingImport,
+  ] = useState(false);
+
+  const [
+    importCanceledAt,
+    setImportCanceledAt,
+  ] = useState<number | null>(
+    null
+  );
+
+  const cancelImportRef =
+    useRef(false);
 
   const [
     importProgress,
@@ -2621,6 +3957,10 @@ export default function VendorImportPage() {
 
     setPageError("");
     setResults([]);
+    cancelImportRef.current =
+      false;
+    setCancelingImport(false);
+    setImportCanceledAt(null);
     setImporting(true);
     setImportProgress({
       current: 0,
@@ -2636,8 +3976,22 @@ export default function VendorImportPage() {
       index < validRows.length;
       index += 1
     ) {
-      const row =
+      // Cancellation is cooperative: finish the row already in flight,
+      // then stop before resolving or writing the next row.
+      if (cancelImportRef.current) {
+        setImportCanceledAt(
+          index
+        );
+        break;
+      }
+
+      const sourceRow =
         validRows[index];
+
+      const row =
+        await resolveImportIdentity(
+          sourceRow
+        );
 
       try {
         const notes =
@@ -2680,6 +4034,10 @@ export default function VendorImportPage() {
               row.edition || null,
             finish:
               row.finish || null,
+            language:
+              row.language || "EN",
+            variant:
+              row.variant || null,
             illustrator: null,
             year: null,
             manufacturer: null,
@@ -2817,18 +4175,153 @@ export default function VendorImportPage() {
             `${row.name} imported to ${selectedDestination.label}.`,
         });
       } catch (error: any) {
-        console.error(
-          `CSV import row ${row.rowNumber} error:`,
-          error
+        const ownProperties =
+          error &&
+          typeof error ===
+            "object"
+            ? Object.getOwnPropertyNames(
+                error
+              ).reduce(
+                (
+                  result:
+                    Record<
+                      string,
+                      unknown
+                    >,
+                  key
+                ) => {
+                  try {
+                    result[key] =
+                      error[key];
+                  } catch {
+                    result[key] =
+                      "[unreadable]";
+                  }
+
+                  return result;
+                },
+                {}
+              )
+            : {};
+
+        const errorDetails = {
+          rowNumber:
+            row.rowNumber,
+          name:
+            row.name,
+          setName:
+            row.setName,
+          cardNumber:
+            row.cardNumber,
+          category:
+            row.category,
+          language:
+            row.language,
+          variant:
+            row.variant,
+          finish:
+            row.finish,
+          destination:
+            selectedDestination.kind,
+          message:
+            error?.message ??
+            null,
+          code:
+            error?.code ??
+            null,
+          details:
+            error?.details ??
+            null,
+          hint:
+            error?.hint ??
+            null,
+          nameOfError:
+            error?.name ??
+            null,
+          constructor:
+            error?.constructor
+              ?.name ??
+            null,
+          ownProperties,
+          stringValue:
+            (() => {
+              try {
+                return String(
+                  error
+                );
+              } catch {
+                return "[unstringifiable]";
+              }
+            })(),
+          jsonValue:
+            (() => {
+              try {
+                return JSON.stringify(
+                  error
+                );
+              } catch {
+                return "[unserializable]";
+              }
+            })(),
+        };
+
+        // Do not use console.error here. Next/Turbopack promotes client-side
+        // console.error calls into its dev overlay and can collapse Supabase
+        // errors to `{}`, hiding the useful diagnostics we actually need.
+        console.warn(
+          `CSV import row ${row.rowNumber} failed`,
+          errorDetails
         );
+
+        const providerMessage =
+          error?.message ||
+          error?.details ||
+          error?.code ||
+          (
+            errorDetails
+              .stringValue &&
+            errorDetails
+              .stringValue !==
+              "[object Object]"
+              ? errorDetails
+                  .stringValue
+              : ""
+          ) ||
+          "Unknown import error";
+
+        const visibleDiagnostic =
+          [
+            `ROW ${row.rowNumber}`,
+            `CARD: ${row.name || "(blank)"}`,
+            `SET: ${row.setName || "(blank)"}`,
+            `NUMBER: ${row.cardNumber || "(blank)"}`,
+            `LANGUAGE: ${row.language || "(blank)"}`,
+            `VARIANT: ${row.variant || "(blank)"}`,
+            `FINISH: ${row.finish || "(blank)"}`,
+            `ERROR: ${providerMessage}`,
+            error?.code
+              ? `CODE: ${error.code}`
+              : "",
+            error?.details
+              ? `DETAILS: ${error.details}`
+              : "",
+            error?.hint
+              ? `HINT: ${error.hint}`
+              : "",
+            errorDetails.jsonValue &&
+            errorDetails.jsonValue !== "{}"
+              ? `RAW: ${errorDetails.jsonValue}`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" | ");
 
         importResults.push({
           rowNumber:
             row.rowNumber,
           ok: false,
           message:
-            error?.message ||
-            `Could not import ${row.name}.`,
+            visibleDiagnostic,
         });
       }
 
@@ -2843,7 +4336,27 @@ export default function VendorImportPage() {
     setResults(
       importResults
     );
+
+    if (
+      cancelImportRef.current
+    ) {
+      setImportCanceledAt(
+        importResults.length
+      );
+    }
+
     setImporting(false);
+    setCancelingImport(false);
+  }
+
+  function cancelImport() {
+    if (!importing) {
+      return;
+    }
+
+    cancelImportRef.current =
+      true;
+    setCancelingImport(true);
   }
 
 
@@ -2931,6 +4444,41 @@ export default function VendorImportPage() {
                 ? `, ${failedImports} failed`
                 : ""}.
             </p>
+
+            {failedImports > 0 && (
+              <div className="mt-4 space-y-3">
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-amber-300">
+                  Failed Rows
+                </p>
+
+                {results
+                  .filter(
+                    (result) =>
+                      !result.ok
+                  )
+                  .map(
+                    (result) => (
+                      <div
+                        key={`failed-${result.rowNumber}`}
+                        className="rounded-xl border border-red-400/30 bg-black/40 p-3"
+                      >
+                        <p className="text-xs font-black text-red-300">
+                          Row{" "}
+                          {
+                            result.rowNumber
+                          }
+                        </p>
+
+                        <p className="mt-2 whitespace-pre-wrap break-words font-mono text-xs leading-5 text-zinc-300">
+                          {
+                            result.message
+                          }
+                        </p>
+                      </div>
+                    )
+                  )}
+              </div>
+            )}
 
             {successfulImports >
               0 && (
@@ -3418,18 +4966,30 @@ export default function VendorImportPage() {
 
               <button
                 type="button"
-                onClick={() =>
-                  void importRows()
-                }
+                onClick={() => {
+                  if (importing) {
+                    cancelImport();
+                    return;
+                  }
+
+                  void importRows();
+                }}
                 disabled={
-                  importing ||
-                  validRows.length ===
-                    0
+                  (!importing &&
+                    validRows.length ===
+                      0) ||
+                  cancelingImport
                 }
-                className="mt-5 w-full rounded-xl bg-emerald-400 px-5 py-4 font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                className={`mt-5 w-full rounded-xl px-5 py-4 font-black transition disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto ${
+                  importing
+                    ? "bg-red-500 text-white hover:bg-red-400"
+                    : "bg-emerald-400 text-black hover:bg-emerald-300"
+                }`}
               >
                 {importing
-                  ? `Importing ${importProgress.current} / ${importProgress.total}...`
+                  ? cancelingImport
+                    ? `Canceling after row ${importProgress.current + 1} finishes...`
+                    : `Cancel Import • ${importProgress.current} / ${importProgress.total}`
                   : `Import ${validRows.length} Valid Row${
                       validRows.length ===
                       1
@@ -3437,6 +4997,14 @@ export default function VendorImportPage() {
                         : "s"
                     }`}
               </button>
+
+              {importCanceledAt !==
+                null &&
+                !importing && (
+                  <div className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-sm font-bold text-amber-300">
+                    Import canceled — {importCanceledAt} of {importProgress.total} rows were processed. Everything already imported was kept; remaining rows were not touched.
+                  </div>
+                )}
 
               {importing && (
                 <div className="mt-4 h-2 overflow-hidden rounded-full bg-black">
