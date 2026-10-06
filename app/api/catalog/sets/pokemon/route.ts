@@ -11,6 +11,7 @@ type CatalogSetRow = {
   set_type: string | null;
   logo_url: string | null;
   symbol_url: string | null;
+  language: "EN" | "JP" | "CN-TW" | "CN";
 };
 
 function getSupabaseClient() {
@@ -48,7 +49,8 @@ export async function GET() {
           released_at,
           set_type,
           logo_url,
-          symbol_url
+          symbol_url,
+          language
         `
       )
       .eq("data_source", "tcgdex")
@@ -72,6 +74,7 @@ export async function GET() {
       setType: set.set_type,
       logoUrl: set.logo_url,
       symbolUrl: set.symbol_url,
+      language: set.language,
     }));
 
     return NextResponse.json({

@@ -15,12 +15,15 @@ type CardRow = {
   rarity: string | null;
   edition: string | null;
   finish: string | null;
+  language: "EN" | "JP" | "CN-TW" | "CN";
+  variant: string | null;
 };
 
 type SetRow = {
   external_id: string;
   name: string;
   code: string | null;
+  language: "EN" | "JP" | "CN-TW" | "CN";
 };
 
 type NormalizedCard = {
@@ -34,6 +37,8 @@ type NormalizedCard = {
   rarity: string | null;
   edition: string | null;
   finish: string | null;
+  language: "EN" | "JP" | "CN-TW" | "CN";
+  variant: string | null;
   illustrator: string | null;
   image_url: string | null;
 };
@@ -105,6 +110,12 @@ async function enrichMissingPokemonImages(
 
         if (card.card_number) {
           params.set("cardNumber", card.card_number);
+        }
+
+        params.set("language", card.language);
+
+        if (card.variant) {
+          params.set("variant", card.variant);
         }
 
         const response = await fetch(
@@ -276,6 +287,8 @@ export async function GET(
                 candidate.set.external_id,
               name:
                 candidate.set.name,
+              language:
+                candidate.set.language,
               score:
                 candidate.score,
             })
@@ -286,12 +299,15 @@ export async function GET(
           ? {
               set:
                 bestSet.set.name,
+              language:
+                bestSet.set.language,
               cardText:
                 cardTextWithinSet ||
                 null,
             }
           : {
               set: null,
+              language: null,
               cardText: query,
             },
 
@@ -342,7 +358,7 @@ async function findMatchingSets(
             await supabase
               .from("catalog_sets")
               .select(
-                "external_id,name,code"
+                "external_id,name,code,language"
               )
               .eq(
                 "data_source",
@@ -398,7 +414,7 @@ async function findMatchingSets(
 
       const existing =
         candidates.get(
-          set.external_id
+          `${set.language}:${set.external_id}`
         );
 
       if (
@@ -406,7 +422,7 @@ async function findMatchingSets(
         score > existing.score
       ) {
         candidates.set(
-          set.external_id,
+          `${set.language}:${set.external_id}`,
           {
             set,
             sourceQuery: piece,
@@ -436,7 +452,7 @@ async function searchWithinSet(
     supabase
       .from("cards")
       .select(
-        "external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish"
+        "external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish,language,variant"
       )
       .eq(
         "data_source",
@@ -445,6 +461,10 @@ async function searchWithinSet(
       .eq(
         "category",
         "Pokemon"
+      )
+      .eq(
+        "language",
+        set.language
       )
       .like(
         "external_id",
@@ -506,40 +526,33 @@ async function searchCardsByName(
     return [];
   }
 
-  // Treat a standalone collector-number token as a card number
-  // instead of forcing every token into the card name.
+  // Treat a standalone numeric / collector-number token as a card
+  // number instead of forcing every token into the card name.
   //
-  // Supports both numeric and prefixed Pokémon collector numbers.
-  // normalizeText() already removes punctuation, so these all become
-  // the same searchable collector identity where appropriate:
-  //
+  // Examples:
   //   "Gastly 177"       -> name: Gastly, number: 177
   //   "Gastly #177"      -> name: Gastly, number: 177
   //   "177 Gastly"       -> name: Gastly, number: 177
   //   "Gastly 177/162"   -> name: Gastly, number: 177
-  //   "Flareon TG01"     -> name: Flareon, number: TG01
-  //   "Flareon TG#01"    -> name: Flareon, number: TG01
-  //   "Flareon #TG01"    -> name: Flareon, number: TG01
   //
-  // Require at least one digit so ordinary card-name words are never
-  // mistaken for collector numbers. Prefixes such as TG, GG, SV, SWSH,
-  // and future alphanumeric catalog prefixes work without a hardcoded list.
-  const collectorNumberTokens =
+  // We only do this when there is at least one non-number token so
+  // normal card-name searching remains the primary behavior.
+  const numberTokens =
     words.filter((word) =>
-      /^(?=[a-z0-9]*\d)[a-z]*\d+[a-z]*$/.test(word)
+      /^\d+(?:[a-z]+)?$/.test(word)
     );
 
   const nameWords =
     words.filter(
       (word) =>
-        !collectorNumberTokens.includes(word)
+        !numberTokens.includes(word)
     );
 
   const cardNumber =
     nameWords.length > 0 &&
-    collectorNumberTokens.length > 0
-      ? collectorNumberTokens[
-          collectorNumberTokens.length - 1
+    numberTokens.length > 0
+      ? numberTokens[
+          numberTokens.length - 1
         ]
       : null;
 
@@ -552,7 +565,7 @@ async function searchCardsByName(
     supabase
       .from("cards")
       .select(
-        "external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish"
+        "external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish,language,variant"
       )
       .eq(
         "data_source",
@@ -727,7 +740,7 @@ function mergeCardRows(
   for (const group of groups) {
     for (const card of group) {
       const key =
-        `${card.data_source || ""}:${card.external_id}`;
+        `${card.data_source || ""}:${card.language}:${card.external_id}`;
 
       if (!unique.has(key)) {
         unique.set(key, card);
@@ -760,6 +773,8 @@ function normalizeCard(
     rarity: card.rarity,
     edition: card.edition,
     finish: card.finish,
+    language: card.language,
+    variant: card.variant,
     illustrator: null,
     image_url: card.image_url,
   };
@@ -1076,18 +1091,6 @@ function normalizeText(
     .replace(
       /pokémon/g,
       "pokemon"
-    )
-    // Collector-number shorthand:
-    //   TG#01 / #TG01 / #177 -> TG01 / TG01 / 177
-    // Do this before general punctuation normalization so the collector
-    // number remains one token instead of becoming "tg 01".
-    .replace(
-      /#(?=[a-z0-9])/g,
-      ""
-    )
-    .replace(
-      /(?<=[a-z0-9])#(?=[a-z0-9])/g,
-      ""
     )
     .replace(
       /[^a-z0-9]+/g,

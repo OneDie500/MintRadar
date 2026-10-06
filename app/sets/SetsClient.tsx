@@ -21,6 +21,7 @@ type SetOption = {
   setType?: string | null;
   logoUrl?: string | null;
   symbolUrl?: string | null;
+  language?: "EN" | "JP" | "CN-TW" | "CN" | null;
 };
 
 type CategoryConfig = {
@@ -209,6 +210,7 @@ export default function SetsClient({
         set.code,
         set.setType,
         set.releasedAt,
+        set.language,
       ]
         .filter(Boolean)
         .join(" ")
@@ -394,21 +396,32 @@ export default function SetsClient({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {filteredSets.map((set) => (
               <Link
-                key={`${set.category}:${set.id}`}
+                key={`${set.category}:${set.language || "EN"}:${set.id}`}
                 href={`/sets/${categorySlug(
                   set.category
                 )}/${encodeURIComponent(
                   set.id
-                )}?name=${encodeURIComponent(set.name)}`}
+                )}?${new URLSearchParams({
+                  name: set.name,
+                  language: set.language || "EN",
+                }).toString()}`}
                 className="group rounded-2xl border border-zinc-900 bg-zinc-950 p-5 transition hover:-translate-y-1 hover:border-emerald-400/60"
               >
                 <SetArtwork set={set} />
 
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
-                    <span className="inline-flex rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-emerald-300">
-                      {getCategoryLabel(set.category)}
-                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-flex rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-emerald-300">
+                        {getCategoryLabel(set.category)}
+                      </span>
+
+                      {set.language && (
+                        <span className="inline-flex rounded-full border border-zinc-700 bg-zinc-900 px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-zinc-300">
+                          {set.language}
+                        </span>
+                      )}
+                    </div>
 
                     <h3 className="mt-4 text-lg font-black leading-tight group-hover:text-emerald-300">
                       {set.name}

@@ -740,6 +740,16 @@ type TcgdexSetBrief = {
   name?: string | null;
 };
 
+type TcgdexJapaneseSetDetail = {
+  id?: string | null;
+  name?: string | null;
+  cardCount?: {
+    official?: number | null;
+    total?: number | null;
+  } | null;
+  cards?: TcgdexCardBrief[];
+};
+
 const JP_SET_NAME_ALIASES: Record<string, string[]> = {
   "eevee heroes": ["イーブイヒーローズ"],
 };
@@ -747,66 +757,82 @@ const JP_SET_NAME_ALIASES: Record<string, string[]> = {
 async function resolveJapaneseSetScopedImage({
   name,
   setName,
+  setId: suppliedSetId,
   cardNumber,
 }: {
   name: string;
   setName?: string | null;
+  setId?: string | null;
   cardNumber?: string | null;
 }) {
+  if (!cardNumber) {
+    return null;
+  }
+
   const normalizedSet =
     normalizeMetadataText(setName || "");
 
   const aliases =
     JP_SET_NAME_ALIASES[normalizedSet] || [];
 
-  if (!setName || !aliases.length || !cardNumber) {
-    return null;
-  }
+  let setId =
+    suppliedSetId?.trim() || null;
 
-  const sets =
-    await fetchJsonWithTimeout<TcgdexSetBrief[]>(
-      "https://api.tcgdex.net/v2/ja/sets"
-    );
+  let matchingSets: TcgdexSetBrief[] = [];
 
-  if (!Array.isArray(sets)) {
-    return null;
-  }
+  // Prefer the provider set identity already carried by the catalog.
+  // Only use the legacy alias lookup when no setId was supplied.
+  if (setId) {
+    matchingSets = [
+      {
+        id: setId,
+        name: setName || null,
+      },
+    ];
+  } else {
+    if (!setName || !aliases.length) {
+      return null;
+    }
 
-  const matchingSets =
-    sets.filter((set) => {
-      const actual =
-        (set?.name || "").trim();
-
-      return aliases.some(
-        (alias) =>
-          actual === alias ||
-          actual.includes(alias) ||
-          alias.includes(actual)
+    const sets =
+      await fetchJsonWithTimeout<TcgdexSetBrief[]>(
+        "https://api.tcgdex.net/v2/ja/sets"
       );
-    });
 
-  if (matchingSets.length !== 1) {
-    return null;
+    if (!Array.isArray(sets)) {
+      return null;
+    }
+
+    matchingSets =
+      sets.filter((set) => {
+        const actual =
+          (set?.name || "").trim();
+
+        return aliases.some(
+          (alias) =>
+            actual === alias ||
+            actual.includes(alias) ||
+            alias.includes(actual)
+        );
+      });
+
+    if (matchingSets.length !== 1) {
+      return null;
+    }
+
+    setId =
+      matchingSets[0]?.id || null;
   }
-
-  const setId =
-    matchingSets[0]?.id;
 
   if (!setId) {
     return null;
   }
 
-  type TcgdexSetDetail = {
-    id?: string | null;
-    name?: string | null;
-    cards?: TcgdexCardBrief[];
-  };
-
   // TCGdex's set/card endpoint is keyed by the provider's localId, not by
   // marketplace full-number notation such as "082/069". Resolve the set first
   // and inspect its own card list so the number can never escape this set.
   const setDetail =
-    await fetchJsonWithTimeout<TcgdexSetDetail>(
+    await fetchJsonWithTimeout<TcgdexJapaneseSetDetail>(
       `https://api.tcgdex.net/v2/ja/sets/${encodeURIComponent(
         setId
       )}`
@@ -878,6 +904,7 @@ async function resolveJapaneseSetScopedImage({
     "";
 
   const setMatches =
+    Boolean(suppliedSetId) ||
     aliases.some(
       (alias) =>
         actualSetName === alias ||
@@ -1080,18 +1107,33 @@ async function resolveOfficialPokemonJapanImage({
     return null;
   }
 
-  const wantedNumber =
-    normalizePrintedCollectorNumber(
-      cardNumber
-    );
+  // Restore the previously working JP behavior:
+  // once the exact Japanese provider set is known, the official Pokémon Japan
+  // set search is already scoped to that set. Its card list follows collector
+  // position, so the short collector number identifies the target position
+  // without allowing the lookup to escape into another set.
+  const requestedShort =
+    shortCardNumber(cardNumber)
+      .replace(/\s+/g, "");
+
+  const numericMatch =
+    requestedShort.match(/^0*(\d+)$/);
+
+  if (!numericMatch) {
+    return null;
+  }
+
+  const targetPosition =
+    Number(numericMatch[1]);
 
   if (
-    !wantedNumber ||
-    !wantedNumber.includes("/")
+    !Number.isFinite(targetPosition) ||
+    targetPosition < 1
   ) {
     return null;
   }
 
+  let position = 0;
   let page = 1;
   let maxPage = 1;
 
@@ -1179,109 +1221,47 @@ async function resolveOfficialPokemonJapanImage({
         ? payload.maxPage
         : 1;
 
-    // Search only cards returned by the already-verified Japanese set.
-    // Detail pages are the authority for the actual printed collector
-    // number; search-result ordering is never treated as card identity.
-    const candidates =
-      cards.filter(
-        (card) =>
-          card.cardID != null &&
-          Boolean(
-            (card.cardThumbFile || "").trim()
-          )
-      );
+    for (const card of cards) {
+      position += 1;
 
-    const batchSize = 6;
+      if (position !== targetPosition) {
+        continue;
+      }
 
-    for (
-      let index = 0;
-      index < candidates.length;
-      index += batchSize
-    ) {
-      const batch =
-        candidates.slice(
-          index,
-          index + batchSize
-        );
+      const thumb =
+        (card.cardThumbFile || "").trim();
 
-      const checked =
-        await Promise.all(
-          batch.map(async (card) => {
-            const cardId =
-              String(card.cardID);
-
-            const html =
-              await fetchOfficialJapanDetail(
-                cardId
-              );
-
-            if (
-              !html ||
-              !officialJapanDetailMatchesIdentity({
-                html,
-                setId,
-                cardNumber,
-              })
-            ) {
-              return null;
-            }
-
-            return card;
-          })
-        );
-
-      const matches =
-        checked.filter(
-          (
-            card
-          ): card is PokemonJapanCard =>
-            Boolean(card)
-        );
-
-      if (matches.length > 1) {
-        // Never guess if the official site somehow returns more than one
-        // card with the same verified set + printed collector number.
+      if (!thumb) {
         return null;
       }
 
-      if (matches.length === 1) {
-        const card = matches[0];
+      const imageUrl =
+        thumb.startsWith("http")
+          ? thumb
+          : `https://www.pokemon-card.com${
+              thumb.startsWith("/")
+                ? thumb
+                : `/${thumb}`
+            }`;
 
-        const thumb =
-          (card.cardThumbFile || "").trim();
-
-        if (!thumb) {
-          return null;
-        }
-
-        const imageUrl =
-          thumb.startsWith("http")
-            ? thumb
-            : `https://www.pokemon-card.com${
-                thumb.startsWith("/")
-                  ? thumb
-                  : `/${thumb}`
-              }`;
-
-        return {
-          imageUrl,
-          provider:
-            "pokemon-japan-official",
-          match: {
-            id:
-              card.cardID != null
-                ? String(card.cardID)
-                : null,
-            name:
-              card.cardNameAltText ||
-              name,
-            setName:
-              setName || null,
-            cardNumber,
-            setId,
-          },
-        };
-      }
+      return {
+        imageUrl,
+        provider:
+          "pokemon-japan-official",
+        match: {
+          id:
+            card.cardID != null
+              ? String(card.cardID)
+              : null,
+          name:
+            card.cardNameAltText ||
+            name,
+          setName:
+            setName || null,
+          cardNumber,
+          setId,
+        },
+      };
     }
 
     page += 1;
@@ -1289,7 +1269,6 @@ async function resolveOfficialPokemonJapanImage({
 
   return null;
 }
-
 
 type SimplifiedChineseSetIdentity = {
   providerSetCode: string;
@@ -3099,6 +3078,11 @@ export async function GET(request: NextRequest) {
         .get("setName")
         ?.trim() || null;
 
+    const suppliedSetId =
+      request.nextUrl.searchParams
+        .get("setId")
+        ?.trim() || null;
+
     const rawCardNumber =
       request.nextUrl.searchParams
         .get("cardNumber")
@@ -3195,6 +3179,7 @@ export async function GET(request: NextRequest) {
         await resolveJapaneseSetScopedImage({
           name: canonicalName,
           setName: resolverSetName,
+          setId: suppliedSetId,
           cardNumber,
         });
 
@@ -3237,7 +3222,11 @@ export async function GET(request: NextRequest) {
           normalizedJpSet
         ] || [];
 
-      if (jpAliases.length) {
+      let officialJapanSetId =
+        suppliedSetId;
+
+      // Backward compatibility for older callers that do not yet send setId.
+      if (!officialJapanSetId && jpAliases.length) {
         const jpSets =
           await fetchJsonWithTimeout<
             TcgdexSetBrief[]
@@ -3265,49 +3254,169 @@ export async function GET(request: NextRequest) {
             matchingJpSets.length === 1 &&
             matchingJpSets[0]?.id
           ) {
-            const officialJapan =
-              await resolveOfficialPokemonJapanImage({
-                setId:
-                  matchingJpSets[0].id,
-                cardNumber,
-                name: canonicalName,
-                setName:
-                  resolverSetName,
-              });
-
-            if (officialJapan) {
-              return NextResponse.json({
-                ok: true,
-                imageUrl:
-                  officialJapan.imageUrl,
-                provider:
-                  officialJapan.provider,
-                match:
-                  officialJapan.match,
-                parsedIdentity: {
-                  originalName: name,
-                  canonicalName,
-                  variant,
-                  language,
-                  suppliedSetName:
-                    setName,
-                  resolverSetName,
-                  resolvedSetName:
-                    resolverSetName,
-                  resolvedSetId:
-                    matchingJpSets[0].id,
-                },
-              });
-            }
+            officialJapanSetId =
+              matchingJpSets[0].id;
           }
         }
       }
 
-      // Critical safety rule: when a JP card has a recognized set identity,
-      // do not fall through to the global localId search. The same collector
-      // number can exist in many Japanese sets.
+      if (officialJapanSetId) {
+        let officialJapanCardNumber =
+          cardNumber;
+
+        // TCGdex often exposes Japanese catalog cards as a short localId
+        // such as "001", while the official Pokémon Japan detail page prints
+        // the full collector identity such as "001 / 076".
+        //
+        // Only derive the denominator from the exact, already-supplied JP
+        // provider set. Also require that the requested localId exists exactly
+        // once inside that set before constructing the printed number.
+        if (
+          cardNumber &&
+          !normalizePrintedCollectorNumber(
+            cardNumber
+          ).includes("/")
+        ) {
+          const jpSetDetail =
+            await fetchJsonWithTimeout<TcgdexJapaneseSetDetail>(
+              `https://api.tcgdex.net/v2/ja/sets/${encodeURIComponent(
+                officialJapanSetId
+              )}`
+            );
+
+          const officialCount =
+            jpSetDetail?.cardCount?.official;
+
+          const requestedNumbers =
+            new Set(
+              buildCollectorNumberVariants(
+                cardNumber
+              ).map((value) =>
+                normalize(value)
+              )
+            );
+
+          const exactSetMatches =
+            Array.isArray(jpSetDetail?.cards)
+              ? jpSetDetail!.cards!.filter(
+                  (candidate) => {
+                    const candidateNumbers =
+                      new Set(
+                        buildCollectorNumberVariants(
+                          candidate.localId
+                        ).map((value) =>
+                          normalize(value)
+                        )
+                      );
+
+                    return Array.from(
+                      requestedNumbers
+                    ).some((value) =>
+                      candidateNumbers.has(
+                        value
+                      )
+                    );
+                  }
+                )
+              : [];
+
+          const shortNumber =
+            shortCardNumber(
+              cardNumber
+            ).replace(/\s+/g, "");
+
+          const numericShort =
+            shortNumber.match(
+              /^0*(\d+)$/
+            );
+
+          if (
+            typeof officialCount ===
+              "number" &&
+            Number.isFinite(
+              officialCount
+            ) &&
+            officialCount > 0 &&
+            exactSetMatches.length === 1 &&
+            numericShort
+          ) {
+            const numeratorValue =
+              Number(
+                numericShort[1]
+              );
+
+            const width =
+              Math.max(
+                3,
+                shortNumber.length,
+                String(
+                  officialCount
+                ).length
+              );
+
+            const numerator =
+              String(
+                numeratorValue
+              ).padStart(
+                width,
+                "0"
+              );
+
+            const denominator =
+              String(
+                officialCount
+              ).padStart(
+                width,
+                "0"
+              );
+
+            officialJapanCardNumber =
+              `${numerator}/${denominator}`;
+          }
+        }
+
+        const officialJapan =
+          await resolveOfficialPokemonJapanImage({
+            setId: officialJapanSetId,
+            cardNumber:
+              officialJapanCardNumber,
+            name: canonicalName,
+            setName:
+              resolverSetName,
+          });
+
+        if (officialJapan) {
+          return NextResponse.json({
+            ok: true,
+            imageUrl:
+              officialJapan.imageUrl,
+            provider:
+              officialJapan.provider,
+            match:
+              officialJapan.match,
+            parsedIdentity: {
+              originalName: name,
+              canonicalName,
+              variant,
+              language,
+              suppliedSetName:
+                setName,
+              suppliedSetId,
+              resolverSetName,
+              resolvedSetName:
+                resolverSetName,
+              resolvedSetId:
+                officialJapanSetId,
+            },
+          });
+        }
+      }
+
+      // Critical safety rule: an explicit JP provider setId is authoritative.
+      // Never fall through to a global localId search when we know the set.
       const recognizedJpSet =
         Boolean(
+          suppliedSetId ||
           JP_SET_NAME_ALIASES[
             normalizeMetadataText(
               resolverSetName || ""
@@ -3329,6 +3438,7 @@ export async function GET(request: NextRequest) {
             language,
             requestedSet:
               setName || null,
+            suppliedSetId,
             resolverSetName:
               resolverSetName || null,
             requestedNumber:

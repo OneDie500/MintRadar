@@ -14,6 +14,7 @@ import ts from "typescript";
 type CatalogSetRow = {
   external_id: string;
   data_source: "tcgdex";
+  language: CatalogLanguage;
   name: string;
   category: "Pokemon";
   code: string;
@@ -29,6 +30,7 @@ type CatalogSetRow = {
 type CardRow = {
   external_id: string;
   data_source: "tcgdex";
+  language: CatalogLanguage;
   name: string;
   set_name: string;
   card_number: string;
@@ -47,6 +49,34 @@ const CACHE_DIR = join(
   "tcgdex-cards-database"
 );
 const DATA_DIR = join(CACHE_DIR, "data");
+const ASIA_DATA_DIR = join(
+  CACHE_DIR,
+  "data-asia"
+);
+
+type CatalogLanguage =
+  | "EN"
+  | "JP"
+  | "CN-TW"
+  | "CN";
+
+const ASIA_LANGUAGES: {
+  sourceKey: string;
+  language: Exclude<CatalogLanguage, "EN">;
+}[] = [
+  {
+    sourceKey: "ja",
+    language: "JP",
+  },
+  {
+    sourceKey: "zh-tw",
+    language: "CN-TW",
+  },
+  {
+    sourceKey: "zh-cn",
+    language: "CN",
+  },
+];
 
 loadEnvFile(join(ROOT, ".env.local"));
 
@@ -181,6 +211,7 @@ async function main() {
       setRows.push({
         external_id: setId,
         data_source: "tcgdex",
+        language: "EN",
         name: setName,
         category: "Pokemon",
         code: setId,
@@ -230,6 +261,7 @@ async function main() {
           external_id:
             `${setId}-${localId}`,
           data_source: "tcgdex",
+          language: "EN",
           name: cardName,
           set_name: setName,
           card_number: localId,
@@ -254,20 +286,299 @@ async function main() {
     }
   }
 
+  if (existsSync(ASIA_DATA_DIR)) {
+    console.log(
+      "\nDiscovering TCGdex Asian catalog..."
+    );
+
+    const asiaSeriesFolders =
+      readdirSync(ASIA_DATA_DIR)
+        .map((name) => ({
+          name,
+          path: join(
+            ASIA_DATA_DIR,
+            name
+          ),
+        }))
+        .filter((item) =>
+          statSync(item.path)
+            .isDirectory()
+        );
+
+    let asiaSetRows = 0;
+    let asiaCardRows = 0;
+
+    for (
+      const seriesFolder
+      of asiaSeriesFolders
+    ) {
+      const seriesFile = join(
+        ASIA_DATA_DIR,
+        `${seriesFolder.name}.ts`
+      );
+
+      const seriesId =
+        existsSync(seriesFile)
+          ? readStringProperty(
+              parseDefaultObject(
+                seriesFile
+              ),
+              "id"
+            )
+          : seriesFolder.name;
+
+      const setFiles =
+        readdirSync(
+          seriesFolder.path
+        )
+          .filter(
+            (name) =>
+              extname(name) ===
+              ".ts"
+          )
+          .sort();
+
+      for (
+        const setFile
+        of setFiles
+      ) {
+        const setPath = join(
+          seriesFolder.path,
+          setFile
+        );
+
+        const setObject =
+          parseDefaultObject(
+            setPath
+          );
+
+        const setId =
+          readStringProperty(
+            setObject,
+            "id"
+          );
+
+        if (!setId) {
+          continue;
+        }
+
+        const folderName =
+          basename(
+            setFile,
+            ".ts"
+          );
+
+        const cardsFolder =
+          join(
+            seriesFolder.path,
+            folderName
+          );
+
+        const cardFiles =
+          existsSync(cardsFolder)
+            ? readdirSync(
+                cardsFolder
+              )
+                .filter(
+                  (name) =>
+                    extname(
+                      name
+                    ) === ".ts"
+                )
+                .sort()
+            : [];
+
+        const cardCount =
+          cardFiles.length ||
+          readNestedNumberProperty(
+            setObject,
+            "cardCount",
+            "total"
+          ) ||
+          readNestedNumberProperty(
+            setObject,
+            "cardCount",
+            "official"
+          ) ||
+          0;
+
+        for (
+          const {
+            sourceKey,
+            language,
+          } of ASIA_LANGUAGES
+        ) {
+          const setName =
+            readLocalizedProperty(
+              setObject,
+              "name",
+              sourceKey
+            );
+
+          if (!setName) {
+            continue;
+          }
+
+          const releasedAt =
+            normalizeDate(
+              readLocalizedProperty(
+                setObject,
+                "releaseDate",
+                sourceKey
+              )
+            );
+
+          setRows.push({
+            external_id: setId,
+            data_source:
+              "tcgdex",
+            language,
+            name: setName,
+            category:
+              "Pokemon",
+            code: setId,
+            card_count:
+              cardCount,
+            released_at:
+              releasedAt,
+            set_type: null,
+            series_id:
+              seriesId,
+            logo_url: null,
+            symbol_url: null,
+            external_updated_at:
+              now,
+          });
+
+          asiaSetRows += 1;
+
+          for (
+            const cardFile
+            of cardFiles
+          ) {
+            const cardPath =
+              join(
+                cardsFolder,
+                cardFile
+              );
+
+            const cardObject =
+              parseDefaultObject(
+                cardPath
+              );
+
+            if (!cardObject) {
+              continue;
+            }
+
+            const cardName =
+              readLocalizedProperty(
+                cardObject,
+                "name",
+                sourceKey
+              );
+
+            if (!cardName) {
+              continue;
+            }
+
+            const localId =
+              basename(
+                cardFile,
+                ".ts"
+              );
+
+            const variant =
+              readVariant(
+                cardObject
+              );
+
+            cardRows.push({
+              external_id:
+                `${setId}-${localId}`,
+              data_source:
+                "tcgdex",
+              language,
+              name: cardName,
+              set_name:
+                setName,
+              card_number:
+                localId,
+              image_url: "",
+              category:
+                "Pokemon",
+              rarity:
+                readStringProperty(
+                  cardObject,
+                  "rarity"
+                ),
+              edition:
+                variant.edition,
+              finish:
+                variant.finish,
+              external_updated_at:
+                now,
+            });
+
+            asiaCardRows += 1;
+          }
+        }
+      }
+    }
+
+    console.log(
+      `Asian catalog prepared: ${asiaSetRows} localized sets and ${asiaCardRows} localized cards.`
+    );
+  } else {
+    console.warn(
+      "TCGdex data-asia directory was not found; EN sync will continue normally."
+    );
+  }
+
+  const dedupedSetRows =
+    dedupeCatalogRows(
+      setRows,
+      "catalog_sets"
+    );
+
+  const dedupedCardRows =
+    dedupeCatalogRows(
+      cardRows,
+      "cards"
+    );
+
   console.log(
-    `\nPrepared ${setRows.length} sets and ${cardRows.length} cards.`
+    `\nPrepared ${dedupedSetRows.length} unique sets and ${dedupedCardRows.length} unique cards.`
   );
+
+  if (
+    dedupedSetRows.length !==
+    setRows.length
+  ) {
+    console.log(
+      `catalog_sets: removed ${setRows.length - dedupedSetRows.length} duplicate source identities before upsert.`
+    );
+  }
+
+  if (
+    dedupedCardRows.length !==
+    cardRows.length
+  ) {
+    console.log(
+      `cards: removed ${cardRows.length - dedupedCardRows.length} duplicate source identities before upsert.`
+    );
+  }
 
   await upsertBatches(
     "catalog_sets",
-    setRows,
+    dedupedSetRows,
     250
   );
 
   await upsertBatches(
     "cards",
-    cardRows,
-    400
+    dedupedCardRows,
+    200
   );
 
   console.log(
@@ -490,6 +801,43 @@ function readStringProperty(
   );
 }
 
+function readLocalizedProperty(
+  object:
+    | ts.ObjectLiteralExpression
+    | null,
+  name: string,
+  languageKey: string
+) {
+  const value =
+    getPropertyInitializer(
+      object,
+      name
+    );
+
+  const direct =
+    expressionString(value);
+
+  if (direct) {
+    return direct;
+  }
+
+  if (
+    value &&
+    ts.isObjectLiteralExpression(
+      value
+    )
+  ) {
+    return expressionString(
+      getPropertyInitializer(
+        value,
+        languageKey
+      )
+    );
+  }
+
+  return null;
+}
+
 function readEnglishProperty(
   object:
     | ts.ObjectLiteralExpression
@@ -710,6 +1058,105 @@ function readVariant(
   };
 }
 
+function dedupeCatalogRows<
+  T extends {
+    data_source?: unknown;
+    language?: unknown;
+    external_id?: unknown;
+  }
+>(
+  rows: T[],
+  label: string
+) {
+  const byIdentity =
+    new Map<string, T>();
+
+  for (const row of rows) {
+    const source =
+      String(
+        row.data_source ?? ""
+      ).trim();
+
+    const language =
+      String(
+        row.language ?? ""
+      ).trim();
+
+    const externalId =
+      String(
+        row.external_id ?? ""
+      ).trim();
+
+    const key =
+      `${source}\u0000${language}\u0000${externalId}`;
+
+    if (
+      byIdentity.has(key)
+    ) {
+      const existing =
+        byIdentity.get(key)!;
+
+      if (
+        JSON.stringify(existing) !==
+        JSON.stringify(row)
+      ) {
+        console.warn(
+          `${label}: duplicate source identity ${source} / ${language} / ${externalId}; keeping the later discovered row.`
+        );
+      }
+    }
+
+    byIdentity.set(
+      key,
+      row
+    );
+  }
+
+  return Array.from(
+    byIdentity.values()
+  );
+}
+
+const UPSERT_MAX_ATTEMPTS = 5;
+const UPSERT_RETRY_BASE_MS = 1000;
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) =>
+    setTimeout(resolve, ms)
+  );
+}
+
+function isTransientUpsertError(
+  error: unknown
+) {
+  const message =
+    error instanceof Error
+      ? error.message
+      : String(
+          (error as any)?.message ||
+            error ||
+            ""
+        );
+
+  const normalized =
+    message.toLowerCase();
+
+  return (
+    normalized.includes("fetch failed") ||
+    normalized.includes("network") ||
+    normalized.includes("socket") ||
+    normalized.includes("timeout") ||
+    normalized.includes("timed out") ||
+    normalized.includes("connection") ||
+    normalized.includes("econnreset") ||
+    normalized.includes("etimedout") ||
+    normalized.includes("und_err") ||
+    normalized.includes("502") ||
+    normalized.includes("503") ||
+    normalized.includes("504")
+  );
+}
+
 async function upsertBatches(
   table: string,
   rows: Record<
@@ -729,20 +1176,71 @@ async function upsertBatches(
         start + batchSize
       );
 
-    const { error } =
-      await supabase
-        .from(table)
-        .upsert(
-          batch,
-          {
-            onConflict:
-              "data_source,external_id",
-          }
+    let completed = false;
+
+    for (
+      let attempt = 1;
+      attempt <=
+        UPSERT_MAX_ATTEMPTS;
+      attempt += 1
+    ) {
+      try {
+        const { error } =
+          await supabase
+            .from(table)
+            .upsert(
+              batch,
+              {
+                onConflict:
+                  "data_source,language,external_id",
+              }
+            );
+
+        if (error) {
+          throw error;
+        }
+
+        completed = true;
+        break;
+      } catch (error) {
+        const transient =
+          isTransientUpsertError(
+            error
+          );
+
+        if (
+          !transient ||
+          attempt ===
+            UPSERT_MAX_ATTEMPTS
+        ) {
+          const message =
+            error instanceof Error
+              ? error.message
+              : String(
+                  (error as any)?.message ||
+                    error
+                );
+
+          throw new Error(
+            `${table} upsert failed at row ${start}: ${message}`
+          );
+        }
+
+        const delay =
+          UPSERT_RETRY_BASE_MS *
+          attempt;
+
+        console.warn(
+          `${table}: transient failure at row ${start} (attempt ${attempt}/${UPSERT_MAX_ATTEMPTS}); retrying in ${delay}ms...`
         );
 
-    if (error) {
+        await sleep(delay);
+      }
+    }
+
+    if (!completed) {
       throw new Error(
-        `${table} upsert failed at row ${start}: ${error.message}`
+        `${table} upsert failed at row ${start}: retry loop exited unexpectedly`
       );
     }
 

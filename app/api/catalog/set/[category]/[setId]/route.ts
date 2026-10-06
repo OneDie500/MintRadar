@@ -17,6 +17,8 @@ type NormalizedCard = {
   edition: string | null;
   finish: string | null;
   illustrator: string | null;
+  language?: "EN" | "JP" | "CN-TW" | "CN" | null;
+  variant?: string | null;
 };
 
 type RouteContext = {
@@ -71,6 +73,20 @@ export async function GET(
         .get("name")
         ?.trim() || null;
 
+    const requestedLanguageRaw =
+      request.nextUrl.searchParams
+        .get("language")
+        ?.trim()
+        .toUpperCase() || "";
+
+    const requestedLanguage =
+      requestedLanguageRaw === "JP" ||
+      requestedLanguageRaw === "CN-TW" ||
+      requestedLanguageRaw === "CN" ||
+      requestedLanguageRaw === "EN"
+        ? requestedLanguageRaw
+        : "EN";
+
     let payload:
       | {
           set: {
@@ -82,6 +98,7 @@ export async function GET(
             releasedAt?: string | null;
             setType?: string | null;
             symbolUrl?: string | null;
+            language?: "EN" | "JP" | "CN-TW" | "CN" | null;
           };
           results: NormalizedCard[];
         }
@@ -89,7 +106,8 @@ export async function GET(
 
     if (cleanCategory === "pokemon") {
       payload = await loadPokemonSet(
-        decodedSetId
+        decodedSetId,
+        requestedLanguage
       );
     } else if (
       cleanCategory === "lorcana"
@@ -159,6 +177,7 @@ type CachedPokemonSet = {
   name: string;
   card_count: number | null;
   symbol_url: string | null;
+  language: "EN" | "JP" | "CN-TW" | "CN";
 };
 
 type CachedPokemonCard = {
@@ -172,10 +191,13 @@ type CachedPokemonCard = {
   rarity: string | null;
   edition: string | null;
   finish: string | null;
+  language: "EN" | "JP" | "CN-TW" | "CN";
+  variant: string | null;
 };
 
 async function loadPokemonSet(
-  setId: string
+  setId: string,
+  language: "EN" | "JP" | "CN-TW" | "CN"
 ) {
   const supabase =
     catalogClient();
@@ -187,7 +209,7 @@ async function loadPokemonSet(
     await supabase
       .from("catalog_sets")
       .select(
-        "external_id,name,card_count,symbol_url"
+        "external_id,name,card_count,symbol_url,language"
       )
       .eq(
         "data_source",
@@ -200,6 +222,10 @@ async function loadPokemonSet(
       .eq(
         "external_id",
         setId
+      )
+      .eq(
+        "language",
+        language
       )
       .maybeSingle();
 
@@ -225,7 +251,7 @@ async function loadPokemonSet(
     await supabase
       .from("cards")
       .select(
-        "external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish"
+        "external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish,language,variant"
       )
       .eq(
         "data_source",
@@ -234,6 +260,10 @@ async function loadPokemonSet(
       .eq(
         "category",
         "Pokemon"
+      )
+      .eq(
+        "language",
+        language
       )
       .like(
         "external_id",
@@ -285,6 +315,10 @@ async function loadPokemonSet(
             card.finish,
           illustrator:
             null,
+          language:
+            card.language,
+          variant:
+            card.variant,
         })
       );
 
@@ -303,6 +337,8 @@ async function loadPokemonSet(
         results.length,
       symbolUrl:
         set.symbol_url,
+      language:
+        set.language,
     },
     results,
   };

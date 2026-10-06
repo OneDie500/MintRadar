@@ -27,6 +27,8 @@ type CatalogCard = {
   edition: string | null;
   finish: string | null;
   illustrator: string | null;
+  language?: "EN" | "JP" | "CN-TW" | "CN" | null;
+  variant?: string | null;
 };
 
 type SetInfo = {
@@ -38,6 +40,7 @@ type SetInfo = {
   releasedAt?: string | null;
   setType?: string | null;
   symbolUrl?: string | null;
+  language?: "EN" | "JP" | "CN-TW" | "CN" | null;
 };
 
 type SetResponse = {
@@ -45,6 +48,11 @@ type SetResponse = {
   count?: number;
   results?: CatalogCard[];
   error?: string;
+};
+
+type PokemonDisplayIdentity = {
+  cardName: string;
+  setName: string;
 };
 
 type VendorListing = {
@@ -94,6 +102,325 @@ const CATEGORY_LOGOS:
   },
 };
 
+function PokemonCatalogImage({
+  card,
+}: {
+  card: CatalogCard;
+}) {
+  const pokemonCard =
+    card.category === "Pokemon";
+
+  const language =
+    card.language || "EN";
+
+  const nonEnglishPokemonCard =
+    pokemonCard &&
+    Boolean(language.trim()) &&
+    language.trim().toUpperCase() !== "EN";
+
+  const [currentSrc, setCurrentSrc] =
+    useState<string | null>(
+      nonEnglishPokemonCard
+        ? null
+        : card.image_url || null
+    );
+
+  const [fallbackAttempted, setFallbackAttempted] =
+    useState(false);
+
+  const [failed, setFailed] =
+    useState(false);
+
+  function buildPokemonFallbackUrl() {
+    if (
+      !pokemonCard ||
+      !card.name?.trim()
+    ) {
+      return null;
+    }
+
+    const params =
+      new URLSearchParams();
+
+    params.set(
+      "name",
+      card.name.trim()
+    );
+
+    if (card.set_name?.trim()) {
+      params.set(
+        "setName",
+        card.set_name.trim()
+      );
+    }
+
+    if (card.set_id?.trim()) {
+      params.set(
+        "setId",
+        card.set_id.trim()
+      );
+    }
+
+    if (card.card_number?.trim()) {
+      params.set(
+        "cardNumber",
+        card.card_number.trim()
+      );
+    }
+
+    params.set(
+      "language",
+      language.trim()
+    );
+
+    if (card.variant?.trim()) {
+      params.set(
+        "variant",
+        card.variant.trim()
+      );
+    }
+
+    return (
+      `/api/catalog/pokemon-image-fallback?${params.toString()}`
+    );
+  }
+
+  useEffect(() => {
+    let active = true;
+
+    setFallbackAttempted(false);
+    setFailed(false);
+
+    // Match the known-good vendor dashboard behavior:
+    // localized Pokémon artwork is resolved from the complete localized
+    // identity every time. A stored image_url may be valid English artwork,
+    // so JP/CN cards must not trust it.
+    if (nonEnglishPokemonCard) {
+      setCurrentSrc(null);
+
+      const fallbackUrl =
+        buildPokemonFallbackUrl();
+
+      if (!fallbackUrl) {
+        setFailed(true);
+
+        return () => {
+          active = false;
+        };
+      }
+
+      setFallbackAttempted(true);
+
+      void (async () => {
+        try {
+          const response =
+            await fetch(
+              fallbackUrl,
+              {
+                method: "GET",
+                cache: "no-store",
+              }
+            );
+
+          if (!response.ok) {
+            if (active) {
+              setFailed(true);
+            }
+
+            return;
+          }
+
+          const payload =
+            (await response.json()) as {
+              ok?: boolean;
+              imageUrl?: string | null;
+            };
+
+          if (
+            active &&
+            payload.ok &&
+            typeof payload.imageUrl === "string" &&
+            payload.imageUrl.trim()
+          ) {
+            setCurrentSrc(
+              payload.imageUrl.trim()
+            );
+
+            setFailed(false);
+            return;
+          }
+
+          if (active) {
+            setFailed(true);
+          }
+        } catch (error) {
+          console.warn(
+            "Localized Pokémon checklist image lookup failed:",
+            error
+          );
+
+          if (active) {
+            setFailed(true);
+          }
+        }
+      })();
+
+      return () => {
+        active = false;
+      };
+    }
+
+    setCurrentSrc(
+      card.image_url || null
+    );
+
+    return () => {
+      active = false;
+    };
+  }, [
+    card.external_id,
+    card.image_url,
+    card.category,
+    card.name,
+    card.set_name,
+    card.set_id,
+    card.card_number,
+    card.language,
+    card.variant,
+    language,
+    nonEnglishPokemonCard,
+  ]);
+
+  async function tryEnglishPokemonFallback() {
+    if (
+      !pokemonCard ||
+      nonEnglishPokemonCard ||
+      fallbackAttempted
+    ) {
+      setFailed(true);
+      return;
+    }
+
+    const fallbackUrl =
+      buildPokemonFallbackUrl();
+
+    if (!fallbackUrl) {
+      setFailed(true);
+      return;
+    }
+
+    setFallbackAttempted(true);
+    setFailed(false);
+
+    try {
+      const response =
+        await fetch(
+          fallbackUrl,
+          {
+            method: "GET",
+            cache: "no-store",
+          }
+        );
+
+      if (!response.ok) {
+        setFailed(true);
+        return;
+      }
+
+      const payload =
+        (await response.json()) as {
+          ok?: boolean;
+          imageUrl?: string | null;
+        };
+
+      if (
+        payload.ok &&
+        typeof payload.imageUrl === "string" &&
+        payload.imageUrl.trim()
+      ) {
+        setCurrentSrc(
+          payload.imageUrl.trim()
+        );
+
+        return;
+      }
+
+      setFailed(true);
+    } catch (error) {
+      console.warn(
+        "Pokémon checklist image fallback failed:",
+        error
+      );
+
+      setFailed(true);
+    }
+  }
+
+  useEffect(() => {
+    if (
+      nonEnglishPokemonCard ||
+      currentSrc ||
+      fallbackAttempted ||
+      failed
+    ) {
+      return;
+    }
+
+    if (pokemonCard) {
+      void tryEnglishPokemonFallback();
+    } else {
+      setFailed(true);
+    }
+  }, [
+    currentSrc,
+    pokemonCard,
+    nonEnglishPokemonCard,
+    fallbackAttempted,
+    failed,
+  ]);
+
+  if (failed) {
+    return (
+      <div className="h-full w-full flex items-center justify-center px-4 text-center text-xs text-zinc-700">
+        Image unavailable
+      </div>
+    );
+  }
+
+  if (!currentSrc) {
+    return (
+      <div className="h-full w-full flex items-center justify-center px-4 text-center text-xs text-zinc-700">
+        Loading...
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={currentSrc}
+      alt={
+        card.name ||
+        "Trading card"
+      }
+      loading="lazy"
+      onError={() => {
+        if (
+          pokemonCard &&
+          !nonEnglishPokemonCard &&
+          !fallbackAttempted
+        ) {
+          setCurrentSrc(null);
+          void tryEnglishPokemonFallback();
+          return;
+        }
+
+        setFailed(true);
+      }}
+      className="h-full w-full object-contain"
+    />
+  );
+}
+
 export default function SetChecklistPage() {
   const params =
     useParams<{
@@ -122,6 +449,20 @@ export default function SetChecklistPage() {
       .get("name")
       ?.trim() || "";
 
+  const requestedLanguageRaw =
+    searchParams
+      .get("language")
+      ?.trim()
+      .toUpperCase() || "EN";
+
+  const requestedLanguage:
+    "EN" | "JP" | "CN-TW" | "CN" =
+      requestedLanguageRaw === "JP" ||
+      requestedLanguageRaw === "CN-TW" ||
+      requestedLanguageRaw === "CN"
+        ? requestedLanguageRaw
+        : "EN";
+
   const [setInfo, setSetInfo] =
     useState<SetInfo | null>(
       null
@@ -131,6 +472,13 @@ export default function SetChecklistPage() {
     useState<CatalogCard[]>(
       []
     );
+
+  const [
+    displayIdentities,
+    setDisplayIdentities,
+  ] = useState<
+    Map<string, PokemonDisplayIdentity>
+  >(new Map());
 
   const [search, setSearch] =
     useState("");
@@ -202,12 +550,23 @@ export default function SetChecklistPage() {
       setError("");
 
       try {
+        const queryParams =
+          new URLSearchParams();
+
+        if (requestedName) {
+          queryParams.set(
+            "name",
+            requestedName
+          );
+        }
+
+        queryParams.set(
+          "language",
+          requestedLanguage
+        );
+
         const query =
-          requestedName
-            ? `?name=${encodeURIComponent(
-                requestedName
-              )}`
-            : "";
+          `?${queryParams.toString()}`;
 
         const response =
           await fetch(
@@ -284,6 +643,164 @@ export default function SetChecklistPage() {
     category,
     setId,
     requestedName,
+    requestedLanguage,
+  ]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadEnglishDisplayIdentities() {
+      if (
+        category !== "pokemon" ||
+        requestedLanguage === "EN" ||
+        cards.length === 0
+      ) {
+        setDisplayIdentities(
+          new Map()
+        );
+        return;
+      }
+
+      const next =
+        new Map<
+          string,
+          PokemonDisplayIdentity
+        >();
+
+      const batchSize = 20;
+
+      for (
+        let index = 0;
+        index < cards.length;
+        index += batchSize
+      ) {
+        if (cancelled) {
+          return;
+        }
+
+        const batch =
+          cards.slice(
+            index,
+            index + batchSize
+          );
+
+        const resolved =
+          await Promise.all(
+            batch.map(
+              async (card) => {
+                const params =
+                  new URLSearchParams();
+
+                params.set(
+                  "name",
+                  card.name || ""
+                );
+
+                if (card.set_name) {
+                  params.set(
+                    "setName",
+                    card.set_name
+                  );
+                }
+
+                if (card.set_id) {
+                  params.set(
+                    "setId",
+                    card.set_id
+                  );
+                }
+
+                if (card.card_number) {
+                  params.set(
+                    "cardNumber",
+                    card.card_number
+                  );
+                }
+
+                params.set(
+                  "language",
+                  card.language ||
+                    requestedLanguage
+                );
+
+                try {
+                  const response =
+                    await fetch(
+                      `/api/catalog/pokemon-display-identity?${params.toString()}`,
+                      {
+                        cache: "no-store",
+                      }
+                    );
+
+                  if (!response.ok) {
+                    return null;
+                  }
+
+                  const payload =
+                    (await response.json()) as {
+                      ok?: boolean;
+                      cardName?: string | null;
+                      setName?: string | null;
+                    };
+
+                  if (
+                    !payload.ok ||
+                    !payload.cardName?.trim()
+                  ) {
+                    return null;
+                  }
+
+                  return {
+                    key:
+                      `${card.data_source}:${card.language || requestedLanguage}:${card.external_id}`,
+                    value: {
+                      cardName:
+                        payload.cardName.trim(),
+                      setName:
+                        payload.setName?.trim() ||
+                        setInfo?.name ||
+                        requestedName ||
+                        setId,
+                    },
+                  };
+                } catch {
+                  return null;
+                }
+              }
+            )
+          );
+
+        resolved.forEach(
+          (entry) => {
+            if (entry) {
+              next.set(
+                entry.key,
+                entry.value
+              );
+            }
+          }
+        );
+
+        if (!cancelled) {
+          setDisplayIdentities(
+            new Map(next)
+          );
+        }
+      }
+    }
+
+    void loadEnglishDisplayIdentities();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    category,
+    setId,
+    requestedName,
+    requestedLanguage,
+    cards,
+    setInfo?.name,
   ]);
 
   useEffect(() => {
@@ -344,7 +861,7 @@ export default function SetChecklistPage() {
     } = await supabase
       .from("wishlists")
       .select(
-        "card_id, cards!inner(data_source, external_id)"
+        "card_id, cards!inner(data_source, external_id, language)"
       )
       .eq(
         "user_id",
@@ -380,7 +897,7 @@ export default function SetChecklistPage() {
           card?.external_id
         ) {
           next.add(
-            `${card.data_source}:${card.external_id}`
+            `${card.data_source}:${card.language || "EN"}:${card.external_id}`
           );
         }
       }
@@ -434,7 +951,7 @@ export default function SetChecklistPage() {
     } = await supabase
       .from("cards")
       .select(
-        "id, data_source, external_id"
+        "id, data_source, external_id, language"
       )
       .in(
         "data_source",
@@ -443,6 +960,18 @@ export default function SetChecklistPage() {
       .in(
         "external_id",
         externalIds
+      )
+      .in(
+        "language",
+        Array.from(
+          new Set(
+            sourceCards.map(
+              (card) =>
+                card.language ||
+                requestedLanguage
+            )
+          )
+        )
       );
 
     if (
@@ -509,7 +1038,7 @@ export default function SetChecklistPage() {
       (card: any) => {
         idToKey.set(
           card.id,
-          `${card.data_source}:${card.external_id}`
+          `${card.data_source}:${card.language || "EN"}:${card.external_id}`
         );
       }
     );
@@ -572,6 +1101,11 @@ export default function SetChecklistPage() {
         .eq(
           "external_id",
           card.external_id
+        )
+        .eq(
+          "language",
+          card.language ||
+            requestedLanguage
         )
         .maybeSingle();
 
@@ -736,7 +1270,7 @@ export default function SetChecklistPage() {
     card: CatalogCard
   ) {
     const key =
-      `${card.data_source}:${card.external_id}`;
+      `${card.data_source}:${card.language || requestedLanguage}:${card.external_id}`;
 
     if (
       wishlistLoading.has(
@@ -795,6 +1329,11 @@ export default function SetChecklistPage() {
           .eq(
             "external_id",
             card.external_id
+          )
+          .eq(
+            "language",
+            card.language ||
+              requestedLanguage
           )
           .maybeSingle();
 
@@ -955,10 +1494,21 @@ export default function SetChecklistPage() {
 
       return cards.filter(
         (card) => {
+          const key =
+            `${card.data_source}:${card.language || requestedLanguage}:${card.external_id}`;
+
+          const displayIdentity =
+            displayIdentities.get(
+              key
+            );
+
           const searchable =
             normalizeText(
               [
+                displayIdentity?.cardName,
+                displayIdentity?.setName,
                 card.name,
+                card.set_name,
                 card.card_number,
                 card.rarity,
                 card.finish,
@@ -978,9 +1528,17 @@ export default function SetChecklistPage() {
     }, [
       cards,
       search,
+      displayIdentities,
+      requestedLanguage,
     ]);
 
+  const englishSetDisplayName =
+    Array.from(
+      displayIdentities.values()
+    )[0]?.setName || null;
+
   const title =
+    englishSetDisplayName ||
     setInfo?.name ||
     requestedName ||
     setId;
@@ -1064,6 +1622,12 @@ export default function SetChecklistPage() {
                     {setInfo.code && (
                       <span>
                         {setInfo.code.toUpperCase()}
+                      </span>
+                    )}
+
+                    {setInfo.language && (
+                      <span className="font-black text-emerald-300">
+                        {setInfo.language}
                       </span>
                     )}
 
@@ -1173,7 +1737,7 @@ export default function SetChecklistPage() {
               {filteredCards.map(
                 (card) => {
                   const key =
-                    `${card.data_source}:${card.external_id}`;
+                    `${card.data_source}:${card.language || requestedLanguage}:${card.external_id}`;
 
                   const wishlisted =
                     wishlistIds.has(
@@ -1190,29 +1754,25 @@ export default function SetChecklistPage() {
                       key
                     ) || 0;
 
+                  const displayIdentity =
+                    displayIdentities.get(
+                      key
+                    );
+
+                  const displayCardName =
+                    displayIdentity?.cardName ||
+                    card.name ||
+                    "Unknown Card";
+
                   return (
                     <article
                       key={key}
                       className="group overflow-hidden rounded-2xl border border-zinc-900 bg-zinc-950 transition hover:-translate-y-1 hover:border-emerald-400/50"
                     >
                       <div className="relative aspect-[0.716] bg-zinc-900">
-                        {card.image_url ? (
-                          <img
-                            src={
-                              card.image_url
-                            }
-                            alt={
-                              card.name ||
-                              "Trading card"
-                            }
-                            loading="lazy"
-                            className="h-full w-full object-contain"
-                          />
-                        ) : (
-                          <div className="h-full w-full flex items-center justify-center px-4 text-center text-xs text-zinc-700">
-                            Image unavailable
-                          </div>
-                        )}
+                        <PokemonCatalogImage
+                          card={card}
+                        />
 
                         {available >
                           0 && (
@@ -1266,8 +1826,7 @@ export default function SetChecklistPage() {
                       <div className="p-4">
                         <div className="flex items-start justify-between gap-3">
                           <h3 className="font-black leading-tight">
-                            {card.name ||
-                              "Unknown Card"}
+                            {displayCardName}
                           </h3>
 
                           {card.card_number && (
@@ -1372,6 +1931,9 @@ export default function SetChecklistPage() {
                     {selectedCard.set_name && (
                       <span>
                         {
+                          displayIdentities.get(
+                            `${selectedCard.data_source}:${selectedCard.language || requestedLanguage}:${selectedCard.external_id}`
+                          )?.setName ||
                           selectedCard.set_name
                         }
                       </span>

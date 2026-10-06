@@ -3256,30 +3256,7 @@ async function createImportedCard(
     .single();
 
   if (error) {
-    // Marketplace/source IDs are not language/variant-aware enough to be the
-    // sole identity for multilingual imports. If an older card already owns
-    // the same (data_source, external_id), preserve the database uniqueness
-    // constraint and retry this exact canonical printing under MintRadar's
-    // language/set/number/variant/finish identity instead.
-    if (
-      error?.code === "23505" &&
-      String(
-        error?.message || ""
-      ).includes(
-        "cards_data_source_external_id_unique"
-      ) &&
-      !options?.canonicalReplacement
-    ) {
-      return createImportedCard(
-        row,
-        {
-          canonicalReplacement:
-            true,
-        }
-      );
-    }
-
-    throw error;
+        throw error;
   }
 
   return data.id as string;
