@@ -305,37 +305,29 @@ export class P31SWebPrinter {
       );
     }
 
-    if (
-      this.connected
-    ) {
+    if (this.connected) {
       return (
-        this.device
-          ?.name ||
+        this.device?.name ||
         "P31S"
       );
     }
 
-    // Always allow a fresh picker after a failed attempt.
-    // This preserves the behavior that is known to work
-    // with this P31S: first selection wakes it, second
-    // selection successfully exposes ff00/ff02.
-    this.forgetDevice();
+    // Keep the selected P31S across its wake cycle. A cold printer can
+    // initially connect before ff00/ff02 are exposed.
+    if (!this.device) {
+      this.device =
+        await bluetooth
+          .requestDevice({
+            acceptAllDevices:
+              true,
+            optionalServices:
+              [
+                P31S_SERVICE_UUID,
+              ],
+          });
+    }
 
-    this.device =
-      await bluetooth
-        .requestDevice({
-          acceptAllDevices:
-            true,
-
-          optionalServices:
-            [
-              P31S_SERVICE_UUID,
-            ],
-        });
-
-    if (
-      !this.device
-    ) {
+    if (!this.device) {
       this.forgetDevice();
 
       throw new Error(
@@ -343,49 +335,18 @@ export class P31SWebPrinter {
       );
     }
 
-    try {
-      const server =
-        await this.device
-          .gatt
-          .connect();
+    let lastError: any = null;
 
-      // Give the cold printer a short wake-up window.
-      await sleep(
-        800
-      );
-
-      const service =
-        await server
-          .getPrimaryService(
-            P31S_SERVICE_UUID
-          );
-
-      this.writeCharacteristic =
-        await service
-          .getCharacteristic(
-            P31S_WRITE_UUID
-          );
-
-      await sleep(
-        250
-      );
-
-      return (
-        this.device
-          ?.name ||
-        "P31S"
-      );
-    } catch (
-      error: any
+    // Attempt 1 wakes a cold printer. Attempt 2 reconnects to the SAME
+    // selected device instead of reopening the browser chooser.
+    for (
+      let attempt = 0;
+      attempt < 2;
+      attempt += 1
     ) {
-      console.error(
-        "P31S connection error:",
-        error
-      );
-
-      // Critical: do not leave MintRadar stuck with
-      // the failed half-connected device.
       try {
+        this.clearConnection();
+
         if (
           this.device?.gatt
             ?.connected
@@ -393,17 +354,84 @@ export class P31SWebPrinter {
           this.device
             .gatt
             .disconnect();
+
+          await sleep(250);
         }
-      } catch {
-        // Ignore cleanup errors.
+
+        const server =
+          await this.device
+            .gatt
+            .connect();
+
+        await sleep(
+          attempt === 0
+            ? 900
+            : 1600
+        );
+
+        const service =
+          await server
+            .getPrimaryService(
+              P31S_SERVICE_UUID
+            );
+
+        this.writeCharacteristic =
+          await service
+            .getCharacteristic(
+              P31S_WRITE_UUID
+            );
+
+        await sleep(250);
+
+        return (
+          this.device?.name ||
+          "P31S"
+        );
+      } catch (
+        error: any
+      ) {
+        lastError = error;
+
+        console.error(
+          `P31S connection attempt ${attempt + 1} error:`,
+          error
+        );
+
+        this.clearConnection();
+
+        try {
+          if (
+            this.device?.gatt
+              ?.connected
+          ) {
+            this.device
+              .gatt
+              .disconnect();
+          }
+        } catch {
+          // Ignore cleanup errors.
+        }
+
+        if (attempt === 0) {
+          // Preserve this device and give the printer time to expose ff00.
+          await sleep(1200);
+          continue;
+        }
       }
-
-      this.forgetDevice();
-
-      throw new Error(
-        "P31S is awake and ready. Tap Connect & Print again to print."
-      );
     }
+
+    // Only forget after both attempts fail. The next explicit Connect action
+    // can then reopen the chooser for a genuinely fresh selection.
+    this.forgetDevice();
+
+    console.error(
+      "P31S connection failed after automatic wake retry:",
+      lastError
+    );
+
+    throw new Error(
+      "Could not connect to the P31S label service. Make sure the printer is awake, then tap Connect & Print again."
+    );
   }
 
   async disconnect() {

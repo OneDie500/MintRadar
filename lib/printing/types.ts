@@ -1,5 +1,6 @@
 export type MintRadarPrinterModel =
   | "p31s"
+  | "niimbot_d110"
   | "d11h";
 
 export type MintRadarPrintTransport =
@@ -27,6 +28,18 @@ export type MintRadarPrintJob = {
   canvas: HTMLCanvasElement;
 
   copies?: number;
+};
+
+export type MintRadarDiscoveredPrinter = {
+  deviceId: string;
+
+  deviceName: string;
+
+  profileId: MintRadarPrinterProfileId;
+
+  supported: boolean;
+
+  rssi?: number;
 };
 
 export type MintRadarPrinterConnection = {
@@ -104,45 +117,3 @@ export type MintRadarPrinterProfile = {
   platformSupport: readonly MintRadarPrinterPlatformSupport[];
 };
 
-/**
- * A physical Bluetooth labeler discovered by MintRadar.
- *
- * Discovery is intentionally separate from connection and printing.
- * Finding a device does not connect to it or change the active printer.
- */
-export type MintRadarDiscoveredPrinter = {
-  /**
-   * CoreBluetooth peripheral identifier.
-   *
-   * This lets MintRadar distinguish between multiple nearby physical
-   * labelers, including multiple printers of the same model.
-   */
-  deviceId: string;
-
-  /**
-   * Name reported by the Bluetooth peripheral or advertisement.
-   */
-  deviceName: string;
-
-  /**
-   * MintRadar printer-registry profile matched from the discovered hardware.
-   *
-   * Null means MintRadar discovered the Bluetooth device but could not
-   * identify it as a supported printer profile.
-   */
-  profileId: MintRadarPrinterProfileId | null;
-
-  /**
-   * Whether MintRadar currently recognizes this hardware as a supported
-   * printer.
-   */
-  supported: boolean;
-
-  /**
-   * Bluetooth signal strength reported during discovery.
-   *
-   * We can use this later to help order nearby printers without making
-   * signal strength part of the connection or printing logic.
-   */
-  rssi?: number;
-};

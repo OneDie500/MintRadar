@@ -2619,13 +2619,6 @@ export default function VendorDashboardPage() {
   }
 
   async function findNearbyLabelPrinters() {
-    if (!mintRadarPrintService.native) {
-      setLabelDiscoveryStatus(
-        "Find Labeler is available in the MintRadar iPhone app."
-      );
-      return;
-    }
-
     if (connectedLabelPrinter) {
       setLabelDiscoveryStatus(
         "Disconnect the active labeler before scanning for another one."
@@ -2639,6 +2632,42 @@ export default function VendorDashboardPage() {
     setSelectedDiscoveredPrinter(null);
 
     try {
+      if (!mintRadarPrintService.native) {
+        if (!niimbotSupported) {
+          throw new Error(
+            "Web Bluetooth is not available in this browser/device."
+          );
+        }
+
+        const connection =
+          await mintRadarPrintService.connect(
+            "niimbot_d110"
+          );
+
+        setD110Connected(
+          Boolean(connection.connected)
+        );
+
+        if (connection.connected) {
+          setSelectedLabelPrinter(
+            "d110"
+          );
+
+          setConnectedLabelPrinter(
+            "d110"
+          );
+
+          setLabelDiscoveryStatus(
+            `Found and connected to ${
+              connection.printerName ||
+              "NIIMBOT D110_M"
+            }.`
+          );
+        }
+
+        return;
+      }
+
       const result =
         await MintRadarNativePrinter.findPrinters();
 
@@ -2789,9 +2818,12 @@ export default function VendorDashboardPage() {
   }
 
   async function connectD110Native() {
-    if (!mintRadarPrintService.native) {
+    if (
+      !mintRadarPrintService.native &&
+      !niimbotSupported
+    ) {
       setD110Status(
-        "NIIMBOT D110_M native testing is available in the MintRadar iPhone app."
+        "Web Bluetooth is not available in this browser/device."
       );
       return;
     }
@@ -2801,7 +2833,7 @@ export default function VendorDashboardPage() {
 
     try {
       const connection =
-        await (mintRadarPrintService as any).connect(
+        await mintRadarPrintService.connect(
           "niimbot_d110"
         );
 
@@ -3457,9 +3489,12 @@ export default function VendorDashboardPage() {
   }
 
   async function printQrLabelD110Native() {
-    if (!mintRadarPrintService.native) {
+    if (
+      !mintRadarPrintService.native &&
+      !niimbotSupported
+    ) {
       setD110Status(
-        "D110_M native label printing is available in the MintRadar iPhone app."
+        "Web Bluetooth is not available in this browser/device."
       );
       return;
     }
@@ -3470,7 +3505,7 @@ export default function VendorDashboardPage() {
     try {
       if (!d110Connected) {
         const connection =
-          await (mintRadarPrintService as any).connect(
+          await mintRadarPrintService.connect(
             "niimbot_d110"
           );
 
@@ -3496,22 +3531,37 @@ export default function VendorDashboardPage() {
       const canvas =
         await buildD110LabelCanvas();
 
-      const imageBase64 =
-        canvas.toDataURL(
-          "image/png"
-        );
+      let result:
+        | {
+            printerName?: string;
+            modelId?: number;
+          }
+        | undefined;
 
-      const result =
-        await MintRadarNativePrinter.print({
-          printerModel:
-            "niimbot_d110",
-          imageBase64,
-          width:
-            canvas.width,
-          height:
-            canvas.height,
-          copies: 1,
-        });
+      if (mintRadarPrintService.native) {
+        const imageBase64 =
+          canvas.toDataURL(
+            "image/png"
+          );
+
+        result =
+          await MintRadarNativePrinter.print({
+            printerModel:
+              "niimbot_d110",
+            imageBase64,
+            width:
+              canvas.width,
+            height:
+              canvas.height,
+            copies: 1,
+          });
+      } else {
+        await mintRadarPrintService.printCanvas(
+          "niimbot_d110",
+          canvas,
+          1
+        );
+      }
 
       setD110Connected(true);
       setConnectedLabelPrinter(
@@ -3841,9 +3891,7 @@ export default function VendorDashboardPage() {
       setD110Status("");
 
       try {
-        await (
-          mintRadarPrintService as any
-        ).disconnect(
+        await mintRadarPrintService.disconnect(
           "niimbot_d110"
         );
 
@@ -5722,7 +5770,8 @@ export default function VendorDashboardPage() {
                             Boolean(
                               connectedLabelPrinter
                             ) ||
-                            !mintRadarPrintService.native
+                            (!mintRadarPrintService.native &&
+                              !niimbotSupported)
                           }
                           className="shrink-0 rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-xs font-black text-emerald-300 transition hover:bg-emerald-400 hover:text-black disabled:cursor-not-allowed disabled:opacity-40"
                         >
@@ -5878,6 +5927,14 @@ export default function VendorDashboardPage() {
                         </div>
                       )}
 
+                    {selectedLabelPrinter === "d110" &&
+                      !mintRadarPrintService.native &&
+                      !niimbotSupported && (
+                        <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs font-bold leading-5 text-amber-200">
+                          Web Bluetooth is not available for the D110_M on this browser/device.
+                        </div>
+                      )}
+
                     {selectedLabelPrinter === "d11h" &&
                       !niimbotSupported && (
                         <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs font-bold leading-5 text-amber-200">
@@ -5918,7 +5975,8 @@ export default function VendorDashboardPage() {
                               !p31sSupported
                             : selectedLabelPrinter === "d110"
                               ? d110Busy ||
-                                !mintRadarPrintService.native
+                                (!mintRadarPrintService.native &&
+                                  !niimbotSupported)
                               : niimbotBusy ||
                                 !niimbotSupported)
                         }

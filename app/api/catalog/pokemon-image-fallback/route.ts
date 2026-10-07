@@ -1049,6 +1049,47 @@ function officialJapanDetailMatchesIdentity({
   );
 }
 
+function extractOfficialJapanDetailImage(
+  html: string,
+  setId: string
+) {
+  const escapedSet =
+    setId.trim().replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&"
+    );
+
+  const patterns = [
+    new RegExp(
+      `https://www\\.pokemon-card\\.com/assets/images/card_images/large/${escapedSet}/[^"'<>\\\\s]+\\.(?:jpg|jpeg|png|webp)`,
+      "i"
+    ),
+    new RegExp(
+      `/assets/images/card_images/large/${escapedSet}/[^"'<>\\\\s]+\\.(?:jpg|jpeg|png|webp)`,
+      "i"
+    ),
+  ];
+
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+
+    if (!match?.[0]) {
+      continue;
+    }
+
+    const value = match[0]
+      .replace(/&amp;/g, "&")
+      .trim();
+
+    return value.startsWith("http")
+      ? value
+      : `https://www.pokemon-card.com${value}`;
+  }
+
+  return null;
+}
+
+
 async function fetchOfficialJapanDetail(
   cardId: string
 ) {
@@ -1103,15 +1144,10 @@ async function resolveOfficialPokemonJapanImage({
   name: string;
   setName?: string | null;
 }) {
-  if (!setId || !cardNumber) {
+  if (!setId || !cardNumber || !name) {
     return null;
   }
 
-  // Restore the previously working JP behavior:
-  // once the exact Japanese provider set is known, the official Pokémon Japan
-  // set search is already scoped to that set. Its card list follows collector
-  // position, so the short collector number identifies the target position
-  // without allowing the lookup to escape into another set.
   const requestedShort =
     shortCardNumber(cardNumber)
       .replace(/\s+/g, "");
@@ -1123,148 +1159,295 @@ async function resolveOfficialPokemonJapanImage({
     return null;
   }
 
-  const targetPosition =
-    Number(numericMatch[1]);
+  const numerator =
+    String(Number(numericMatch[1])).padStart(
+      requestedShort.length,
+      "0"
+    );
+
+  // TCGdex carries the official (main-set) count even when the requested card
+  // is an AR/SR/SAR/MUR above that count. We use it only to construct the
+  // printed Japanese collector identity, e.g. M5 113/081 or M6 077/076.
+  const setDetail =
+    await fetchJsonWithTimeout<TcgdexJapaneseSetDetail>(
+      `https://api.tcgdex.net/v2/ja/sets/${encodeURIComponent(
+        setId
+      )}`
+    );
+
+  const officialCount =
+    setDetail?.cardCount?.official;
 
   if (
-    !Number.isFinite(targetPosition) ||
-    targetPosition < 1
+    typeof officialCount !== "number" ||
+    !Number.isFinite(officialCount) ||
+    officialCount < 1
   ) {
     return null;
   }
 
-  let position = 0;
-  let page = 1;
-  let maxPage = 1;
-
-  while (page <= maxPage && page <= 20) {
-    const url = new URL(
-      "https://www.pokemon-card.com/card-search/resultAPI.php"
+  const width =
+    Math.max(
+      3,
+      requestedShort.length,
+      String(officialCount).length
     );
 
-    url.searchParams.set("keyword", "");
-    url.searchParams.set("se_ta", "");
-    url.searchParams.set(
-      "regulation_sidebar_form",
-      "all"
-    );
-    url.searchParams.set("illust", "");
-    url.searchParams.set(
-      "sm_and_keyword",
-      "true"
-    );
-    url.searchParams.set("pg", setId);
-    url.searchParams.set(
-      "page",
-      String(page)
+  const printedNumber =
+    `${String(Number(numericMatch[1])).padStart(
+      width,
+      "0"
+    )}/${String(officialCount).padStart(
+      width,
+      "0"
+    )}`;
+
+  /*
+   * First preserve the fast path: search Pokémon Japan by the supplied source
+   * name inside the exact set.
+   *
+   * If that returns no verified printing, retry the SAME exact set without a
+   * name keyword. This is important for MintRadar's English-facing display
+   * layer: a caller may legitimately carry "Mega Darkrai ex" while Pokémon
+   * Japan indexes the card only as メガダークライex.
+   *
+   * The keyword-free retry is still safe because no result is accepted until
+   * its official detail page proves BOTH the exact set code and the full
+   * printed collector identity (for example M5 118/081).
+   */
+  const requestedNumbers =
+    new Set(
+      buildCollectorNumberVariants(
+        cardNumber
+      ).map((value) =>
+        normalize(value)
+      )
     );
 
-    const controller =
-      new AbortController();
+  const sourceCard =
+    Array.isArray(setDetail?.cards)
+      ? setDetail.cards.find(
+          (candidate) => {
+            const candidateNumbers =
+              new Set(
+                buildCollectorNumberVariants(
+                  candidate.localId
+                ).map((value) =>
+                  normalize(value)
+                )
+              );
 
-    const timeout = setTimeout(
-      () => controller.abort(),
-      7000
-    );
+            return Array.from(
+              requestedNumbers
+            ).some((value) =>
+              candidateNumbers.has(value)
+            );
+          }
+        )
+      : null;
 
-    let response: Response;
+  /*
+   * Prefer the exact Japanese source name from the provider set itself.
+   * The UI may already be showing an English-facing display name, but the
+   * official Japanese search index naturally knows the Japanese print name.
+   */
+  const searchKeywords =
+    Array.from(
+      new Set([
+        (sourceCard?.name || "").trim(),
+        name.trim(),
+      ])
+    ).filter(Boolean);
 
-    try {
-      response = await fetch(
-        url.toString(),
-        {
-          method: "GET",
-          headers: {
-            Accept:
-              "application/json, text/javascript, */*; q=0.01",
-            "Accept-Language":
-              "ja,en-US;q=0.9,en;q=0.8",
-            Referer:
-              "https://www.pokemon-card.com/card-search/",
-            "X-Requested-With":
-              "XMLHttpRequest",
-            "User-Agent":
-              "Mozilla/5.0",
-          },
-          cache: "no-store",
-          signal: controller.signal,
+  const searchScopes = [
+    {
+      mode: "provider-set-filter",
+      pg: setId,
+    },
+    {
+      mode: "global-name-exact-detail-verification",
+      pg: "",
+    },
+  ];
+
+  for (const searchKeyword of searchKeywords) {
+    for (const searchScope of searchScopes) {
+      let page = 1;
+      let maxPage = 1;
+
+      while (page <= maxPage && page <= 20) {
+        const url = new URL(
+          "https://www.pokemon-card.com/card-search/resultAPI.php"
+        );
+
+        url.searchParams.set(
+          "keyword",
+          searchKeyword
+        );
+        url.searchParams.set("se_ta", "");
+        url.searchParams.set(
+          "regulation_sidebar_form",
+          "all"
+        );
+        url.searchParams.set("illust", "");
+        url.searchParams.set(
+          "sm_and_keyword",
+          "true"
+        );
+
+        if (searchScope.pg) {
+          url.searchParams.set(
+            "pg",
+            searchScope.pg
+          );
         }
+
+        url.searchParams.set(
+          "page",
+          String(page)
+        );
+
+      const controller =
+        new AbortController();
+
+      const timeout = setTimeout(
+        () => controller.abort(),
+        7000
       );
-    } catch {
+
+      let response: Response;
+
+      try {
+        response = await fetch(
+          url.toString(),
+          {
+            method: "GET",
+            headers: {
+              Accept:
+                "application/json, text/javascript, */*; q=0.01",
+              "Accept-Language":
+                "ja,en-US;q=0.9,en;q=0.8",
+              Referer:
+                "https://www.pokemon-card.com/card-search/",
+              "X-Requested-With":
+                "XMLHttpRequest",
+              "User-Agent":
+                "Mozilla/5.0",
+            },
+            cache: "no-store",
+            signal: controller.signal,
+          }
+        );
+      } catch {
+        clearTimeout(timeout);
+        break;
+      }
+
       clearTimeout(timeout);
-      return null;
-    }
 
-    clearTimeout(timeout);
-
-    if (!response.ok) {
-      return null;
-    }
-
-    let payload: PokemonJapanSearchResponse;
-
-    try {
-      payload =
-        (await response.json()) as PokemonJapanSearchResponse;
-    } catch {
-      return null;
-    }
-
-    const cards =
-      Array.isArray(payload.cardList)
-        ? payload.cardList
-        : [];
-
-    maxPage =
-      typeof payload.maxPage === "number" &&
-      payload.maxPage > 0
-        ? payload.maxPage
-        : 1;
-
-    for (const card of cards) {
-      position += 1;
-
-      if (position !== targetPosition) {
-        continue;
+      if (!response.ok) {
+        break;
       }
 
-      const thumb =
-        (card.cardThumbFile || "").trim();
+      let payload: PokemonJapanSearchResponse;
 
-      if (!thumb) {
-        return null;
+      try {
+        payload =
+          (await response.json()) as PokemonJapanSearchResponse;
+      } catch {
+        break;
       }
 
-      const imageUrl =
-        thumb.startsWith("http")
-          ? thumb
-          : `https://www.pokemon-card.com${
-              thumb.startsWith("/")
-                ? thumb
-                : `/${thumb}`
-            }`;
+      const cards =
+        Array.isArray(payload.cardList)
+          ? payload.cardList
+          : [];
 
-      return {
-        imageUrl,
-        provider:
-          "pokemon-japan-official",
-        match: {
-          id:
-            card.cardID != null
-              ? String(card.cardID)
-              : null,
-          name:
-            card.cardNameAltText ||
-            name,
-          setName:
-            setName || null,
-          cardNumber,
-          setId,
-        },
-      };
+      maxPage =
+        typeof payload.maxPage === "number" &&
+        payload.maxPage > 0
+          ? payload.maxPage
+          : 1;
+
+      for (const card of cards) {
+        if (card.cardID == null) {
+          continue;
+        }
+
+        const cardId = String(card.cardID);
+        const html =
+          await fetchOfficialJapanDetail(cardId);
+
+        if (!html) {
+          continue;
+        }
+
+        const identityMatches =
+          officialJapanDetailMatchesIdentity({
+            html,
+            setId,
+            cardNumber: printedNumber,
+          });
+
+        if (!identityMatches) {
+          continue;
+        }
+
+        const thumb =
+          (card.cardThumbFile || "").trim();
+
+        // Some official search-result records omit the thumbnail even though
+        // the verified detail page contains the large image. Identity has
+        // already been proven above, so the detail image is safe to use.
+        const detailImage =
+          extractOfficialJapanDetailImage(
+            html,
+            setId
+          );
+
+        const imageUrl =
+          thumb
+            ? (
+                thumb.startsWith("http")
+                  ? thumb
+                  : `https://www.pokemon-card.com${
+                      thumb.startsWith("/")
+                        ? thumb
+                        : `/${thumb}`
+                    }`
+              )
+            : detailImage;
+
+        if (!imageUrl) {
+          continue;
+        }
+
+        return {
+          imageUrl,
+          provider:
+            searchScope.mode ===
+              "provider-set-filter"
+              ? "pokemon-japan-official-exact"
+              : "pokemon-japan-official-global-name-verified",
+          match: {
+            id: cardId,
+            name:
+              card.cardNameAltText ||
+              name,
+            setName:
+              setName || null,
+            cardNumber,
+            printedNumber,
+            setId,
+            searchKeyword:
+              searchKeyword || null,
+          },
+        };
+      }
+
+        page += 1;
+      }
     }
-
-    page += 1;
   }
 
   return null;

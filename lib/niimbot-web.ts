@@ -1,3 +1,29 @@
+export const NIIMBOT_D110_MODEL = {
+  id: 2320,
+  name: "D110_M",
+  name_prefixes: [
+    "D110",
+  ],
+  task: "b1",
+  dpi: 203,
+  density: 3,
+  label_type: 1,
+  speed: 1,
+};
+
+export const NIIMBOT_D110_SIZE = {
+  id: "T12x40-D110",
+  code: "T12*40",
+  label: "12 × 40 mm (D110_M)",
+  w_mm: 12,
+  h_mm: 40,
+  w_px: 96,
+  h_px: 320,
+  margin: 0,
+  offset_y_px: 0,
+  dpi: 203,
+};
+
 export const NIIMBOT_D11H_MODEL = {
   id: 528,
   name: "D11_H",
@@ -337,3 +363,89 @@ export async function disconnectD11H() {
 
   await driver.disconnect();
 }
+
+export async function identifyD110() {
+  const driver =
+    await loadNiimbotDriver();
+
+  if (
+    !driver.isSupported()
+  ) {
+    throw new Error(
+      "Web Bluetooth is not available in this browser/device."
+    );
+  }
+
+  await driver.identify(
+    NIIMBOT_D110_MODEL
+  );
+
+  const detectedModelId =
+    driver.printer
+      ?.modelId;
+
+  if (
+    detectedModelId &&
+    detectedModelId !== 2304 &&
+    detectedModelId !== NIIMBOT_D110_MODEL.id
+  ) {
+    throw new Error(
+      `Connected Niimbot is model ${detectedModelId}, not D110_M.`
+    );
+  }
+
+  return (
+    driver.printer ||
+    null
+  );
+}
+
+export async function printD110Image(
+  imageDataUrl: string,
+  width = NIIMBOT_D110_SIZE.w_px,
+  height = NIIMBOT_D110_SIZE.h_px,
+  copies = 1
+) {
+  const driver =
+    await loadNiimbotDriver();
+
+  if (
+    !driver.isSupported()
+  ) {
+    throw new Error(
+      "Web Bluetooth is not available in this browser/device."
+    );
+  }
+
+  if (
+    width % 8 !== 0
+  ) {
+    throw new Error(
+      "D110 print width must be a multiple of 8 pixels."
+    );
+  }
+
+  return driver.printImage(
+    imageDataUrl,
+    {
+      model:
+        NIIMBOT_D110_MODEL,
+
+      size: {
+        ...NIIMBOT_D110_SIZE,
+        w_px: width,
+        h_px: height,
+      },
+
+      copies,
+    }
+  );
+}
+
+export async function disconnectD110() {
+  const driver =
+    await loadNiimbotDriver();
+
+  await driver.disconnect();
+}
+

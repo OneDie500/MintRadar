@@ -8,11 +8,13 @@ import type {
 
 export type NativePrinterModel =
   | "p31s"
+  | "niimbot_d110"
   | "d11h";
 
 export type NativePrinterConnectionResult = {
   connected: boolean;
   printerName?: string;
+  modelId?: number;
 };
 
 export type NativePrinterDiscoveryResult = {

@@ -3,6 +3,10 @@ import {
 } from "./printers/p31s";
 
 import {
+  MintRadarD110WebPrinter,
+} from "./printers/d110";
+
+import {
   MintRadarNativePrinter,
 } from "./native-printer";
 
@@ -26,6 +30,8 @@ export type MintRadarPrinterState = {
 
   printerName?: string;
 
+  modelId?: number;
+
   printerModel: MintRadarPrinterModel;
 
   transport: MintRadarPrintTransport;
@@ -34,6 +40,9 @@ export type MintRadarPrinterState = {
 class MintRadarPrintService {
   private webP31S =
     new MintRadarP31SWebPrinter();
+
+  private webD110 =
+    new MintRadarD110WebPrinter();
 
   private nativeConnections =
     new Map<
@@ -81,29 +90,53 @@ class MintRadarPrintService {
       "web-bluetooth"
     ) {
       if (
-        printerModel !==
+        printerModel ===
         "p31s"
       ) {
-        throw new Error(
-          `${printerModel.toUpperCase()} Web Bluetooth has not been connected to the MintRadar print service yet.`
-        );
+        const connection =
+          await this.webP31S.connect();
+
+        return {
+          connected:
+            connection.connected,
+
+          printerName:
+            connection.printerName,
+
+          printerModel,
+
+          transport:
+            connection.transport,
+        };
       }
 
-      const connection =
-        await this.webP31S.connect();
+      if (
+        printerModel ===
+        "niimbot_d110"
+      ) {
+        const connection =
+          await this.webD110.connect();
 
-      return {
-        connected:
-          connection.connected,
+        return {
+          connected:
+            connection.connected,
 
-        printerName:
-          connection.printerName,
+          printerName:
+            connection.printerName,
 
-        printerModel,
+          modelId:
+            connection.modelId,
 
-        transport:
-          connection.transport,
-      };
+          printerModel,
+
+          transport:
+            connection.transport,
+        };
+      }
+
+      throw new Error(
+        `${printerModel.toUpperCase()} Web Bluetooth has not been connected to the MintRadar print service yet.`
+      );
     }
 
     const supported =
@@ -126,6 +159,9 @@ class MintRadarPrintService {
 
       printerName:
         result.printerName,
+
+      modelId:
+        result.modelId,
 
       printerModel,
 
@@ -155,6 +191,14 @@ class MintRadarPrintService {
         "p31s"
       ) {
         await this.webP31S.disconnect();
+        return;
+      }
+
+      if (
+        printerModel ===
+        "niimbot_d110"
+      ) {
+        await this.webD110.disconnect();
       }
 
       return;
@@ -186,6 +230,13 @@ class MintRadarPrintService {
         return this.webP31S.connected;
       }
 
+      if (
+        printerModel ===
+        "niimbot_d110"
+      ) {
+        return this.webD110.connected;
+      }
+
       return false;
     }
 
@@ -215,35 +266,62 @@ class MintRadarPrintService {
       "web-bluetooth"
     ) {
       if (
-        printerModel !==
+        printerModel ===
         "p31s"
       ) {
-        throw new Error(
-          `${printerModel.toUpperCase()} Web Bluetooth printing has not been connected to the MintRadar print service yet.`
-        );
+        if (
+          !this.webP31S.connected
+        ) {
+          throw new Error(
+            "Connect to the P31S first."
+          );
+        }
+
+        await this.webP31S.print({
+          id: crypto.randomUUID(),
+
+          printerModel:
+            "p31s",
+
+          canvas,
+
+          copies:
+            safeCopies,
+        });
+
+        return;
       }
 
       if (
-        !this.webP31S.connected
+        printerModel ===
+        "niimbot_d110"
       ) {
-        throw new Error(
-          "Connect to the P31S first."
-        );
+        if (
+          !this.webD110.connected
+        ) {
+          throw new Error(
+            "Connect to the D110_M first."
+          );
+        }
+
+        await this.webD110.print({
+          id: crypto.randomUUID(),
+
+          printerModel:
+            "niimbot_d110",
+
+          canvas,
+
+          copies:
+            safeCopies,
+        });
+
+        return;
       }
 
-      await this.webP31S.print({
-        id: crypto.randomUUID(),
-
-        printerModel:
-          "p31s",
-
-        canvas,
-
-        copies:
-          safeCopies,
-      });
-
-      return;
+      throw new Error(
+        `${printerModel.toUpperCase()} Web Bluetooth printing has not been connected to the MintRadar print service yet.`
+      );
     }
 
     const supported =
