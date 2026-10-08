@@ -120,9 +120,7 @@ function PokemonCatalogImage({
 
   const [currentSrc, setCurrentSrc] =
     useState<string | null>(
-      nonEnglishPokemonCard
-        ? null
-        : card.image_url || null
+      card.image_url || null
     );
 
   const [fallbackAttempted, setFallbackAttempted] =
@@ -191,11 +189,21 @@ function PokemonCatalogImage({
     setFallbackAttempted(false);
     setFailed(false);
 
-    // Match the known-good vendor dashboard behavior:
-    // localized Pokémon artwork is resolved from the complete localized
-    // identity every time. A stored image_url may be valid English artwork,
-    // so JP/CN cards must not trust it.
+    // A synced regional image_url belongs to this exact regional card row, so
+    // use it first. Only invoke the localized resolver when the stored image is
+    // missing. This avoids throwing away known-good JP/CN artwork.
     if (nonEnglishPokemonCard) {
+      const storedRegionalImage =
+        card.image_url?.trim() || null;
+
+      if (storedRegionalImage) {
+        setCurrentSrc(storedRegionalImage);
+
+        return () => {
+          active = false;
+        };
+      }
+
       setCurrentSrc(null);
 
       const fallbackUrl =
@@ -404,6 +412,62 @@ function PokemonCatalogImage({
       }
       loading="lazy"
       onError={() => {
+        if (
+          pokemonCard &&
+          nonEnglishPokemonCard &&
+          !fallbackAttempted
+        ) {
+          const fallbackUrl =
+            buildPokemonFallbackUrl();
+
+          if (!fallbackUrl) {
+            setFailed(true);
+            return;
+          }
+
+          setCurrentSrc(null);
+          setFallbackAttempted(true);
+          setFailed(false);
+
+          void (async () => {
+            try {
+              const response =
+                await fetch(
+                  fallbackUrl,
+                  {
+                    method: "GET",
+                    cache: "no-store",
+                  }
+                );
+
+              const payload =
+                response.ok
+                  ? ((await response.json()) as {
+                      ok?: boolean;
+                      imageUrl?: string | null;
+                    })
+                  : null;
+
+              if (
+                payload?.ok &&
+                typeof payload.imageUrl === "string" &&
+                payload.imageUrl.trim()
+              ) {
+                setCurrentSrc(
+                  payload.imageUrl.trim()
+                );
+                return;
+              }
+
+              setFailed(true);
+            } catch {
+              setFailed(true);
+            }
+          })();
+
+          return;
+        }
+
         if (
           pokemonCard &&
           !nonEnglishPokemonCard &&

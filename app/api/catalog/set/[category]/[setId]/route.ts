@@ -244,6 +244,15 @@ async function loadPokemonSet(
   const set =
     setData as CachedPokemonSet;
 
+  // Regional Pokémon set membership is not always safely encoded in the
+  // card external_id prefix. Query both the synced regional set name and the
+  // legacy provider-ID prefix, then let Supabase return the union.
+  const escapedSetName = set.name
+    .replace(/\\/g, "\\\\")
+    .replace(/,/g, "\\,")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)");
+
   const {
     data: cardData,
     error: cardError,
@@ -265,9 +274,8 @@ async function loadPokemonSet(
         "language",
         language
       )
-      .like(
-        "external_id",
-        `${setId}-%`
+      .or(
+        `set_name.eq.${escapedSetName},external_id.like.${setId}-%`
       )
       .order(
         "card_number",

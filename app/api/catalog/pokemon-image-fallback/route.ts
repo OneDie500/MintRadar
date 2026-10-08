@@ -2507,6 +2507,208 @@ function normalizeTcgdexLanguage(value?: string | null): TcgdexLanguage {
   return "en";
 }
 
+
+async function resolveExactRegionalTcgdexImage({
+  setId,
+  cardNumber,
+  language,
+}: {
+  setId?: string | null;
+  cardNumber?: string | null;
+  language: TcgdexLanguage;
+}) {
+  if (
+    language === "en" ||
+    !setId?.trim() ||
+    !cardNumber?.trim()
+  ) {
+    return null;
+  }
+
+  const wantedSetId = setId.trim();
+  const wantedNumbers = new Set(
+    buildCollectorNumberVariants(cardNumber).map((value) =>
+      normalize(value)
+    )
+  );
+
+  const candidateIds = Array.from(
+    new Set(
+      buildCollectorNumberVariants(cardNumber).map(
+        (numberVariant) =>
+          `${wantedSetId}-${numberVariant}`
+      )
+    )
+  );
+
+  // Fastest and safest path: TCGdex card IDs normally use
+  // "{regional set id}-{local collector id}". Try those exact identities
+  // first, then verify BOTH the returned set id and local collector number.
+  for (const candidateId of candidateIds) {
+    const detail =
+      await fetchJsonWithTimeout<TcgdexCardDetail>(
+        `https://api.tcgdex.net/v2/${language}/cards/${encodeURIComponent(
+          candidateId
+        )}`
+      );
+
+    if (!detail?.id || !detail.localId) {
+      continue;
+    }
+
+    const actualSetId =
+      detail.set?.id?.trim() || "";
+
+    if (
+      actualSetId.toLowerCase() !==
+      wantedSetId.toLowerCase()
+    ) {
+      continue;
+    }
+
+    const actualNumbers = new Set(
+      buildCollectorNumberVariants(
+        detail.localId
+      ).map((value) => normalize(value))
+    );
+
+    const numberMatches =
+      Array.from(wantedNumbers).some((value) =>
+        actualNumbers.has(value)
+      );
+
+    if (!numberMatches) {
+      continue;
+    }
+
+    const imageUrl =
+      tcgdexImageUrl(detail.image);
+
+    if (!imageUrl) {
+      continue;
+    }
+
+    return {
+      imageUrl,
+      provider: "tcgdex-regional-exact-id",
+      match: {
+        id: detail.id,
+        name: detail.name || null,
+        setName: detail.set?.name || null,
+        cardNumber: detail.localId,
+      },
+      setId: actualSetId,
+    };
+  }
+
+  // Some TCGdex catalogs do not expose the expected composite card ID.
+  // In that case, inspect ONLY the explicitly supplied regional set and
+  // accept a card only when the local collector number is unique in that set.
+  const setDetail =
+    await fetchJsonWithTimeout<TcgdexJapaneseSetDetail>(
+      `https://api.tcgdex.net/v2/${language}/sets/${encodeURIComponent(
+        wantedSetId
+      )}`
+    );
+
+  if (
+    !setDetail ||
+    !Array.isArray(setDetail.cards)
+  ) {
+    return null;
+  }
+
+  const exactMatches =
+    setDetail.cards.filter((candidate) => {
+      const candidateNumbers = new Set(
+        buildCollectorNumberVariants(
+          candidate.localId
+        ).map((value) => normalize(value))
+      );
+
+      return Array.from(wantedNumbers).some(
+        (value) => candidateNumbers.has(value)
+      );
+    });
+
+  if (
+    exactMatches.length !== 1 ||
+    !exactMatches[0]?.id
+  ) {
+    return null;
+  }
+
+  const matchedBrief = exactMatches[0];
+
+  const detail =
+    await fetchJsonWithTimeout<TcgdexCardDetail>(
+      `https://api.tcgdex.net/v2/${language}/cards/${encodeURIComponent(
+        matchedBrief.id!
+      )}`
+    );
+
+  if (!detail?.id || !detail.localId) {
+    return null;
+  }
+
+  const actualSetId =
+    detail.set?.id?.trim() ||
+    setDetail.id?.trim() ||
+    "";
+
+  if (
+    actualSetId.toLowerCase() !==
+    wantedSetId.toLowerCase()
+  ) {
+    return null;
+  }
+
+  const actualNumbers = new Set(
+    buildCollectorNumberVariants(
+      detail.localId
+    ).map((value) => normalize(value))
+  );
+
+  if (
+    !Array.from(wantedNumbers).some((value) =>
+      actualNumbers.has(value)
+    )
+  ) {
+    return null;
+  }
+
+  const imageUrl =
+    tcgdexImageUrl(
+      detail.image || matchedBrief.image
+    );
+
+  if (!imageUrl) {
+    return null;
+  }
+
+  return {
+    imageUrl,
+    provider: "tcgdex-regional-exact-set",
+    match: {
+      id: detail.id,
+      name:
+        detail.name ||
+        matchedBrief.name ||
+        null,
+      setName:
+        detail.set?.name ||
+        setDetail.name ||
+        null,
+      cardNumber:
+        detail.localId ||
+        matchedBrief.localId ||
+        cardNumber,
+    },
+    setId: actualSetId,
+  };
+}
+
+
 async function resolveTcgdexImage({
   name,
   setName,
@@ -3351,6 +3553,50 @@ export async function GET(request: NextRequest) {
             knownOverride.cardNumber || null,
         },
       });
+    }
+
+    // -----------------------------------------
+    // EXACT REGIONAL TCGDEX IDENTITY RESOLVER
+    // -----------------------------------------
+    //
+    // If MintRadar already knows the physical regional language, provider
+    // set id, and collector number, use that identity before any fuzzy
+    // localized search. The returned TCGdex detail must independently prove
+    // the same set id + collector number, so canonical English mappings
+    // cannot substitute artwork from another physical card.
+    if (
+      tcgdexLanguage !== "en" &&
+      suppliedSetId &&
+      cardNumber
+    ) {
+      const exactRegional =
+        await resolveExactRegionalTcgdexImage({
+          setId: suppliedSetId,
+          cardNumber,
+          language: tcgdexLanguage,
+        });
+
+      if (exactRegional) {
+        return NextResponse.json({
+          ok: true,
+          imageUrl: exactRegional.imageUrl,
+          provider: exactRegional.provider,
+          match: exactRegional.match,
+          parsedIdentity: {
+            originalName: name,
+            canonicalName,
+            variant,
+            language,
+            suppliedSetName: setName,
+            suppliedSetId,
+            resolverSetName,
+            resolvedSetName:
+              exactRegional.match.setName || null,
+            resolvedSetId:
+              exactRegional.setId,
+          },
+        });
+      }
     }
 
     // -----------------------------------------

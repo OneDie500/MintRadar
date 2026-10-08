@@ -57,6 +57,9 @@ type CatalogCard = {
   sport?: string | null;
   print_run?: number | null;
   rookie?: boolean | null;
+  language?: string | null;
+  canonical_name?: string | null;
+  set_id?: string | null;
 };
 
 const CATALOGS: CatalogOption[] = [
@@ -110,32 +113,44 @@ function normalizeFallbackKeyPart(value?: string | null) {
 function buildPokemonFallbackKey({
   name,
   setName,
+  setId,
   cardNumber,
+  language,
 }: {
   name?: string | null;
   setName?: string | null;
+  setId?: string | null;
   cardNumber?: string | null;
+  language?: string | null;
 }) {
   return [
     normalizeFallbackKeyPart(name),
     normalizeFallbackKeyPart(setName),
+    normalizeFallbackKeyPart(setId),
     normalizeFallbackKeyPart(cardNumber),
+    normalizeFallbackKeyPart(language),
   ].join("|");
 }
 
 async function requestPokemonFallbackImage({
   name,
   setName,
+  setId,
   cardNumber,
+  language,
 }: {
   name?: string | null;
   setName?: string | null;
+  setId?: string | null;
   cardNumber?: string | null;
+  language?: string | null;
 }) {
   const key = buildPokemonFallbackKey({
     name,
     setName,
+    setId,
     cardNumber,
+    language,
   });
 
   if (!name?.trim()) {
@@ -162,8 +177,16 @@ async function requestPokemonFallbackImage({
         params.set("setName", setName.trim());
       }
 
+      if (setId?.trim()) {
+        params.set("setId", setId.trim());
+      }
+
       if (cardNumber?.trim()) {
         params.set("cardNumber", cardNumber.trim());
+      }
+
+      if (language?.trim()) {
+        params.set("language", language.trim());
       }
 
       const response = await fetch(
@@ -209,14 +232,18 @@ function CatalogImage({
   alt,
   category,
   setName,
+  setId,
   cardNumber,
+  language,
   className,
 }: {
   src?: string | null;
   alt?: string | null;
   category?: string | null;
   setName?: string | null;
+  setId?: string | null;
   cardNumber?: string | null;
+  language?: string | null;
   className?: string;
 }) {
   const [currentSrc, setCurrentSrc] =
@@ -232,7 +259,7 @@ function CatalogImage({
     setCurrentSrc(src || null);
     setFallbackAttempted(false);
     setImageFailed(false);
-  }, [src, alt, category, setName, cardNumber]);
+  }, [src, alt, category, setName, setId, cardNumber, language]);
 
   async function tryPokemonFallback() {
     const isPokemon =
@@ -253,7 +280,9 @@ function CatalogImage({
       await requestPokemonFallbackImage({
         name: alt,
         setName,
+        setId,
         cardNumber,
+        language,
       });
 
     if (!fallbackImage) {
@@ -573,10 +602,15 @@ export default function Home() {
               typeof card.rookie === "boolean"
                 ? card.rookie
                 : null,
+            language: card.language ?? null,
+            canonical_name:
+              card.canonical_name ?? card.canonicalName ?? null,
+            set_id:
+              card.set_id ?? card.setId ?? null,
           };
 
           unique.set(
-            `${normalized.data_source}:${normalized.external_id}`,
+            `${normalized.data_source}:${normalized.language || ""}:${normalized.external_id}`,
             normalized
           );
         });
@@ -1047,8 +1081,10 @@ export default function Home() {
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 sm:gap-6">
               {catalogResults.map((card) => {
-                const key = `${card.data_source}:${card.external_id}`;
-                const wished = wishlistIds.has(key);
+                const key = `${card.data_source}:${card.language || ""}:${card.external_id}`;
+                const legacyKey = `${card.data_source}:${card.external_id}`;
+                const wished =
+                  wishlistIds.has(key) || wishlistIds.has(legacyKey);
 
                 return (
                   <CatalogCardView
@@ -1398,7 +1434,9 @@ function CatalogCardView({
           alt={card.name}
           category={card.category}
           setName={card.set_name}
+          setId={card.set_id}
           cardNumber={card.card_number}
+          language={card.language}
           className={`w-full h-full object-contain p-3 transition duration-200 ${
             cardId ? "group-hover:scale-[1.03]" : ""
           }`}
@@ -1420,9 +1458,25 @@ function CatalogCardView({
 
         <div className="mt-3">
           <div className="flex items-start justify-between gap-2">
-            <h4 className="font-black text-base sm:text-lg leading-tight">
-              {card.name}
-            </h4>
+            <div className="min-w-0">
+              <h4 className="font-black text-base sm:text-lg leading-tight">
+                {card.canonical_name || card.name}
+              </h4>
+
+              {card.canonical_name &&
+                card.canonical_name !== card.name && (
+                  <p className="text-zinc-500 text-xs mt-1 truncate">
+                    {card.name}
+                    {card.language ? ` • ${card.language}` : ""}
+                  </p>
+                )}
+
+              {!card.canonical_name && card.language && card.language !== "EN" && (
+                <p className="text-zinc-500 text-xs mt-1">
+                  {card.language}
+                </p>
+              )}
+            </div>
 
             {card.card_number && (
               <span className="text-xs text-zinc-600 shrink-0">
@@ -1505,6 +1559,9 @@ function CatalogCardView({
                   card.rookie == null
                     ? ""
                     : String(card.rookie),
+                language: card.language || "",
+                canonical_name: card.canonical_name || "",
+                set_id: card.set_id || "",
               }).toString()}`
         }
         className="group block"

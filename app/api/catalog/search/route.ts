@@ -17,6 +17,10 @@ type CardRow = {
   finish: string | null;
   language: "EN" | "JP" | "CN-TW" | "CN";
   variant: string | null;
+  canonical_name: string | null;
+  canonical_external_id: string | null;
+  canonical_language: string | null;
+  canonical_confidence: number | null;
 };
 
 type SetRow = {
@@ -39,6 +43,10 @@ type NormalizedCard = {
   finish: string | null;
   language: "EN" | "JP" | "CN-TW" | "CN";
   variant: string | null;
+  canonical_name: string | null;
+  canonical_external_id: string | null;
+  canonical_language: string | null;
+  canonical_confidence: number | null;
   illustrator: string | null;
   image_url: string | null;
 };
@@ -108,6 +116,13 @@ async function enrichMissingPokemonImages(
           params.set("setName", card.set_name);
         }
 
+        // Regional TCGdex catalogs can share collector numbers across sets.
+        // Carry the exact provider set identity into the image resolver so
+        // JP/CN artwork is resolved inside the correct physical set.
+        if (card.set_id) {
+          params.set("setId", card.set_id);
+        }
+
         if (card.card_number) {
           params.set("cardNumber", card.card_number);
         }
@@ -124,6 +139,13 @@ async function enrichMissingPokemonImages(
         );
 
         if (!response.ok) {
+          console.warn(
+            "Catalog image enrichment resolver returned non-OK:",
+            response.status,
+            card.language,
+            card.set_id,
+            card.card_number
+          );
           return card;
         }
 
@@ -135,6 +157,14 @@ async function enrichMissingPokemonImages(
             image_url: String(payload.imageUrl),
           };
         }
+
+        console.warn(
+          "Catalog image enrichment resolver returned no image:",
+          card.language,
+          card.set_id,
+          card.card_number,
+          payload?.reason || payload?.provider || "unknown"
+        );
       } catch (error) {
         console.warn(
           "Catalog image enrichment skipped:",
@@ -241,6 +271,14 @@ export async function GET(
         mergeCardRows(
           directMatches,
           numericSetMatches
+        );
+
+      // Keep broad searches from filling the first page with a single
+      // language. Regional printings remain separate; this only
+      // interleaves EN / JP / CN-TW / CN before pagination.
+      matchingCards =
+        balanceCardsByLanguage(
+          matchingCards
         );
     }
 
@@ -452,7 +490,7 @@ async function searchWithinSet(
     supabase
       .from("cards")
       .select(
-        "external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish,language,variant"
+        "external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish,language,variant,canonical_name,canonical_external_id,canonical_language,canonical_confidence"
       )
       .eq(
         "data_source",
@@ -481,12 +519,12 @@ async function searchWithinSet(
   for (
     const word of searchWords
   ) {
+    const safeWord =
+      escapeLikePattern(word);
+
     request =
-      request.ilike(
-        "name",
-        `%${escapeLikePattern(
-          word
-        )}%`
+      request.or(
+        `name.ilike.%${safeWord}%,canonical_name.ilike.%${safeWord}%`
       );
   }
 
@@ -565,7 +603,7 @@ async function searchCardsByName(
     supabase
       .from("cards")
       .select(
-        "external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish,language,variant"
+        "external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish,language,variant,canonical_name,canonical_external_id,canonical_language,canonical_confidence"
       )
       .eq(
         "data_source",
@@ -576,16 +614,20 @@ async function searchCardsByName(
         "Pokemon"
       );
 
+  // Search both the physical/localized card name and the canonical
+  // English name produced by MintRadar's multilingual Pokémon sync.
+  // This lets a query such as "Pikachu" match Pikachu, ピカチュウ,
+  // 皮卡丘, etc. without collapsing the regional printings together.
   for (
     const word of
     effectiveNameWords
   ) {
+    const safeWord =
+      escapeLikePattern(word);
+
     request =
-      request.ilike(
-        "name",
-        `%${escapeLikePattern(
-          word
-        )}%`
+      request.or(
+        `name.ilike.%${safeWord}%,canonical_name.ilike.%${safeWord}%`
       );
   }
 
@@ -601,6 +643,10 @@ async function searchCardsByName(
 
   const { data, error } =
     await request
+      .order(
+        "canonical_name",
+        { ascending: true, nullsFirst: false }
+      )
       .order(
         "name",
         { ascending: true }
@@ -731,6 +777,58 @@ async function searchNumericSetInterpretations(
   );
 }
 
+function balanceCardsByLanguage(
+  cards: CardRow[]
+): CardRow[] {
+  const languageOrder: CardRow["language"][] = [
+    "EN",
+    "JP",
+    "CN-TW",
+    "CN",
+  ];
+
+  const buckets = new Map<
+    CardRow["language"],
+    CardRow[]
+  >();
+
+  languageOrder.forEach((language) => {
+    buckets.set(language, []);
+  });
+
+  cards.forEach((card) => {
+    const bucket = buckets.get(card.language);
+
+    if (bucket) {
+      bucket.push(card);
+    }
+  });
+
+  const balanced: CardRow[] = [];
+  let index = 0;
+
+  while (balanced.length < cards.length) {
+    let added = false;
+
+    for (const language of languageOrder) {
+      const card = buckets.get(language)?.[index];
+
+      if (card) {
+        balanced.push(card);
+        added = true;
+      }
+    }
+
+    if (!added) {
+      break;
+    }
+
+    index += 1;
+  }
+
+  return balanced;
+}
+
 function mergeCardRows(
   ...groups: CardRow[][]
 ): CardRow[] {
@@ -775,6 +873,10 @@ function normalizeCard(
     finish: card.finish,
     language: card.language,
     variant: card.variant,
+    canonical_name: card.canonical_name,
+    canonical_external_id: card.canonical_external_id,
+    canonical_language: card.canonical_language,
+    canonical_confidence: card.canonical_confidence,
     illustrator: null,
     image_url: card.image_url,
   };

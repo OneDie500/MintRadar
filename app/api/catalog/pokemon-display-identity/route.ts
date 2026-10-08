@@ -62,6 +62,17 @@ const JP_NON_POKEMON_DISPLAY_NAMES: Record<string, string> = {
   "グロウ草エネルギー": "Grow Grass Energy",
   "ニトロ炎エネルギー": "Nitro Fire Energy",
   "バブル水エネルギー": "Bubble Water Energy",
+
+  // M6a 30th Celebration commemorative Basic Energy display names.
+  // Collector identities such as DAR remain untouched.
+  "基本草エネルギー": "Basic Grass Energy",
+  "基本炎エネルギー": "Basic Fire Energy",
+  "基本水エネルギー": "Basic Water Energy",
+  "基本雷エネルギー": "Basic Lightning Energy",
+  "基本超エネルギー": "Basic Psychic Energy",
+  "基本闘エネルギー": "Basic Fighting Energy",
+  "基本悪エネルギー": "Basic Darkness Energy",
+  "基本鋼エネルギー": "Basic Metal Energy",
 };
 
 type TCGdexEnglishCard = TCGdexCardDetail & {
@@ -171,9 +182,16 @@ const EXACT_JP_EN_COUNTERPARTS: Record<string, ExactCounterpart> = {
    * matching mechanism; the English display name is still fetched from the
    * exact English TCGdex record and category-checked before use.
    */
+  "M4:073": { englishSetId: "me04", englishCardNumber: "078" }, // Great Haul Net
+  "M4:73":  { englishSetId: "me04", englishCardNumber: "078" },
+  "M4:074": { englishSetId: "me04", englishCardNumber: "083" }, // Transformation Tome
+  "M4:74":  { englishSetId: "me04", englishCardNumber: "083" },
+  "M4:079": { englishSetId: "me04", englishCardNumber: "075" }, // Ange Floette
+  "M4:79":  { englishSetId: "me04", englishCardNumber: "075" },
   "M4:083": { englishSetId: "me04", englishCardNumber: "085" }, // Magnetic Metal Energy
   "M4:83":  { englishSetId: "me04", englishCardNumber: "085" },
   "M4:104": { englishSetId: "me04", englishCardNumber: "108" }, // Energy Retrieval
+  "M4:107": { englishSetId: "me04", englishCardNumber: "115" }, // Tool Scrapper
   "M4:113": { englishSetId: "me04", englishCardNumber: "111" }, // Prism Tower
 
   /*
@@ -742,6 +760,246 @@ function japaneseNonPokemonDisplayName(
   return JP_NON_POKEMON_DISPLAY_NAMES[sourceName] || null;
 }
 
+/*
+ * Universal Japanese Pokémon display fallback.
+ *
+ * Preferred path remains localized TCGdex dexId -> PokéAPI. When upstream
+ * TCGdex omits dexId, resolve the printed Japanese species name against
+ * PokéAPI's localized species names. This is display-only: source set,
+ * collector number, artwork, and localized card identity remain untouched.
+ */
+const JP_POKEMON_FORM_DISPLAY_NAMES: Record<string, string> = {
+  "アローラ ナッシー": "Alolan Exeggutor",
+};
+
+type PokemonSpeciesList = {
+  results?: Array<{
+    name?: string | null;
+    url?: string | null;
+  }> | null;
+};
+
+type JapaneseSpeciesIndexEntry = {
+  dexId: number;
+  englishName: string;
+};
+
+let japaneseSpeciesIndexPromise:
+  | Promise<Map<string, JapaneseSpeciesIndexEntry>>
+  | null = null;
+
+function japanesePokemonBaseName(
+  localizedCard: TCGdexCardDetail
+) {
+  let sourceName = clean(localizedCard.name ?? null);
+
+  if (!sourceName) {
+    return "";
+  }
+
+  sourceName = sourceName
+    .replace(/(VMAX|VSTAR|BREAK|LV\.X|GX|EX|ex|V)\s*$/i, "")
+    .trim();
+
+  sourceName = sourceName.replace(/^メガ\s*/, "").trim();
+
+  return sourceName;
+}
+
+function pokemonSpeciesEnglishName(
+  species: PokemonSpecies
+) {
+  const localizedEnglishName =
+    species.names?.find(
+      (entry) =>
+        entry.language?.name === "en"
+    )?.name;
+
+  if (localizedEnglishName?.trim()) {
+    return localizedEnglishName.trim();
+  }
+
+  if (!species.name?.trim()) {
+    return null;
+  }
+
+  return species.name
+    .split("-")
+    .map(
+      (part) =>
+        part.charAt(0).toUpperCase() +
+        part.slice(1)
+    )
+    .join(" ");
+}
+
+function pokemonSpeciesJapaneseNames(
+  species: PokemonSpecies
+) {
+  return Array.from(
+    new Set(
+      (species.names ?? [])
+        .filter((entry) => {
+          const language =
+            entry.language?.name ?? "";
+
+          return (
+            language === "ja" ||
+            language === "ja-Hrkt"
+          );
+        })
+        .map((entry) => clean(entry.name ?? null))
+        .filter(Boolean)
+    )
+  );
+}
+
+async function buildJapaneseSpeciesIndex() {
+  const index =
+    new Map<string, JapaneseSpeciesIndexEntry>();
+
+  const speciesList =
+    await fetchJson<PokemonSpeciesList>(
+      `${POKEAPI_BASE}/pokemon-species?limit=2000`
+    );
+
+  const resources =
+    Array.isArray(speciesList?.results)
+      ? speciesList.results
+      : [];
+
+  const batchSize = 40;
+
+  for (
+    let start = 0;
+    start < resources.length;
+    start += batchSize
+  ) {
+    const batch =
+      resources.slice(start, start + batchSize);
+
+    const speciesBatch =
+      await Promise.all(
+        batch.map(async (resource) => {
+          if (!resource?.url) {
+            return null;
+          }
+
+          return fetchJson<PokemonSpecies>(
+            resource.url
+          );
+        })
+      );
+
+    for (const species of speciesBatch) {
+      if (
+        !species ||
+        !Number.isInteger(species.id) ||
+        !species.id ||
+        species.id <= 0
+      ) {
+        continue;
+      }
+
+      const englishName =
+        pokemonSpeciesEnglishName(species);
+
+      if (!englishName) {
+        continue;
+      }
+
+      for (
+        const japaneseName of
+        pokemonSpeciesJapaneseNames(species)
+      ) {
+        const existing =
+          index.get(japaneseName);
+
+        if (
+          existing &&
+          existing.dexId !== species.id
+        ) {
+          index.delete(japaneseName);
+          continue;
+        }
+
+        index.set(japaneseName, {
+          dexId: species.id,
+          englishName,
+        });
+      }
+    }
+  }
+
+  return index;
+}
+
+async function japaneseSpeciesIndex() {
+  if (!japaneseSpeciesIndexPromise) {
+    japaneseSpeciesIndexPromise =
+      buildJapaneseSpeciesIndex().catch(
+        (error) => {
+          japaneseSpeciesIndexPromise = null;
+          throw error;
+        }
+      );
+  }
+
+  return japaneseSpeciesIndexPromise;
+}
+
+async function resolveJapanesePokemonDisplayName(
+  localizedCard: TCGdexCardDetail,
+  language: string
+) {
+  if (
+    language.trim().toUpperCase() !== "JP" ||
+    localizedCard.category !== "Pokemon"
+  ) {
+    return null;
+  }
+
+  const baseName =
+    japanesePokemonBaseName(localizedCard);
+
+  if (!baseName) {
+    return null;
+  }
+
+  const verifiedFormName =
+    JP_POKEMON_FORM_DISPLAY_NAMES[baseName];
+
+  if (verifiedFormName) {
+    return {
+      name: verifiedFormName,
+      dexId: null as number | null,
+      method:
+        "jp-verified-form-display-fallback",
+    };
+  }
+
+  try {
+    const index =
+      await japaneseSpeciesIndex();
+
+    const resolved =
+      index.get(baseName);
+
+    if (!resolved) {
+      return null;
+    }
+
+    return {
+      name: resolved.englishName,
+      dexId: resolved.dexId,
+      method:
+        "jp-pokeapi-localized-species-index",
+    };
+  } catch {
+    return null;
+  }
+}
+
 function pokemonDisplaySuffix(
   localizedCard: TCGdexCardDetail
 ) {
@@ -1086,6 +1344,33 @@ export async function GET(
       dexId:
         localizedCard.dexId?.[0] ||
         null,
+      suffix:
+        pokemonDisplaySuffix(localizedCard),
+    });
+  }
+
+  const japanesePokemonFallback =
+    await resolveJapanesePokemonDisplayName(
+      localizedCard,
+      language
+    );
+
+  if (japanesePokemonFallback) {
+    return NextResponse.json({
+      ok: true,
+      cardName:
+        composeEnglishPokemonDisplayName(
+          japanesePokemonFallback.name,
+          localizedCard
+        ),
+      setName:
+        setName ||
+        localizedCard.set?.name ||
+        null,
+      method:
+        japanesePokemonFallback.method,
+      dexId:
+        japanesePokemonFallback.dexId,
       suffix:
         pokemonDisplaySuffix(localizedCard),
     });
