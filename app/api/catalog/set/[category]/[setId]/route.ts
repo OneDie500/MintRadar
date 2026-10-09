@@ -19,6 +19,9 @@ type NormalizedCard = {
   illustrator: string | null;
   language?: "EN" | "JP" | "CN-TW" | "CN" | null;
   variant?: string | null;
+  canonical_name?: string | null;
+  canonical_external_id?: string | null;
+  canonical_confidence?: number | null;
 };
 
 type RouteContext = {
@@ -119,10 +122,9 @@ export async function GET(
     } else if (
       cleanCategory === "onepiece"
     ) {
-      payload = await loadOnePieceSet(
-        decodedSetId,
-        requestedName
-      );
+      payload = requestedLanguage === "JP"
+        ? await loadJapaneseOnePieceSet(decodedSetId, requestedName)
+        : await loadOnePieceSet(decodedSetId, requestedName);
     } else if (
       cleanCategory === "mtg"
     ) {
@@ -751,6 +753,375 @@ function toOnePieceProviderSetId(value: string) {
   }
 
   return value.trim().toUpperCase();
+}
+
+// =============================================
+// ONE PIECE / JAPANESE PUNK RECORDS
+// =============================================
+// English One Piece remains on OPTCG API.
+// Japanese One Piece is discovered from the published Punk Records JP pack
+// files. Numeric pack IDs are NEVER trusted as set identities: the card IDs
+// inside each file must confirm the requested set before anything is returned.
+//
+// This mirrors the verified discovery strategy used by
+// /api/catalog/sets/onepiece, so every JP set exposed by Browse Sets can be
+// opened by this shared checklist route without a hand-maintained set map.
+
+type PunkJapaneseCard = {
+  id?: string;
+  pack_id?: string;
+  name?: string;
+  rarity?: string;
+  img_full_url?: string;
+  img_url?: string;
+  category?: string;
+};
+
+// Candidate files currently published by Punk Records. The contents of each
+// file determine the actual set identity; these numbers are only locations.
+const JAPANESE_ONE_PIECE_PACK_IDS: string[] = [
+  ...Array.from({ length: 36 }, (_, i) => String(550001 + i)),
+  ...Array.from({ length: 17 }, (_, i) => String(550101 + i)),
+  ...Array.from({ length: 4 }, (_, i) => String(550201 + i)),
+  ...Array.from({ length: 2 }, (_, i) => String(550301 + i)),
+  "550701",
+  "550801",
+  "550901",
+];
+
+function jpCardIdentity(card: PunkJapaneseCard): string {
+  return String(card.id || "").toUpperCase().trim();
+}
+
+function jpVariantFromId(cardId: string): string | null {
+  const promoMatch = cardId.match(/_P(\d+)$/i);
+  if (promoMatch) {
+    return `Alternate Art P${promoMatch[1]}`;
+  }
+  return null;
+}
+
+function jpBaseCardNumber(cardId: string): string {
+  return cardId.replace(/_P\d+$/i, "");
+}
+
+function isRequestedJapaneseOnePieceCard(
+  card: PunkJapaneseCard,
+  normalizedSetId: string
+): boolean {
+  const id = jpCardIdentity(card);
+  const baseId = jpBaseCardNumber(id);
+
+  return (
+    baseId === normalizedSetId ||
+    baseId.startsWith(`${normalizedSetId}-`)
+  );
+}
+
+async function fetchJapaneseOnePiecePack(
+  packId: string
+): Promise<PunkJapaneseCard[] | null> {
+  try {
+    const response = await fetch(
+      `https://raw.githubusercontent.com/buhbbl/punk-records/main/japanese/data/${packId}.json`,
+      {
+        next: { revalidate: 3600 },
+        headers: HEADERS,
+      }
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const raw: unknown = await response.json();
+
+    if (!Array.isArray(raw)) {
+      return null;
+    }
+
+    return raw as PunkJapaneseCard[];
+  } catch {
+    return null;
+  }
+}
+
+async function findJapaneseOnePieceSetPack(
+  normalizedSetId: string
+): Promise<{
+  packId: string;
+  cards: PunkJapaneseCard[];
+} | null> {
+  let bestMatch: {
+    packId: string;
+    cards: PunkJapaneseCard[];
+  } | null = null;
+
+  // Batch requests so we do not hammer the dataset host.
+  for (
+    let offset = 0;
+    offset < JAPANESE_ONE_PIECE_PACK_IDS.length;
+    offset += 10
+  ) {
+    const batch = JAPANESE_ONE_PIECE_PACK_IDS.slice(
+      offset,
+      offset + 10
+    );
+
+    const checked = await Promise.all(
+      batch.map(async (packId) => {
+        const cards = await fetchJapaneseOnePiecePack(packId);
+
+        if (!cards?.length) {
+          return null;
+        }
+
+        const matching = cards.filter((card) =>
+          isRequestedJapaneseOnePieceCard(
+            card,
+            normalizedSetId
+          )
+        );
+
+        if (!matching.length) {
+          return null;
+        }
+
+        // Safety: only accept a pack when its dominant normal set family is
+        // the requested set. This prevents promotional/reprint collections
+        // containing a few cards from another set from impersonating it.
+        const familyCounts = new Map<string, number>();
+
+        for (const card of cards) {
+          const baseId = jpBaseCardNumber(
+            jpCardIdentity(card)
+          );
+
+          const familyMatch = baseId.match(
+            /^((?:ST|OP|EB|PRB)\d{2})-\d{3}$/i
+          );
+
+          if (!familyMatch) {
+            continue;
+          }
+
+          const family = familyMatch[1].toUpperCase();
+
+          familyCounts.set(
+            family,
+            (familyCounts.get(family) || 0) + 1
+          );
+        }
+
+        const dominant = [...familyCounts.entries()].sort(
+          (a, b) => b[1] - a[1]
+        )[0];
+
+        if (
+          !dominant ||
+          dominant[0] !== normalizedSetId
+        ) {
+          return null;
+        }
+
+        return {
+          packId,
+          cards: matching,
+        };
+      })
+    );
+
+    for (const match of checked) {
+      if (!match) {
+        continue;
+      }
+
+      // If multiple published packs represent the same set, keep the largest
+      // verified payload so alternate arts/reprints are not silently lost.
+      if (
+        !bestMatch ||
+        match.cards.length > bestMatch.cards.length
+      ) {
+        bestMatch = match;
+      }
+    }
+  }
+
+  return bestMatch;
+}
+
+type OnePieceEnglishIdentity = {
+  name: string;
+  externalId: string | null;
+};
+
+function normalizeOnePieceCardNumberForMatch(
+  value: string | null | undefined
+): string {
+  return String(value || "")
+    .toUpperCase()
+    .trim()
+    .replace(/_P\d+$/i, "")
+    .replace(/\s+/g, "");
+}
+
+async function loadEnglishOnePieceIdentityMap(
+  normalizedSetId: string
+): Promise<Map<string, OnePieceEnglishIdentity>> {
+  const identities = new Map<
+    string,
+    OnePieceEnglishIdentity
+  >();
+
+  try {
+    // Reuse the same English provider already used by MintRadar rather than
+    // translating Japanese names. Card number + set is the canonical bridge.
+    const providerSetId =
+      toOnePieceProviderSetId(normalizedSetId);
+
+    const response = await fetch(
+      `https://optcgapi.com/api/sets/${encodeURIComponent(
+        providerSetId
+      )}/`,
+      {
+        next: { revalidate: 3600 },
+        headers: HEADERS,
+      }
+    );
+
+    if (!response.ok) {
+      return identities;
+    }
+
+    const raw: unknown = await response.json();
+
+    if (!Array.isArray(raw)) {
+      return identities;
+    }
+
+    for (
+      const [index, item] of (
+        raw as OPTCGCard[]
+      ).entries()
+    ) {
+      const cardNumber =
+        normalizeOnePieceCardNumberForMatch(
+          item.card_set_id
+        );
+
+      const canonicalName =
+        item.card_name?.trim();
+
+      if (!cardNumber || !canonicalName) {
+        continue;
+      }
+
+      // Base identity wins. Alternate-art English records may share the same
+      // card number, but the English card name is the same canonical identity.
+      if (!identities.has(cardNumber)) {
+        identities.set(cardNumber, {
+          name: canonicalName,
+          externalId:
+            createOnePieceExternalId(
+              item,
+              index
+            ),
+        });
+      }
+    }
+  } catch {
+    // Canonical enrichment is intentionally non-blocking. A temporary English
+    // provider failure must never make the verified Japanese checklist fail.
+  }
+
+  return identities;
+}
+
+async function loadJapaneseOnePieceSet(
+  setId: string,
+  requestedName: string | null
+) {
+  const normalizedSetId =
+    normalizeOnePieceSetId(setId);
+
+  if (
+    !/^(ST|OP|EB|PRB)\d{2}$/.test(
+      normalizedSetId
+    )
+  ) {
+    throw new Error(
+      `Japanese One Piece set ${setId} is not a supported set identity.`
+    );
+  }
+
+  const match = await findJapaneseOnePieceSetPack(
+    normalizedSetId
+  );
+
+  if (!match) {
+    throw new Error(
+      `Japanese One Piece ${setId} was not found in the verified JP dataset. English data was not substituted.`
+    );
+  }
+
+  const englishIdentityMap =
+    await loadEnglishOnePieceIdentityMap(
+      normalizedSetId
+    );
+
+  const results: NormalizedCard[] =
+    match.cards.map((card) => {
+      const cardId = jpCardIdentity(card);
+      const baseCardId = jpBaseCardNumber(cardId);
+      const variant = jpVariantFromId(cardId);
+      const canonical =
+        englishIdentityMap.get(
+          normalizeOnePieceCardNumberForMatch(
+            baseCardId
+          )
+        ) || null;
+
+      return {
+        external_id:
+          `punk-jp-${match.packId}-${cardId}`,
+        data_source: "punk-records-jp",
+        name: card.name || null,
+        set_name:
+          requestedName || normalizedSetId,
+        set_id: normalizedSetId,
+        card_number: baseCardId,
+        image_url:
+          card.img_full_url ||
+          card.img_url ||
+          null,
+        category: "One Piece",
+        rarity: card.rarity || null,
+        edition: null,
+        finish: variant,
+        illustrator: null,
+        language: "JP",
+        variant,
+        canonical_name:
+          canonical?.name || null,
+        canonical_external_id:
+          canonical?.externalId || null,
+        canonical_confidence:
+          canonical ? 100 : null,
+      };
+    });
+
+  return {
+    set: {
+      id: normalizedSetId,
+      name:
+        requestedName || normalizedSetId,
+      category: "One Piece",
+      code: normalizedSetId,
+      cardCount: results.length,
+      language: "JP" as const,
+    },
+    results,
+  };
 }
 
 // =============================================

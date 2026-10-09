@@ -23,6 +23,10 @@ type CatalogCard = {
   sport?: string | null;
   print_run?: number | null;
   rookie?: boolean | null;
+  language?: string | null;
+  canonical_name?: string | null;
+  set_id?: string | null;
+  variant?: string | null;
 };
 
 function normalize(value?: string | null) {
@@ -57,8 +61,14 @@ function MarketCompButtons({
 }: {
   card: CatalogCard;
 }) {
+  const marketName =
+    normalize(card.category).replace(/\s+/g, "") === "onepiece" &&
+    card.canonical_name?.trim()
+      ? card.canonical_name.trim()
+      : card.name;
+
   const searchQuery = [
-    card.name,
+    marketName,
     card.year,
     card.manufacturer,
     card.release_name || card.set_name,
@@ -149,80 +159,255 @@ function ResilientCatalogImage({
 }: {
   card: CatalogCard;
 }) {
+  const pokemonCard =
+    normalize(card.category) === "pokemon";
+
+  const onePieceCard =
+    normalize(card.category).replace(/\s+/g, "") === "onepiece";
+
+  const language =
+    (card.language || "EN").trim().toUpperCase();
+
+  const nonEnglishPokemonCard =
+    pokemonCard &&
+    Boolean(language) &&
+    language !== "EN";
+
   const [src, setSrc] =
     useState<string | null>(
-      card.image_url || null
+      card.image_url?.trim() || null
     );
-  const [fallbackTried, setFallbackTried] =
-    useState(false);
+
+  const [
+    fallbackAttempted,
+    setFallbackAttempted,
+  ] = useState(false);
+
   const [failed, setFailed] =
     useState(false);
 
-  async function tryFallback() {
+  function buildPokemonFallbackUrl() {
     if (
-      fallbackTried ||
-      normalize(card.category) !==
-        "pokemon"
+      !pokemonCard ||
+      !card.name?.trim()
+    ) {
+      return null;
+    }
+
+    const params =
+      new URLSearchParams();
+
+    params.set(
+      "name",
+      card.name.trim()
+    );
+
+    if (card.set_name?.trim()) {
+      params.set(
+        "setName",
+        card.set_name.trim()
+      );
+    }
+
+    if (card.set_id?.trim()) {
+      params.set(
+        "setId",
+        card.set_id.trim()
+      );
+    }
+
+    if (card.card_number?.trim()) {
+      params.set(
+        "cardNumber",
+        card.card_number.trim()
+      );
+    }
+
+    params.set(
+      "language",
+      language
+    );
+
+    return (
+      `/api/catalog/pokemon-image-fallback?${params.toString()}`
+    );
+  }
+
+  useEffect(() => {
+    let active = true;
+
+    setFallbackAttempted(false);
+    setFailed(false);
+
+    const storedImage =
+      card.image_url?.trim() || null;
+
+    if (storedImage) {
+      const displayImage =
+        onePieceCard &&
+        storedImage.startsWith(
+          "https://www.onepiece-cardgame.com/"
+        )
+          ? `/api/catalog/onepiece-image?url=${encodeURIComponent(
+              storedImage
+            )}`
+          : storedImage;
+
+      setSrc(displayImage);
+
+      return () => {
+        active = false;
+      };
+    }
+
+    if (!pokemonCard) {
+      setSrc(null);
+      setFailed(true);
+
+      return () => {
+        active = false;
+      };
+    }
+
+    const fallbackUrl =
+      buildPokemonFallbackUrl();
+
+    if (!fallbackUrl) {
+      setSrc(null);
+      setFailed(true);
+
+      return () => {
+        active = false;
+      };
+    }
+
+    setSrc(null);
+    setFallbackAttempted(true);
+
+    void (async () => {
+      try {
+        const response =
+          await fetch(
+            fallbackUrl,
+            {
+              method: "GET",
+              cache: "no-store",
+            }
+          );
+
+        const payload =
+          response.ok
+            ? ((await response.json()) as {
+                ok?: boolean;
+                imageUrl?: string | null;
+              })
+            : null;
+
+        if (
+          active &&
+          payload?.ok &&
+          typeof payload.imageUrl === "string" &&
+          payload.imageUrl.trim()
+        ) {
+          setSrc(
+            payload.imageUrl.trim()
+          );
+          setFailed(false);
+          return;
+        }
+
+        if (active) {
+          setFailed(true);
+        }
+      } catch (error) {
+        console.error(
+          "Catalog detail localized image fallback error:",
+          error
+        );
+
+        if (active) {
+          setFailed(true);
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [
+    card.external_id,
+    card.image_url,
+    card.category,
+    card.name,
+    card.set_name,
+    card.set_id,
+    card.card_number,
+    card.language,
+    language,
+    pokemonCard,
+    onePieceCard,
+    nonEnglishPokemonCard,
+  ]);
+
+  async function retryFallbackAfterImageError() {
+    if (
+      !pokemonCard ||
+      fallbackAttempted
     ) {
       setFailed(true);
       return;
     }
 
-    setFallbackTried(true);
+    const fallbackUrl =
+      buildPokemonFallbackUrl();
+
+    if (!fallbackUrl) {
+      setFailed(true);
+      return;
+    }
+
+    setSrc(null);
+    setFallbackAttempted(true);
+    setFailed(false);
 
     try {
-      const params =
-        new URLSearchParams({
-          name: card.name,
-        });
-
-      if (card.set_name) {
-        params.set(
-          "setName",
-          card.set_name
+      const response =
+        await fetch(
+          fallbackUrl,
+          {
+            method: "GET",
+            cache: "no-store",
+          }
         );
-      }
-
-      if (card.card_number) {
-        params.set(
-          "cardNumber",
-          card.card_number
-        );
-      }
-
-      const response = await fetch(
-        `/api/catalog/pokemon-image-fallback?${params.toString()}`,
-        {
-          cache: "no-store",
-        }
-      );
 
       const payload =
-        await response.json();
+        response.ok
+          ? ((await response.json()) as {
+              ok?: boolean;
+              imageUrl?: string | null;
+            })
+          : null;
 
       if (
-        response.ok &&
         payload?.ok &&
-        payload?.imageUrl
+        typeof payload.imageUrl === "string" &&
+        payload.imageUrl.trim()
       ) {
-        setSrc(payload.imageUrl);
+        setSrc(
+          payload.imageUrl.trim()
+        );
         return;
       }
+
+      setFailed(true);
     } catch (error) {
       console.error(
-        "Catalog detail image fallback error:",
+        "Catalog detail image retry failed:",
         error
       );
+      setFailed(true);
     }
-
-    setFailed(true);
   }
-
-  useEffect(() => {
-    if (!src && !failed) {
-      void tryFallback();
-    }
-  }, [src, failed]);
 
   if (failed) {
     return (
@@ -230,6 +415,7 @@ function ResilientCatalogImage({
         <p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400">
           MintRadar
         </p>
+
         <p className="mt-2 text-sm text-zinc-600">
           Image unavailable
         </p>
@@ -248,11 +434,15 @@ function ResilientCatalogImage({
   return (
     <img
       src={src}
-      alt={card.name}
-      className="h-full w-full object-contain p-4"
-      onError={() =>
-        void tryFallback()
+      alt={
+        card.canonical_name ||
+        card.name ||
+        "Trading card"
       }
+      className="h-full w-full object-contain p-4"
+      onError={() => {
+        void retryFallbackAfterImageError();
+      }}
     />
   );
 }
@@ -262,6 +452,26 @@ export default function CatalogCardClient({
 }: {
   card: CatalogCard;
 }) {
+  const onePieceCard =
+    normalize(card.category).replace(/\s+/g, "") === "onepiece";
+
+  const language =
+    (card.language || "EN").trim().toUpperCase();
+
+  const japaneseOnePiece =
+    onePieceCard && language === "JP";
+
+  const displayName =
+    japaneseOnePiece && card.canonical_name?.trim()
+      ? card.canonical_name.trim()
+      : card.name;
+
+  const originalLanguageName =
+    japaneseOnePiece &&
+    card.name?.trim() &&
+    normalize(card.name) !== normalize(displayName)
+      ? card.name.trim()
+      : null;
 
   const [
     isWishlisted,
@@ -425,7 +635,7 @@ export default function CatalogCardClient({
 
       setIsWishlisted(true);
       setWishlistMessage(
-        `${card.name} was added to your wishlist.`
+        `${displayName} was added to your wishlist.`
       );
     } catch (error: any) {
       console.error(
@@ -482,8 +692,14 @@ export default function CatalogCardClient({
             </div>
 
             <h1 className="mt-4 text-4xl font-black sm:text-5xl">
-              {card.name}
+              {displayName}
             </h1>
+
+            {originalLanguageName && (
+              <p className="mt-2 text-lg font-semibold text-zinc-400">
+                {originalLanguageName}
+              </p>
+            )}
 
             <p className="mt-3 text-lg text-zinc-500">
               {[
@@ -523,6 +739,19 @@ export default function CatalogCardClient({
                   {card.edition}
                 </span>
               )}
+
+              {card.language && (
+                <span className="rounded-full border border-zinc-800 bg-zinc-950 px-3 py-1.5 text-xs font-bold text-zinc-300">
+                  {card.language}
+                </span>
+              )}
+
+              {card.variant &&
+                normalize(card.variant) !== normalize(card.finish) && (
+                  <span className="rounded-full border border-zinc-800 bg-zinc-950 px-3 py-1.5 text-xs font-bold text-zinc-300">
+                    {card.variant}
+                  </span>
+                )}
             </div>
 
             <div className="mt-7 rounded-3xl border border-zinc-900 bg-zinc-950 p-5">

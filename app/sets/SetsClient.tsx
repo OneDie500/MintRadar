@@ -200,11 +200,33 @@ export default function SetsClient({
       .trim()
       .toLowerCase();
 
+    const visibleSets = sets.filter((set) => {
+      if (set.category !== "Pokemon") {
+        return true;
+      }
+
+      const language = (set.language || "").toUpperCase();
+      const normalizedName = set.name
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
+
+      const isChinese =
+        language === "CN" ||
+        language === "CN-TW";
+
+      const is30thCelebration =
+        normalizedName.includes("30th celebration");
+
+      return !isChinese && !is30thCelebration;
+    });
+
     if (!search) {
-      return sets;
+      return visibleSets;
     }
 
-    return sets.filter((set) =>
+    return visibleSets.filter((set) =>
       [
         set.name,
         set.code,

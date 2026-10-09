@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { stat } from "node:fs/promises";
+import path from "node:path";
 
 export const dynamic = "force-dynamic";
 
@@ -992,60 +994,100 @@ function officialJapanDetailMatchesIdentity({
     return false;
   }
 
-  const wantedParts =
-    wantedNumber.match(
-      /^([^/]+)\/([^/]+)$/
-    );
-
-  if (!wantedParts) {
-    return false;
-  }
-
-  const numerator =
-    wantedParts[1]
-      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-  const denominator =
-    wantedParts[2]
-      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
   const escapedSet =
     wantedSet
       .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-  // The official Japanese card detail page prints the set code and
-  // collector number together, e.g. "S6a 082 / 069". Require both.
-  const identityPattern =
-    new RegExp(
-      `${escapedSet}\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*` +
-      `${numerator}\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*\\/` +
-      `\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*${denominator}`,
-      "i"
-    );
-
-  if (identityPattern.test(html)) {
-    return true;
-  }
-
-  // Some responses separate the set icon/alt text from the printed
-  // collector number. In that case, still require BOTH signals to
-  // appear in the same official detail document.
   const setPattern =
     new RegExp(
       `(?:alt=["'][^"']*${escapedSet}[^"']*["']|>${escapedSet}<|\\b${escapedSet}\\b)`,
       "i"
     );
 
-  const numberPattern =
+  const wantedParts =
+    wantedNumber.match(
+      /^([^/]+)\/([^/]+)$/
+    );
+
+  if (wantedParts) {
+    const numerator =
+      wantedParts[1]
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    const denominator =
+      wantedParts[2]
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    // When the caller already knows the full printed collector identity,
+    // preserve the strictest possible verification: exact set + numerator +
+    // denominator must all appear on the official Pokémon Japan detail page.
+    const identityPattern =
+      new RegExp(
+        `${escapedSet}\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*` +
+        `${numerator}\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*\\/` +
+        `\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*${denominator}`,
+        "i"
+      );
+
+    if (identityPattern.test(html)) {
+      return true;
+    }
+
+    const numberPattern =
+      new RegExp(
+        `${numerator}\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*\\/` +
+        `\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*${denominator}`,
+        "i"
+      );
+
+    return (
+      setPattern.test(html) &&
+      numberPattern.test(html)
+    );
+  }
+
+  // TCGdex localIds for Japanese cards are commonly short numerators such as
+  // "002". Do not invent the denominator from cardCount.official: that field
+  // does not always equal the denominator printed on the physical card
+  // (Sky Legend SM10b is one example). Instead, let the official Pokémon
+  // Japan detail page supply the authoritative denominator while still
+  // requiring the exact provider set code and exact printed numerator.
+  const numericShort =
+    wantedNumber.match(/^0*(\d+)$/);
+
+  if (!numericShort) {
+    return false;
+  }
+
+  const numeratorValue =
+    Number(numericShort[1]);
+
+  const numeratorCandidates =
+    Array.from(
+      new Set([
+        wantedNumber,
+        String(numeratorValue).padStart(3, "0"),
+      ])
+    )
+      .filter(Boolean)
+      .map((value) =>
+        value.replace(
+          /[.*+?^${}()|[\]\\]/g,
+          "\\$&"
+        )
+      );
+
+  const numeratorPattern =
     new RegExp(
-      `${numerator}\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*\\/` +
-      `\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*${denominator}`,
+      `(?:^|[^0-9])(?:${numeratorCandidates.join("|")})` +
+      `\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*\\/` +
+      `\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*[^<\\s]+`,
       "i"
     );
 
   return (
     setPattern.test(html) &&
-    numberPattern.test(html)
+    numeratorPattern.test(html)
   );
 }
 
@@ -1159,48 +1201,22 @@ async function resolveOfficialPokemonJapanImage({
     return null;
   }
 
-  const numerator =
-    String(Number(numericMatch[1])).padStart(
-      requestedShort.length,
-      "0"
+  // Keep the caller's collector identity authoritative. Japanese provider
+  // localIds are often short numerators (for example "002"), and TCGdex's
+  // cardCount.official is not guaranteed to equal the denominator printed on
+  // the physical card. The official detail-page verifier below will require
+  // exact set + numerator and read the denominator from Pokémon Japan itself.
+  const printedNumber =
+    normalizePrintedCollectorNumber(
+      cardNumber
     );
 
-  // TCGdex carries the official (main-set) count even when the requested card
-  // is an AR/SR/SAR/MUR above that count. We use it only to construct the
-  // printed Japanese collector identity, e.g. M5 113/081 or M6 077/076.
   const setDetail =
     await fetchJsonWithTimeout<TcgdexJapaneseSetDetail>(
       `https://api.tcgdex.net/v2/ja/sets/${encodeURIComponent(
         setId
       )}`
     );
-
-  const officialCount =
-    setDetail?.cardCount?.official;
-
-  if (
-    typeof officialCount !== "number" ||
-    !Number.isFinite(officialCount) ||
-    officialCount < 1
-  ) {
-    return null;
-  }
-
-  const width =
-    Math.max(
-      3,
-      requestedShort.length,
-      String(officialCount).length
-    );
-
-  const printedNumber =
-    `${String(Number(numericMatch[1])).padStart(
-      width,
-      "0"
-    )}/${String(officialCount).padStart(
-      width,
-      "0"
-    )}`;
 
   /*
    * First preserve the fast path: search Pokémon Japan by the supplied source
@@ -1450,6 +1466,47 @@ async function resolveOfficialPokemonJapanImage({
     }
   }
 
+  return null;
+}
+
+// Vintage Japanese images are served ONLY from MintRadar-owned public assets.
+// Add individually verified, appropriately licensed files under
+// public/card-overrides/pokemon/vintage-jp/<SET_ID>/<LOCAL_ID>.png
+// (or .jpg/.jpeg/.webp). No third-party hotlinks or cross-set substitutions.
+async function resolveLocalVintageJapaneseImage({
+  setId,
+  cardNumber,
+}: {
+  setId?: string | null;
+  cardNumber?: string | null;
+}) {
+  const exactSetId = (setId || "").trim().toUpperCase();
+  const requestedNumber = normalizePrintedCollectorNumber(cardNumber);
+  const match = requestedNumber.match(/^(\d{1,4})$/);
+
+  if (!/^PCG[1-9]$/.test(exactSetId) || !match) return null;
+
+  // Full collector numbers need their own denominator verification;
+  // local assets are indexed only by exact set-scoped short IDs.
+  const localId = match[1].padStart(3, "0");
+  const base = path.join(
+    process.cwd(), "public", "card-overrides", "pokemon", "vintage-jp",
+    exactSetId, localId
+  );
+
+  for (const ext of ["png", "jpg", "jpeg", "webp"]) {
+    try {
+      const file = await stat(`${base}.${ext}`);
+      if (!file.isFile() || file.size === 0) continue;
+      return {
+        imageUrl: `/card-overrides/pokemon/vintage-jp/${exactSetId}/${localId}.${ext}`,
+        provider: "mintradar-vintage-jp-local-exact",
+        match: { setId: exactSetId, cardNumber: localId },
+      };
+    } catch {
+      // No verified local asset for this exact set + number.
+    }
+  }
   return null;
 }
 
@@ -3690,119 +3747,12 @@ export async function GET(request: NextRequest) {
       }
 
       if (officialJapanSetId) {
-        let officialJapanCardNumber =
+        // Preserve the exact collector identity supplied by the catalog.
+        // If it is only a short Japanese localId (for example "002"), the
+        // official resolver verifies that numerator against Pokémon Japan's
+        // exact set detail instead of guessing a denominator from TCGdex.
+        const officialJapanCardNumber =
           cardNumber;
-
-        // TCGdex often exposes Japanese catalog cards as a short localId
-        // such as "001", while the official Pokémon Japan detail page prints
-        // the full collector identity such as "001 / 076".
-        //
-        // Only derive the denominator from the exact, already-supplied JP
-        // provider set. Also require that the requested localId exists exactly
-        // once inside that set before constructing the printed number.
-        if (
-          cardNumber &&
-          !normalizePrintedCollectorNumber(
-            cardNumber
-          ).includes("/")
-        ) {
-          const jpSetDetail =
-            await fetchJsonWithTimeout<TcgdexJapaneseSetDetail>(
-              `https://api.tcgdex.net/v2/ja/sets/${encodeURIComponent(
-                officialJapanSetId
-              )}`
-            );
-
-          const officialCount =
-            jpSetDetail?.cardCount?.official;
-
-          const requestedNumbers =
-            new Set(
-              buildCollectorNumberVariants(
-                cardNumber
-              ).map((value) =>
-                normalize(value)
-              )
-            );
-
-          const exactSetMatches =
-            Array.isArray(jpSetDetail?.cards)
-              ? jpSetDetail!.cards!.filter(
-                  (candidate) => {
-                    const candidateNumbers =
-                      new Set(
-                        buildCollectorNumberVariants(
-                          candidate.localId
-                        ).map((value) =>
-                          normalize(value)
-                        )
-                      );
-
-                    return Array.from(
-                      requestedNumbers
-                    ).some((value) =>
-                      candidateNumbers.has(
-                        value
-                      )
-                    );
-                  }
-                )
-              : [];
-
-          const shortNumber =
-            shortCardNumber(
-              cardNumber
-            ).replace(/\s+/g, "");
-
-          const numericShort =
-            shortNumber.match(
-              /^0*(\d+)$/
-            );
-
-          if (
-            typeof officialCount ===
-              "number" &&
-            Number.isFinite(
-              officialCount
-            ) &&
-            officialCount > 0 &&
-            exactSetMatches.length === 1 &&
-            numericShort
-          ) {
-            const numeratorValue =
-              Number(
-                numericShort[1]
-              );
-
-            const width =
-              Math.max(
-                3,
-                shortNumber.length,
-                String(
-                  officialCount
-                ).length
-              );
-
-            const numerator =
-              String(
-                numeratorValue
-              ).padStart(
-                width,
-                "0"
-              );
-
-            const denominator =
-              String(
-                officialCount
-              ).padStart(
-                width,
-                "0"
-              );
-
-            officialJapanCardNumber =
-              `${numerator}/${denominator}`;
-          }
-        }
 
         const officialJapan =
           await resolveOfficialPokemonJapanImage({
@@ -3839,6 +3789,21 @@ export async function GET(request: NextRequest) {
             },
           });
         }
+      }
+
+      // Only after TCGdex and official Japan fail, try a verified local
+      // vintage JP asset for the exact same set + local collector number.
+      const vintageJp = await resolveLocalVintageJapaneseImage({
+        setId: officialJapanSetId,
+        cardNumber,
+      });
+      if (vintageJp) {
+        return NextResponse.json({
+          ok: true,
+          imageUrl: vintageJp.imageUrl,
+          provider: vintageJp.provider,
+          match: vintageJp.match,
+        });
       }
 
       // Critical safety rule: an explicit JP provider setId is authoritative.

@@ -29,6 +29,9 @@ type CatalogCard = {
   illustrator: string | null;
   language?: "EN" | "JP" | "CN-TW" | "CN" | null;
   variant?: string | null;
+  canonical_name?: string | null;
+  canonical_external_id?: string | null;
+  canonical_confidence?: number | null;
 };
 
 type SetInfo = {
@@ -376,7 +379,7 @@ function PokemonCatalogImage({
 
     if (pokemonCard) {
       void tryEnglishPokemonFallback();
-    } else {
+    } else if (!currentSrc) {
       setFailed(true);
     }
   }, [
@@ -1571,11 +1574,13 @@ export default function SetChecklistPage() {
               [
                 displayIdentity?.cardName,
                 displayIdentity?.setName,
+                card.canonical_name,
                 card.name,
                 card.set_name,
                 card.card_number,
                 card.rarity,
                 card.finish,
+                card.variant,
               ]
                 .filter(Boolean)
                 .join(" ")
@@ -1828,26 +1833,177 @@ export default function SetChecklistPage() {
                     card.name ||
                     "Unknown Card";
 
+                const isJapaneseOnePiece =
+                  category === "onepiece" &&
+                  (card.language || requestedLanguage) === "JP";
+
+                const onePieceCanonicalName =
+                  isJapaneseOnePiece
+                    ? card.canonical_name?.trim() || null
+                    : null;
+
+                const primaryDisplayName =
+                  onePieceCanonicalName ||
+                  displayCardName;
+
+                const originalLanguageName =
+                  isJapaneseOnePiece &&
+                  onePieceCanonicalName &&
+                  card.name &&
+                  card.name !== onePieceCanonicalName
+                    ? card.name
+                    : null;
+
+                const detailParams = new URLSearchParams();
+
+                detailParams.set(
+                  "external_id",
+                  card.external_id || ""
+                );
+                detailParams.set(
+                  "data_source",
+                  card.data_source || ""
+                );
+                detailParams.set(
+                  "name",
+                  card.name || "Unknown Card"
+                );
+
+                if (card.set_name) {
+                  detailParams.set(
+                    "set_name",
+                    card.set_name
+                  );
+                }
+
+                if (card.card_number) {
+                  detailParams.set(
+                    "card_number",
+                    card.card_number
+                  );
+                }
+
+                if (card.image_url) {
+                  detailParams.set(
+                    "image_url",
+                    card.image_url
+                  );
+                }
+
+                if (card.category) {
+                  detailParams.set(
+                    "category",
+                    card.category
+                  );
+                }
+
+                if (card.rarity) {
+                  detailParams.set(
+                    "rarity",
+                    card.rarity
+                  );
+                }
+
+                if (card.edition) {
+                  detailParams.set(
+                    "edition",
+                    card.edition
+                  );
+                }
+
+                if (card.finish) {
+                  detailParams.set(
+                    "finish",
+                    card.finish
+                  );
+                }
+
+                if (card.language || requestedLanguage) {
+                  detailParams.set(
+                    "language",
+                    card.language || requestedLanguage
+                  );
+                }
+
+                if (card.canonical_name) {
+                  detailParams.set(
+                    "canonical_name",
+                    card.canonical_name
+                  );
+                }
+
+                if (card.set_id) {
+                  detailParams.set(
+                    "set_id",
+                    card.set_id
+                  );
+                }
+
+                if (card.variant) {
+                  detailParams.set(
+                    "variant",
+                    card.variant
+                  );
+                }
+
+                const catalogCardHref =
+                  `/catalog-card?${detailParams.toString()}`;
+
                   return (
                     <article
                       key={key}
-                      className="group overflow-hidden rounded-2xl border border-zinc-900 bg-zinc-950 transition hover:-translate-y-1 hover:border-emerald-400/50"
+                      className="group relative overflow-hidden rounded-2xl border border-zinc-900 bg-zinc-950 transition hover:-translate-y-1 hover:border-emerald-400/50"
                     >
+                      <Link
+                        href={catalogCardHref}
+                        aria-label={`View ${primaryDisplayName} details and comps`}
+                        className="absolute inset-0 z-10"
+                      />
+
                       <div className="relative aspect-[0.716] bg-zinc-900">
-                        <PokemonCatalogImage
-                          card={card}
-                        />
+                        {card.category === "Pokemon" ? (
+                          <PokemonCatalogImage
+                            card={card}
+                          />
+                        ) : card.image_url?.trim() ? (
+                          <img
+                            src={
+                              card.image_url
+                                .trim()
+                                .startsWith(
+                                  "https://www.onepiece-cardgame.com/"
+                                )
+                                ? `/api/catalog/onepiece-image?url=${encodeURIComponent(
+                                    card.image_url.trim()
+                                  )}`
+                                : card.image_url.trim()
+                            }
+                            alt={
+                              primaryDisplayName ||
+                              card.name ||
+                              "Trading card"
+                            }
+                            loading="lazy"
+                            className="h-full w-full object-contain"
+                          />
+                        ) : (
+                          <div className="h-full w-full flex items-center justify-center px-4 text-center text-xs text-zinc-700">
+                            Image unavailable
+                          </div>
+                        )}
 
                         {available >
                           0 && (
                           <button
                             type="button"
-                            onClick={() =>
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
                               openVendorListings(
                                 card
-                              )
-                            }
-                            className="absolute left-2 top-2 rounded-full border border-emerald-300/30 bg-black/85 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-emerald-300 backdrop-blur transition hover:border-emerald-300 hover:bg-emerald-400 hover:text-black"
+                              );
+                            }}
+                            className="absolute left-2 top-2 z-20 rounded-full border border-emerald-300/30 bg-black/85 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-emerald-300 backdrop-blur transition hover:border-emerald-300 hover:bg-emerald-400 hover:text-black"
                           >
                             Available •{" "}
                             {available}
@@ -1856,11 +2012,13 @@ export default function SetChecklistPage() {
 
                         <button
                           type="button"
-                          onClick={() =>
-                            toggleWishlist(
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            void toggleWishlist(
                               card
-                            )
-                          }
+                            );
+                          }}
                           disabled={
                             saving
                           }
@@ -1869,7 +2027,7 @@ export default function SetChecklistPage() {
                               ? "Remove from wishlist"
                               : "Add to wishlist"
                           }
-                          className={`absolute right-2 top-2 h-10 w-10 rounded-full border backdrop-blur flex items-center justify-center text-lg transition ${
+                          className={`absolute right-2 top-2 z-20 h-10 w-10 rounded-full border backdrop-blur flex items-center justify-center text-lg transition ${
                             wishlisted
                               ? "border-emerald-300/40 bg-emerald-400 text-black"
                               : "border-white/15 bg-black/75 text-white hover:border-emerald-300 hover:text-emerald-300"
@@ -1889,16 +2047,21 @@ export default function SetChecklistPage() {
 
                       <div className="p-4">
                         <div className="flex items-start justify-between gap-3">
-                          <h3 className="font-black leading-tight">
-                            {displayCardName}
-                          </h3>
+                          <div className="min-w-0">
+                            <h3 className="font-black leading-tight">
+                              {primaryDisplayName}
+                            </h3>
+
+                            {originalLanguageName ? (
+                              <div className="mt-1 line-clamp-1 text-xs text-zinc-500">
+                                {originalLanguageName}
+                              </div>
+                            ) : null}
+                          </div>
 
                           {card.card_number && (
                             <span className="shrink-0 text-xs text-zinc-600">
-                              #
-                              {
-                                card.card_number
-                              }
+                              #{card.card_number}
                             </span>
                           )}
                         </div>
@@ -1919,6 +2082,13 @@ export default function SetChecklistPage() {
                               }
                             </span>
                           )}
+
+                          {card.variant &&
+                            card.variant !== card.finish && (
+                              <span className="rounded-full border border-emerald-400/20 px-2 py-1 text-[10px] font-black text-emerald-300">
+                                {card.variant}
+                              </span>
+                            )}
                         </div>
 
                         <div className="mt-4 border-t border-zinc-900 pt-3">
@@ -1926,12 +2096,14 @@ export default function SetChecklistPage() {
                           0 ? (
                             <button
                               type="button"
-                              onClick={() =>
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
                                 openVendorListings(
                                   card
-                                )
-                              }
-                              className="text-left text-xs font-black text-emerald-300 transition hover:text-emerald-200"
+                                );
+                              }}
+                              className="relative z-20 text-left text-xs font-black text-emerald-300 transition hover:text-emerald-200"
                             >
                               View vendor listings →
                             </button>

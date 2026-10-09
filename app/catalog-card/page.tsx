@@ -44,6 +44,10 @@ export default async function CatalogCardPage({
         : rookieRaw === "false"
           ? false
           : null,
+    language: first(params.language) || null,
+    canonical_name: first(params.canonical_name) || null,
+    set_id: first(params.set_id) || null,
+    variant: first(params.variant) || null,
   };
 
   return <CatalogCardClient card={card} />;
