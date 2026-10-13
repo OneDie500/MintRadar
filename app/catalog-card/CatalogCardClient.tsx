@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { supabase } from "../../lib/supabase";
+import { openMarketCompLink } from "../../lib/mobile-market-link";
 
 type CatalogCard = {
   external_id: string;
@@ -83,14 +84,6 @@ function MarketCompButtons({
   const encoded =
     encodeURIComponent(searchQuery);
 
-  // 130point does not expose a confirmed stable prefilled-search URL.
-  // Copy the exact query on click so the user can paste it into its search field.
-  const copyFor130point = () => {
-    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-      void navigator.clipboard.writeText(searchQuery).catch(() => {});
-    }
-  };
-
   const markets = isSports(card)
     ? [
         { name: "130point", href: "https://130point.com/search/", detail: "Sold comps • search terms copied on click" },
@@ -113,7 +106,13 @@ function MarketCompButtons({
         <a
           key={market.name}
           href={market.href}
-          onClick={market.name === "130point" ? copyFor130point : undefined}
+          onClick={(event) =>
+            openMarketCompLink(
+              event,
+              market.href,
+              market.name === "130point" ? searchQuery : undefined
+            )
+          }
           target="_blank"
           rel="noreferrer"
           className="rounded-2xl border border-zinc-800 bg-black p-4 transition hover:border-emerald-400/40 hover:bg-emerald-400/[0.04]"

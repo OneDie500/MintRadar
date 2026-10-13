@@ -29,6 +29,7 @@ import {
 } from "../../lib/niimbot-web";
 import { encodeListingId } from "../../lib/listing-short-code";
 import { getCardDisplayIdentity } from "../../lib/card-display-identity";
+import { openMarketCompLink } from "../../lib/mobile-market-link";
 
 type MintRadarNativePrinterBridge = {
   findPrinters(): Promise<{
@@ -644,14 +645,6 @@ function DashboardCompButtons({
   const encodedQuery =
     encodeURIComponent(query);
 
-  // Copy the card identity for 130point; its public search page has no
-  // confirmed stable query-link format we can rely on.
-  const copyFor130point = () => {
-    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-      void navigator.clipboard.writeText(query).catch(() => {});
-    }
-  };
-
   const links = sports
     ? [
         { name: "130point", logo: "/market-logos/130point.png", description: "Sold comps • search terms copied on click", href: "https://130point.com/search/" },
@@ -681,7 +674,7 @@ function DashboardCompButtons({
           </h3>
 
           <p className="text-xs text-zinc-600">
-            Opens in a new tab
+            Opens in-app on mobile • new tab on web
           </p>
         </div>
 
@@ -697,7 +690,13 @@ function DashboardCompButtons({
           <a
             key={market.name}
             href={market.href}
-            onClick={market.name === "130point" ? copyFor130point : undefined}
+            onClick={(event) =>
+              openMarketCompLink(
+                event,
+                market.href,
+                market.name === "130point" ? query : undefined
+              )
+            }
             target="_blank"
             rel="noreferrer"
             className="group flex items-center justify-between gap-4 rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 transition hover:border-emerald-400/40 hover:bg-emerald-400/[0.04]"
