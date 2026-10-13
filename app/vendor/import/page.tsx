@@ -2483,9 +2483,275 @@ async function fetchOnePieceCatalogCandidates(
   return allCandidates;
 }
 
+async function fetchJapaneseOnePieceSetCandidates(
+  row: NormalizedRow
+) {
+  const normalizedNumber =
+    normalizeOnePieceCardNumber(
+      row.cardNumber || ""
+    );
+
+  const numberSetMatch =
+    normalizedNumber.match(
+      /^((?:OP|ST|EB|PRB)\d{2})-\d{3}$/i
+    );
+
+  const sourceSetMatch =
+    row.setName
+      .trim()
+      .toUpperCase()
+      .replace(/[\s_-]+/g, "")
+      .match(
+        /(?:^|[^A-Z0-9])?((?:OP|ST|EB|PRB)\d{2})(?:$|[^A-Z0-9])?/
+      );
+
+  const setId =
+    numberSetMatch?.[1]?.toUpperCase() ||
+    sourceSetMatch?.[1]?.toUpperCase() ||
+    "";
+
+  if (!setId) {
+    return [];
+  }
+
+  try {
+    const response = await fetch(
+      `/api/catalog/set/onepiece/${encodeURIComponent(
+        setId
+      )}?language=JP&name=${encodeURIComponent(
+        setId
+      )}`,
+      {
+        cache: "no-store",
+      }
+    );
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const payload =
+      await response.json();
+
+    return Array.isArray(
+      payload?.cards
+    )
+      ? payload.cards
+      : Array.isArray(
+          payload?.results
+        )
+        ? payload.results
+        : [];
+  } catch (error) {
+    console.warn(
+      `Japanese One Piece set lookup skipped for "${setId}":`,
+      error
+    );
+
+    return [];
+  }
+}
+
+function normalizeOnePieceVariantForMatch(
+  value: string
+) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(
+      /alternate\s*art/g,
+      "p"
+    )
+    .replace(
+      /parallel/g,
+      "p"
+    )
+    .replace(
+      /[^a-z0-9]+/g,
+      ""
+    );
+}
+
+function selectJapaneseOnePieceCandidate(
+  row: NormalizedRow,
+  candidates: any[]
+) {
+  const targetNumber =
+    normalizeOnePieceCardNumber(
+      row.cardNumber || ""
+    );
+
+  if (!targetNumber) {
+    return null;
+  }
+
+  const sameNumber =
+    candidates.filter(
+      (candidate: any) =>
+        normalizeOnePieceCardNumber(
+          candidateCardNumber(
+            candidate
+          )
+        ) === targetNumber
+    );
+
+  if (sameNumber.length === 0) {
+    return null;
+  }
+
+  const requestedVariant =
+    normalizeOnePieceVariantForMatch(
+      row.variant ||
+      row.finish ||
+      ""
+    );
+
+  if (requestedVariant) {
+    const variantMatch =
+      sameNumber.find(
+        (candidate: any) => {
+          const candidateVariant =
+            normalizeOnePieceVariantForMatch(
+              String(
+                candidate?.variant ||
+                candidate?.finish ||
+                ""
+              )
+            );
+
+          return (
+            candidateVariant &&
+            (
+              candidateVariant ===
+                requestedVariant ||
+              candidateVariant.includes(
+                requestedVariant
+              ) ||
+              requestedVariant.includes(
+                candidateVariant
+              )
+            )
+          );
+        }
+      );
+
+    if (variantMatch) {
+      return variantMatch;
+    }
+
+    // A requested alternate/parallel is identity-defining. Do not silently
+    // downgrade it to the base printing when the exact JP variant is absent.
+    return null;
+  }
+
+  // With no requested variant, prefer the base printing over _P1/_P2/etc.
+  const basePrinting =
+    sameNumber.find(
+      (candidate: any) =>
+        !String(
+          candidate?.variant ||
+          candidate?.finish ||
+          ""
+        ).trim() &&
+        !/_P\d+$/i.test(
+          String(
+            candidate?.external_id ||
+            ""
+          )
+        )
+    );
+
+  return (
+    basePrinting ||
+    (
+      sameNumber.length === 1
+        ? sameNumber[0]
+        : null
+    )
+  );
+}
+
+async function resolveJapaneseOnePieceImportIdentity(
+  row: NormalizedRow
+): Promise<NormalizedRow> {
+  const candidates =
+    await fetchJapaneseOnePieceSetCandidates(
+      row
+    );
+
+  const best =
+    selectJapaneseOnePieceCandidate(
+      row,
+      candidates
+    );
+
+  if (!best) {
+    return row;
+  }
+
+  return {
+    ...row,
+
+    // Keep the source display name. The JP catalog row supplies artwork and
+    // canonical identity metadata without rewriting the user's CSV label.
+    name: row.name,
+
+    setName:
+      candidateSetName(
+        best
+      ) ||
+      row.setName,
+
+    cardNumber:
+      candidateCardNumber(
+        best
+      ) ||
+      row.cardNumber,
+
+    imageUrl:
+      candidateImageUrl(
+        best
+      ) ||
+      row.imageUrl,
+
+    rarity:
+      String(
+        best?.rarity ||
+        row.rarity ||
+        ""
+      ),
+
+    language: "JP",
+
+    variant:
+      row.variant ||
+      String(
+        best?.variant || ""
+      ),
+
+    finish:
+      row.finish ||
+      String(
+        best?.finish ||
+        best?.variant ||
+        ""
+      ),
+  };
+}
+
 async function resolveOnePieceImportIdentity(
   row: NormalizedRow
 ): Promise<NormalizedRow> {
+  if (
+    normalizeCardLanguage(
+      row.language
+    ) === "JP"
+  ) {
+    return resolveJapaneseOnePieceImportIdentity(
+      row
+    );
+  }
+
   const number =
     normalizeOnePieceCardNumber(
       row.cardNumber || ""
@@ -2549,11 +2815,8 @@ async function resolveOnePieceImportIdentity(
       return {
         ...row,
 
-        // Preserve source display naming until variant/language have
-        // dedicated database fields.
         name: row.name,
 
-        // Provider-backed actual set and artwork are safe to improve.
         setName:
           candidateSetName(
             best
@@ -2573,18 +2836,28 @@ async function resolveOnePieceImportIdentity(
             ""
           ),
 
-        // Keep CSV finish when present. Otherwise reuse the provider's
-        // normalized One Piece variant (Manga / Alternate Art / SP / Gold).
+        language:
+          normalizeCardLanguage(
+            row.language
+          ) || "EN",
+
+        variant:
+          row.variant ||
+          String(
+            best?.variant || ""
+          ),
+
         finish:
           row.finish ||
           String(
-            best?.finish || ""
+            best?.finish ||
+            best?.variant ||
+            ""
           ),
       };
     }
   }
 
-  // No confident provider result: leave the source record exactly alone.
   return row;
 }
 

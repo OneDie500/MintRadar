@@ -28,6 +28,7 @@ import {
   supportsNiimbotWebBluetooth,
 } from "../../lib/niimbot-web";
 import { encodeListingId } from "../../lib/listing-short-code";
+import { getCardDisplayIdentity } from "../../lib/card-display-identity";
 
 type MintRadarNativePrinterBridge = {
   findPrinters(): Promise<{
@@ -564,7 +565,7 @@ function VendorCardImage({
   return (
     <img
       src={currentSrc}
-      alt={card?.name || "Card"}
+      alt={getCardDisplayIdentity(card).name || "Card"}
       className="w-full h-full object-contain"
       onError={() => {
         const alreadyUsingSportsRoute =
@@ -4712,6 +4713,7 @@ export default function VendorDashboardPage() {
                   const card =
                     item.cards;
 
+
                   const quantity =
                     item.quantity ?? 0;
 
@@ -4745,7 +4747,7 @@ export default function VendorDashboardPage() {
 
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-lg font-black">
-                            {card?.name ||
+                            {getCardDisplayIdentity(card).name ||
                               "Unknown Card"}
                           </p>
 
@@ -4760,6 +4762,7 @@ export default function VendorDashboardPage() {
                                 ? card.language
                                 : null,
                               card?.variant,
+                              ...getCardDisplayIdentity(card).descriptors,
                               card?.finish,
                             ]
                               .filter(Boolean)

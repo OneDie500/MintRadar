@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
+import { getCardDisplayIdentity } from "@/lib/card-display-identity";
 
 type InventoryListing = {
   id: string;
@@ -30,6 +31,8 @@ type Card = {
   rarity?: string | null;
   edition?: string | null;
   finish?: string | null;
+  language?: string | null;
+  variant?: string | null;
   inventory?: InventoryListing[];
 };
 
@@ -61,6 +64,41 @@ type CatalogCard = {
   canonical_name?: string | null;
   set_id?: string | null;
 };
+
+// Keep universal (All) searches relevant across different catalog providers.
+// Individual providers can return loose matches; for multi-term searches,
+// every requested word must occur in this card's own identity/metadata.
+function matchesUniversalCatalogQuery(card: CatalogCard, query: string): boolean {
+  const normalize = (value: string) =>
+    value.normalize("NFKD")
+      .toLowerCase()
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+
+  const queryTokens = normalize(query).split(/\s+/).filter(Boolean);
+  if (queryTokens.length < 2) return true;
+
+  const searchable = normalize([
+    card.name,
+    card.canonical_name,
+    card.set_name,
+    card.set_id,
+    card.card_number,
+    card.rarity,
+    card.edition,
+    card.finish,
+    card.year,
+    card.manufacturer,
+    card.release_name,
+    card.parallel_name,
+    card.sport,
+    card.language,
+  ].filter(Boolean).join(" "));
+
+  const words = searchable.split(/\s+/).filter(Boolean);
+  return queryTokens.every((token) => words.some((word) => word === token || word.startsWith(token)));
+}
 
 const CATALOGS: CatalogOption[] = [
   {
@@ -375,6 +413,8 @@ export default function Home() {
           rarity,
           edition,
           finish,
+          language,
+          variant,
           inventory!inner (
             id,
             listing_type,
@@ -615,9 +655,12 @@ export default function Home() {
           );
         });
 
-        setCatalogResults(
-          Array.from(unique.values()).slice(0, 60)
-        );
+        const catalogMatches = Array.from(unique.values());
+        const relevantResults = activeCategory === "All"
+          ? catalogMatches.filter((card) => matchesUniversalCatalogQuery(card, query))
+          : catalogMatches;
+
+        setCatalogResults(relevantResults.slice(0, 60));
 
         if (
           responses.every(
@@ -1227,6 +1270,8 @@ function HomeCard({
 }: {
   card: Card;
 }) {
+  const displayIdentity = getCardDisplayIdentity(card);
+
   const liveListings =
     (card.inventory || []).filter(
       (listing) =>
@@ -1305,8 +1350,7 @@ function HomeCard({
           <div className="flex justify-between items-start gap-3">
             <div className="min-w-0">
               <h4 className="font-black text-base sm:text-lg leading-tight line-clamp-2">
-                {card.name ||
-                  "Unnamed Card"}
+                 {displayIdentity.name}
               </h4>
 
               {card.set_name && (
@@ -1326,6 +1370,11 @@ function HomeCard({
           {/* CARD VARIANTS */}
 
           <div className="flex flex-wrap gap-2 mt-3">
+             {displayIdentity.descriptors.map((descriptor) => (
+               <span key={descriptor} className="text-[10px] sm:text-[11px] font-bold px-2 py-1 rounded-full border border-zinc-700 bg-zinc-900 text-zinc-300">
+                 {descriptor}
+               </span>
+             ))}
             {card.rarity && (
               <span className="text-[10px] sm:text-[11px] font-bold px-2 py-1 rounded-full border border-zinc-700 bg-zinc-900 text-zinc-300">
                 {card.rarity}
@@ -1426,6 +1475,11 @@ function CatalogCardView({
   busy: boolean;
   onWishlist: () => void;
 }) {
+  const displayIdentity = getCardDisplayIdentity({
+    ...card,
+    name: card.canonical_name || card.name,
+  });
+
   const cardContent = (
     <>
       <div className="aspect-[3/4] bg-zinc-900 flex items-center justify-center overflow-hidden">
@@ -1460,7 +1514,7 @@ function CatalogCardView({
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <h4 className="font-black text-base sm:text-lg leading-tight">
-                {card.canonical_name || card.name}
+                 {displayIdentity.name}
               </h4>
 
               {card.canonical_name &&
@@ -1494,6 +1548,11 @@ function CatalogCardView({
           )}
 
           <div className="flex flex-wrap gap-2 mt-3">
+             {displayIdentity.descriptors.map((descriptor) => (
+               <span key={descriptor} className="text-[10px] sm:text-[11px] font-bold px-2 py-1 rounded-full border border-zinc-700 bg-zinc-900 text-zinc-300">
+                 {descriptor}
+               </span>
+             ))}
             {(card.parallel_name || card.finish) && (
               <span className="text-[10px] sm:text-[11px] font-bold px-2 py-1 rounded-full border border-zinc-700 bg-zinc-900 text-zinc-300">
                 {card.parallel_name || card.finish}
