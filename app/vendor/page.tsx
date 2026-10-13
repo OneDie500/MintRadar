@@ -644,66 +644,28 @@ function DashboardCompButtons({
   const encodedQuery =
     encodeURIComponent(query);
 
+  // Copy the card identity for 130point; its public search page has no
+  // confirmed stable query-link format we can rely on.
+  const copyFor130point = () => {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(query).catch(() => {});
+    }
+  };
+
   const links = sports
     ? [
-        {
-          name: "Card Ladder",
-          logo: "/market-logos/cardladder.png",
-          description:
-            "Sports card sales and market data",
-          href: `https://www.cardladder.com/ladder?query=${encodedQuery}`,
-        },
-        {
-          name: "130point",
-          logo: "/market-logos/130point.png",
-          description:
-            "Search recent sports card sales",
-          href: "https://130point.com/search/",
-        },
-        {
-          name: "eBay Sold",
-          logo: "/market-logos/ebay.png",
-          description:
-            "Completed and sold listings",
-          href: `https://www.ebay.com/sch/i.html?_nkw=${encodedQuery}&LH_Sold=1&LH_Complete=1`,
-        },
+        { name: "130point", logo: "/market-logos/130point.png", description: "Sold comps • search terms copied on click", href: "https://130point.com/search/" },
+        { name: "Market Movers", logo: null, description: "Card prices and market trends • account may be required", href: "https://www.marketmoversapp.com/" },
+        { name: "Card Ladder", logo: "/market-logos/cardladder.png", description: "Sports card sales and market data", href: `https://www.cardladder.com/ladder?query=${encodedQuery}` },
+        { name: "eBay Sold", logo: "/market-logos/ebay.png", description: "Sold listings • eBay sign-in may be required", href: `https://www.ebay.com/sch/i.html?_nkw=${encodedQuery}&LH_Sold=1&LH_Complete=1` },
       ]
     : [
-        {
-          name: "TCGplayer",
-          logo: "/market-logos/tcgplayer.png",
-          description:
-            "Search current TCG marketplace listings",
-          href: `https://www.tcgplayer.com/search/all/product?q=${encodedQuery}`,
-        },
-        {
-          name: "PriceCharting",
-          logo: "/market-logos/pricecharting.png",
-          description:
-            "Search historical pricing",
-          href: `https://www.pricecharting.com/search-products?q=${encodedQuery}&type=prices`,
-        },
-        {
-          name: "Collectr",
-          logo: "/market-logos/collectr.svg",
-          description:
-            "Open Collectr product search",
-          href: "https://app.getcollectr.com/",
-        },
-        {
-          name: "130point",
-          logo: "/market-logos/130point.png",
-          description:
-            "Search recent collectible card sales",
-          href: "https://130point.com/search/",
-        },
-        {
-          name: "eBay Sold",
-          logo: "/market-logos/ebay.png",
-          description:
-            "Completed and sold listings",
-          href: `https://www.ebay.com/sch/i.html?_nkw=${encodedQuery}&LH_Sold=1&LH_Complete=1`,
-        },
+        { name: "130point", logo: "/market-logos/130point.png", description: "Sold comps • search terms copied on click", href: "https://130point.com/search/" },
+        { name: "Market Movers", logo: null, description: "Card prices and market trends • account may be required", href: "https://www.marketmoversapp.com/" },
+        { name: "TCGplayer", logo: "/market-logos/tcgplayer.png", description: "Search current TCG marketplace listings", href: `https://www.tcgplayer.com/search/all/product?q=${encodedQuery}` },
+        { name: "PriceCharting", logo: "/market-logos/pricecharting.png", description: "Search historical pricing", href: `https://www.pricecharting.com/search-products?q=${encodedQuery}&type=prices` },
+        { name: "Collectr", logo: "/market-logos/collectr.svg", description: "Open Collectr product search", href: "https://app.getcollectr.com/" },
+        { name: "eBay Sold", logo: "/market-logos/ebay.png", description: "Sold listings • eBay sign-in may be required", href: `https://www.ebay.com/sch/i.html?_nkw=${encodedQuery}&LH_Sold=1&LH_Complete=1` },
       ];
 
   return (
@@ -725,8 +687,8 @@ function DashboardCompButtons({
 
         <p className="mt-2 text-sm leading-6 text-zinc-500">
           {sports
-            ? "Sports comps prioritize Card Ladder, 130point and eBay sold listings."
-            : "TCG comps prioritize TCGplayer, PriceCharting, Collectr, 130point and eBay sold listings."}
+            ? "Sports comps prioritize 130point, Market Movers, Card Ladder and eBay sold listings."
+            : "TCG comps include 130point, Market Movers, TCGplayer, PriceCharting, Collectr and eBay sold listings."}
         </p>
       </div>
 
@@ -735,6 +697,7 @@ function DashboardCompButtons({
           <a
             key={market.name}
             href={market.href}
+            onClick={market.name === "130point" ? copyFor130point : undefined}
             target="_blank"
             rel="noreferrer"
             className="group flex items-center justify-between gap-4 rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 transition hover:border-emerald-400/40 hover:bg-emerald-400/[0.04]"
@@ -750,11 +713,15 @@ function DashboardCompButtons({
             </div>
 
             <div className="flex h-12 w-24 shrink-0 items-center justify-center rounded-lg border border-zinc-800 bg-transparent px-2.5 py-2 transition group-hover:border-emerald-400/40">
-              <img
-                src={market.logo}
-                alt={`${market.name} logo`}
-                className="max-h-8 max-w-full object-contain"
-              />
+              {market.logo ? (
+                <img
+                  src={market.logo}
+                  alt={`${market.name} logo`}
+                  className="max-h-8 max-w-full object-contain"
+                />
+              ) : (
+                <span className="text-xs font-black text-emerald-400">Market Movers</span>
+              )}
             </div>
           </a>
         ))}

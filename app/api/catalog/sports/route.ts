@@ -1,3 +1,4 @@
+import { createClient } from "@supabase/supabase-js";
 import {
   NextRequest,
   NextResponse,
@@ -266,115 +267,45 @@ export async function GET(
           )
       );
 
-    const results =
-      rankedCardResults.map(
-        (card) => {
-          const cardId =
-            card.id ||
-            createFallbackId(
-              card
-            );
+    // Query approved, permission-cleared raw images once per result page.
+    // If the registry is empty or unavailable, base cards retain CardSight artwork;
+    // non-base parallels display a placeholder instead of incorrect base art.
+    const approvedImages = await loadVerifiedSportsImages(rankedCardResults);
 
-          const parallel =
-            cleanValue(
-              card.parallelName
-            );
+    const results = rankedCardResults.map((card) => {
+      const cardId = card.id || createFallbackId(card);
+      const parallel = cleanValue(card.parallelName);
+      const verifiedImage = findVerifiedSportsImage(card, approvedImages);
+      const cardSightBaseImage = card.id && isBaseSportsCard(parallel)
+        ? `/api/catalog/sports/image/${encodeURIComponent(card.id)}`
+        : null;
 
-          return {
-            external_id:
-              cardId,
-
-            data_source:
-              "cardsight",
-
-            name:
-              cleanValue(
-                card.name
-              ) ||
-              "Unknown Sports Card",
-
-            set_name:
-              cleanValue(
-                card.setName
-              ),
-
-            set_id:
-              null,
-
-            card_number:
-              cleanValue(
-                card.cardNumber
-              ),
-
-            image_url:
-              card.id
-                ? `/api/catalog/sports/image/${encodeURIComponent(
-                    card.id
-                  )}`
-                : null,
-
-            category:
-              "Sports",
-
-            rarity:
-              null,
-
-            edition:
-              null,
-
-            // MintRadar uses finish as its
-            // shared cross-category variant
-            // field. Sports parallels belong
-            // here as well.
-            finish:
-              parallel,
-
-            illustrator:
-              null,
-
-            year:
-              cleanValue(
-                card.year
-              ),
-
-            manufacturer:
-              cleanValue(
-                card.manufacturerName
-              ),
-
-            release_name:
-              cleanValue(
-                card.releaseName
-              ),
-
-            // Preserve CardSight's provider-
-            // specific field too. This is
-            // useful for Sports-specific UI,
-            // debugging, and future matching.
-            parallel_name:
-              parallel,
-
-            sport:
-              cleanValue(
-                card.segmentName
-              ),
-
-            print_run:
-              normalizePrintRun(
-                card.numberedTo
-              ),
-
-            rookie:
-              typeof card.rookie ===
-                "boolean"
-                ? card.rookie
-                : typeof card.isRookie ===
-                  "boolean"
-                ? card.isRookie
-                : null,
-          };
-        }
-      );
+      return {
+        external_id: cardId,
+        data_source: "cardsight",
+        name: cleanValue(card.name) || "Unknown Sports Card",
+        set_name: cleanValue(card.setName),
+        set_id: null,
+        card_number: cleanValue(card.cardNumber),
+        image_url: verifiedImage ?? cardSightBaseImage,
+        category: "Sports",
+        rarity: null,
+        edition: null,
+        finish: parallel,
+        illustrator: null,
+        year: cleanValue(card.year),
+        manufacturer: cleanValue(card.manufacturerName),
+        release_name: cleanValue(card.releaseName),
+        parallel_name: parallel,
+        sport: cleanValue(card.segmentName),
+        print_run: normalizePrintRun(card.numberedTo),
+        rookie: typeof card.rookie === "boolean"
+          ? card.rookie
+          : typeof card.isRookie === "boolean"
+            ? card.isRookie
+            : null,
+      };
+    });
 
     const total =
       typeof raw.total_count ===
@@ -1030,4 +961,88 @@ function createFallbackId(
     `cardsight-${slug}` ||
     "cardsight-unknown"
   );
+}
+
+// =============================================
+// VERIFIED SPORTS IMAGE LOOKUP
+// =============================================
+type VerifiedSportsImage = {
+  card_name: string;
+  year: string | null;
+  manufacturer: string | null;
+  release_name: string | null;
+  set_name: string | null;
+  card_number: string | null;
+  parallel_name: string | null;
+  print_run: number | null;
+  image_url: string;
+};
+
+function isBaseSportsCard(parallel: string | null): boolean {
+  const value = normalizeSearchText(parallel);
+  return value === "" || value === "base" || value === "base set";
+}
+
+async function loadVerifiedSportsImages(
+  cards: CardSightSearchResult[]
+): Promise<VerifiedSportsImage[]> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key || cards.length === 0) return [];
+
+  const numbers = [...new Set(cards.map((card) => cleanValue(card.cardNumber)).filter(
+    (number): number is string => number !== null
+  ))];
+  if (numbers.length === 0) return [];
+
+  try {
+    const supabase = createClient(url, key, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const { data, error } = await supabase
+      .from("sports_card_images")
+      .select("card_name,year,manufacturer,release_name,set_name,card_number,parallel_name,print_run,image_url")
+      .eq("image_type", "raw")
+      .eq("verification_status", "verified")
+      .in("usage_permission", ["granted", "licensed"])
+      .in("card_number", numbers)
+      .limit(1000);
+
+    if (error) {
+      console.error("MintRadar verified sports images lookup failed:", error);
+      return [];
+    }
+    return (data ?? []) as VerifiedSportsImage[];
+  } catch (error) {
+    console.error("MintRadar verified sports images unavailable:", error);
+    return [];
+  }
+}
+
+function findVerifiedSportsImage(
+  card: CardSightSearchResult,
+  images: VerifiedSportsImage[]
+): string | null {
+  const same = (a: string | null | undefined, b: string | null | undefined) =>
+    normalizeSearchText(a) === normalizeSearchText(b);
+
+  const matching = images.filter((image) => {
+    if (!same(image.card_name, card.name)) return false;
+    if (!same(image.year, card.year)) return false;
+    if (!same(image.manufacturer, card.manufacturerName)) return false;
+    if (!same(image.release_name, card.releaseName)) return false;
+    if (!same(image.set_name, card.setName)) return false;
+    if (!same(image.card_number, card.cardNumber)) return false;
+    if (!same(image.parallel_name, card.parallelName)) return false;
+    if (image.print_run !== normalizePrintRun(card.numberedTo)) return false;
+    try {
+      return new URL(image.image_url).protocol === "https:";
+    } catch {
+      return false;
+    }
+  });
+
+  // Refuse ambiguous matches rather than selecting an arbitrary image.
+  const urls = [...new Set(matching.map((image) => image.image_url))];
+  return urls.length === 1 ? urls[0] : null;
 }

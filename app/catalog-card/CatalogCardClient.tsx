@@ -83,50 +83,28 @@ function MarketCompButtons({
   const encoded =
     encodeURIComponent(searchQuery);
 
+  // 130point does not expose a confirmed stable prefilled-search URL.
+  // Copy the exact query on click so the user can paste it into its search field.
+  const copyFor130point = () => {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(searchQuery).catch(() => {});
+    }
+  };
+
   const markets = isSports(card)
     ? [
-        {
-          name: "Card Ladder",
-          href: `https://www.cardladder.com/ladder?query=${encoded}`,
-          detail: "Sports market data",
-        },
-        {
-          name: "130point",
-          href: "https://130point.com/search/",
-          detail: "Recent sold listings",
-        },
-        {
-          name: "eBay Sold",
-          href: `https://www.ebay.com/sch/i.html?_nkw=${encoded}&LH_Sold=1&LH_Complete=1`,
-          detail: "Completed sales",
-        },
+        { name: "130point", href: "https://130point.com/search/", detail: "Sold comps • search terms copied on click" },
+        { name: "Market Movers", href: "https://www.marketmoversapp.com/", detail: "Card prices and market trends • account may be required" },
+        { name: "Card Ladder", href: `https://www.cardladder.com/ladder?query=${encoded}`, detail: "Sports market data" },
+        { name: "eBay Sold", href: `https://www.ebay.com/sch/i.html?_nkw=${encoded}&LH_Sold=1&LH_Complete=1`, detail: "Sold listings • eBay sign-in may be required" },
       ]
     : [
-        {
-          name: "TCGplayer",
-          href: `https://www.tcgplayer.com/search/all/product?q=${encoded}`,
-          detail: "Market prices",
-        },
-        {
-          name: "PriceCharting",
-          href: `https://www.pricecharting.com/search-products?q=${encoded}&type=prices`,
-          detail: "Sales history",
-        },
-        {
-          name: "Collectr",
-          href: "https://app.getcollectr.com/",
-          detail: "Collection data",
-        },
-        {
-          name: "130point",
-          href: "https://130point.com/search/",
-          detail: "Recent sold listings",
-        },
-        {
-          name: "eBay Sold",
-          href: `https://www.ebay.com/sch/i.html?_nkw=${encoded}&LH_Sold=1&LH_Complete=1`,
-          detail: "Completed sales",
-        },
+        { name: "130point", href: "https://130point.com/search/", detail: "Sold comps • search terms copied on click" },
+        { name: "Market Movers", href: "https://www.marketmoversapp.com/", detail: "Card prices and market trends • account may be required" },
+        { name: "TCGplayer", href: `https://www.tcgplayer.com/search/all/product?q=${encoded}`, detail: "Market prices" },
+        { name: "PriceCharting", href: `https://www.pricecharting.com/search-products?q=${encoded}&type=prices`, detail: "Sales history" },
+        { name: "Collectr", href: "https://app.getcollectr.com/", detail: "Collection data" },
+        { name: "eBay Sold", href: `https://www.ebay.com/sch/i.html?_nkw=${encoded}&LH_Sold=1&LH_Complete=1`, detail: "Sold listings • eBay sign-in may be required" },
       ];
 
   return (
@@ -135,6 +113,7 @@ function MarketCompButtons({
         <a
           key={market.name}
           href={market.href}
+          onClick={market.name === "130point" ? copyFor130point : undefined}
           target="_blank"
           rel="noreferrer"
           className="rounded-2xl border border-zinc-800 bg-black p-4 transition hover:border-emerald-400/40 hover:bg-emerald-400/[0.04]"
