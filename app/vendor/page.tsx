@@ -30,6 +30,7 @@ import {
 import { encodeListingId } from "../../lib/listing-short-code";
 import { getCardDisplayIdentity } from "../../lib/card-display-identity";
 import { openMarketCompLink } from "../../lib/mobile-market-link";
+import { marketSearchQuery, marketSearchFallbacks } from "../../lib/market-search";
 
 type MintRadarNativePrinterBridge = {
   findPrinters(): Promise<{
@@ -613,64 +614,53 @@ function DashboardCompButtons({
   const graded =
     item.listing_type === "graded";
 
-  const baseQuery = [
-    card.name,
-    card.set_name,
-    card.card_number
-      ? `#${card.card_number}`
-      : null,
-    card.edition,
-    card.language && card.language !== "EN"
-      ? card.language
-      : null,
-    card.variant,
-    card.finish,
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const grading = graded
+    ? { company: item.grading_company, grade: item.grade }
+    : undefined;
 
-  const query = [
-    baseQuery,
-    graded
-      ? item.grading_company
-      : null,
-    graded && item.grade
-      ? `Grade ${item.grade}`
-      : null,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .trim();
+  // Use the same provider-aware searches as the public catalog card page.
+  // Do not send set names, # prefixes or generic foil finishes to TCGplayer.
+  const searchFor = (provider: "tcgplayer" | "pricecharting" | "ebay" | "130point" | "cardladder") =>
+    marketSearchQuery(card, provider, grading);
 
-  const encodedQuery =
-    encodeURIComponent(query);
+  const precise = marketSearchFallbacks(card)[0] || card.name || "";
+  const broad = marketSearchFallbacks(card).at(-1) || card.name || "";
+  const pointPrecise = sports ? searchFor("130point") : precise;
+  const pointBroad = broad;
+  const tcgQuery = precise;
+  const tcgBroad = broad;
+  const tcgPath = isPokemonCategory(card.category)
+    ? "pokemon"
+    : "all";
+  const tcgUrl = (term: string) =>
+    `https://www.tcgplayer.com/search/${tcgPath}/product?q=${encodeURIComponent(term)}`;
 
   const links = sports
     ? [
-        { name: "130point", logo: "/market-logos/130point.png", description: "Sold comps • search terms copied on click", href: "https://130point.com/search/" },
+        { name: "130point", logo: "/market-logos/130point.png", description: `Copy precise search: ${pointPrecise}`, href: "https://130point.com/search/", copy: pointPrecise, fallbackCopy: pointBroad !== pointPrecise ? pointBroad : undefined },
         { name: "Market Movers", logo: null, description: "Card prices and market trends • account may be required", href: "https://www.marketmoversapp.com/" },
-        { name: "Card Ladder", logo: "/market-logos/cardladder.png", description: "Sports card sales and market data", href: `https://www.cardladder.com/ladder?query=${encodedQuery}` },
-        { name: "eBay Sold", logo: "/market-logos/ebay.png", description: "Sold listings • eBay sign-in may be required", href: `https://www.ebay.com/sch/i.html?_nkw=${encodedQuery}&LH_Sold=1&LH_Complete=1` },
+        { name: "Card Ladder", logo: "/market-logos/cardladder.png", description: "Sports card sales and market data", href: `https://www.cardladder.com/ladder?query=${encodeURIComponent(searchFor("cardladder"))}` },
+        { name: "eBay Sold", logo: "/market-logos/ebay.png", description: "Sold listings", href: `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(searchFor("ebay"))}&LH_Sold=1&LH_Complete=1` },
       ]
     : [
-        { name: "130point", logo: "/market-logos/130point.png", description: "Sold comps • search terms copied on click", href: "https://130point.com/search/" },
+        { name: "130point", logo: "/market-logos/130point.png", description: `Copy precise search: ${pointPrecise}`, href: "https://130point.com/search/", copy: pointPrecise, fallbackCopy: pointBroad !== pointPrecise ? pointBroad : undefined },
         { name: "Market Movers", logo: null, description: "Card prices and market trends • account may be required", href: "https://www.marketmoversapp.com/" },
-        { name: "TCGplayer", logo: "/market-logos/tcgplayer.png", description: "Search current TCG marketplace listings", href: `https://www.tcgplayer.com/search/all/product?q=${encodedQuery}` },
-        { name: "PriceCharting", logo: "/market-logos/pricecharting.png", description: "Search historical pricing", href: `https://www.pricecharting.com/search-products?q=${encodedQuery}&type=prices` },
-        { name: "Collectr", logo: "/market-logos/collectr.svg", description: "Open Collectr product search", href: "https://app.getcollectr.com/" },
-        { name: "eBay Sold", logo: "/market-logos/ebay.png", description: "Sold listings • eBay sign-in may be required", href: `https://www.ebay.com/sch/i.html?_nkw=${encodedQuery}&LH_Sold=1&LH_Complete=1` },
+        { name: "TCGplayer", logo: "/market-logos/tcgplayer.png", description: `Precise: ${tcgQuery}`, href: tcgUrl(tcgQuery), fallbackHref: tcgBroad !== tcgQuery ? tcgUrl(tcgBroad) : undefined },
+        { name: "PriceCharting", logo: "/market-logos/pricecharting.png", description: "Search historical pricing", href: `https://www.pricecharting.com/search-products?q=${encodeURIComponent(searchFor("pricecharting"))}&type=prices` },
+        { name: "Collectr", logo: "/market-logos/collectr.svg", description: `Copy precise search: ${precise}`, href: "https://app.getcollectr.com/", copy: precise, fallbackCopy: broad !== precise ? broad : undefined },
+        { name: "eBay Sold", logo: "/market-logos/ebay.png", description: "Sold listings", href: `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(searchFor("ebay"))}&LH_Sold=1&LH_Complete=1` },
       ];
 
   return (
     <div className="overflow-hidden rounded-2xl border border-emerald-400/25 bg-black">
       <div className="border-b border-zinc-900 bg-emerald-400/[0.05] px-4 py-4 sm:px-5">
         <p className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-400">
-          📡 Market Radar
+          Market Comps
         </p>
 
         <div className="mt-1 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
           <h3 className="text-lg font-black">
-            Check Comps Before You Reprice
+            Research Prices Before You Publish
           </h3>
 
           <p className="text-xs text-zinc-600">
@@ -687,14 +677,14 @@ function DashboardCompButtons({
 
       <div className="grid gap-2 p-4 sm:grid-cols-2 sm:p-5">
         {links.map((market) => (
+          <div key={market.name} className="min-w-0">
           <a
-            key={market.name}
             href={market.href}
             onClick={(event) =>
               openMarketCompLink(
                 event,
                 market.href,
-                market.name === "130point" ? query : undefined
+                "copy" in market ? market.copy : undefined
               )
             }
             target="_blank"
@@ -723,13 +713,36 @@ function DashboardCompButtons({
               )}
             </div>
           </a>
+          {"fallbackCopy" in market && market.fallbackCopy && (
+            <a
+              href={market.href}
+              onClick={(event) => openMarketCompLink(event, market.href, market.fallbackCopy)}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-2 block rounded-lg border border-zinc-800 px-3 py-2 text-center text-xs font-bold text-emerald-400 hover:border-emerald-400/40"
+            >
+              Broader search (copy): {market.fallbackCopy} ↗
+            </a>
+          )}
+          {"fallbackHref" in market && market.fallbackHref && (
+            <a
+              href={market.fallbackHref}
+              onClick={(event) => openMarketCompLink(event, market.fallbackHref!)}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-2 block rounded-lg border border-zinc-800 px-3 py-2 text-center text-xs font-bold text-emerald-400 hover:border-emerald-400/40"
+            >
+              Broader search: {tcgBroad} ↗
+            </a>
+          )}
+          </div>
         ))}
       </div>
 
-      {query && (
+      {precise && (
         <div className="border-t border-zinc-900 px-4 py-3 sm:px-5">
           <p className="truncate text-[11px] text-zinc-700">
-            Search: {query}
+            Precise search: {precise}
           </p>
         </div>
       )}

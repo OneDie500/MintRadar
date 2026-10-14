@@ -6,7 +6,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { supabase } from "../../lib/supabase";
 import { openMarketCompLink } from "../../lib/mobile-market-link";
-import { marketSearchQuery } from "../../lib/market-search";
+import { marketSearchQuery, marketSearchFallbacks } from "../../lib/market-search";
 
 type CatalogCard = {
   external_id: string;
@@ -65,54 +65,78 @@ function MarketCompButtons({
   card: CatalogCard;
 }) {
   const searchQuery = marketSearchQuery(card, "130point");
-  const tcgEncoded = encodeURIComponent(marketSearchQuery(card, "tcgplayer"));
-  const priceEncoded = encodeURIComponent(marketSearchQuery(card, "pricecharting"));
-  const ebayEncoded = encodeURIComponent(marketSearchQuery(card, "ebay"));
-  const ladderEncoded = encodeURIComponent(marketSearchQuery(card, "cardladder"));
+  const tcgQuery = marketSearchQuery(card, "tcgplayer");
+  const priceQuery = marketSearchQuery(card, "pricecharting");
+  const ebayQuery = marketSearchQuery(card, "ebay");
+  const ladderQuery = marketSearchQuery(card, "cardladder");
+  const fallbacks = marketSearchFallbacks(card);
+  const broadQuery = fallbacks[fallbacks.length - 1] || card.name.trim();
+  const isPokemon = normalize(card.category) === "pokemon";
+  const tcgSearchBase = isPokemon
+    ? "https://www.tcgplayer.com/search/pokemon/product?q="
+    : "https://www.tcgplayer.com/search/all/product?q=";
+  const ebaySearch = (query: string) =>
+    `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(query)}&LH_Sold=1&LH_Complete=1`;
+  const priceSearch = (query: string) =>
+    `https://www.pricecharting.com/search-products?q=${encodeURIComponent(query)}&type=prices`;
 
   const markets = isSports(card)
     ? [
-        { name: "130point", href: "https://130point.com/search/", detail: "Sold comps • search terms copied on click" },
+        { name: "130point", href: "https://130point.com/search/", detail: "Sold comps • search terms copied on click", copyQuery: searchQuery, broadHref: "https://130point.com/search/", broadCopyQuery: broadQuery },
         { name: "Market Movers", href: "https://www.marketmoversapp.com/", detail: "Card prices and market trends • account may be required" },
-        { name: "Card Ladder", href: `https://www.cardladder.com/ladder?query=${ladderEncoded}`, detail: "Sports market data" },
-        { name: "eBay Sold", href: `https://www.ebay.com/sch/i.html?_nkw=${ebayEncoded}&LH_Sold=1&LH_Complete=1`, detail: "Sold listings • eBay sign-in may be required" },
+        { name: "Card Ladder", href: `https://www.cardladder.com/ladder?query=${encodeURIComponent(ladderQuery)}`, detail: "Sports market data", broadHref: `https://www.cardladder.com/ladder?query=${encodeURIComponent(broadQuery)}` },
+        { name: "eBay Sold", href: ebaySearch(ebayQuery), detail: "Sold listings • eBay sign-in may be required", broadHref: ebaySearch(broadQuery) },
       ]
     : [
-        { name: "130point", href: "https://130point.com/search/", detail: "Sold comps • search terms copied on click" },
+        { name: "130point", href: "https://130point.com/search/", detail: "Sold comps • search terms copied on click", copyQuery: searchQuery, broadHref: "https://130point.com/search/", broadCopyQuery: broadQuery },
         { name: "Market Movers", href: "https://www.marketmoversapp.com/", detail: "Card prices and market trends • account may be required" },
-        { name: "TCGplayer", href: `https://www.tcgplayer.com/search/all/product?q=${tcgEncoded}`, detail: "Market prices" },
-        { name: "PriceCharting", href: `https://www.pricecharting.com/search-products?q=${priceEncoded}&type=prices`, detail: "Sales history" },
-        { name: "Collectr", href: "https://app.getcollectr.com/", detail: "Collection data" },
-        { name: "eBay Sold", href: `https://www.ebay.com/sch/i.html?_nkw=${ebayEncoded}&LH_Sold=1&LH_Complete=1`, detail: "Sold listings • eBay sign-in may be required" },
+        { name: "TCGplayer", href: `${tcgSearchBase}${encodeURIComponent(tcgQuery)}`, detail: "Market listings", broadHref: `${tcgSearchBase}${encodeURIComponent(broadQuery)}` },
+        { name: "PriceCharting", href: priceSearch(priceQuery), detail: "Sales history", broadHref: priceSearch(broadQuery) },
+        { name: "Collectr", href: "https://app.getcollectr.com/", detail: "Collection data • search on Collectr" },
+        { name: "eBay Sold", href: ebaySearch(ebayQuery), detail: "Sold listings • eBay sign-in may be required", broadHref: ebaySearch(broadQuery) },
       ];
 
   return (
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
       {markets.map((market) => (
-        <a
+        <div
           key={market.name}
-          href={market.href}
-          onClick={(event) =>
-            openMarketCompLink(
-              event,
-              market.href,
-              market.name === "130point" ? searchQuery : undefined
-            )
-          }
-          target="_blank"
-          rel="noreferrer"
           className="rounded-2xl border border-zinc-800 bg-black p-4 transition hover:border-emerald-400/40 hover:bg-emerald-400/[0.04]"
         >
-          <p className="font-black text-zinc-100">
-            {market.name}
-          </p>
-          <p className="mt-1 text-xs text-zinc-600">
-            {market.detail}
-          </p>
-          <p className="mt-3 text-xs font-black text-emerald-400">
-            Check comps ↗
-          </p>
-        </a>
+          <p className="font-black text-zinc-100">{market.name}</p>
+          <p className="mt-1 text-xs text-zinc-600">{market.detail}</p>
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+            <a
+              href={market.href}
+              onClick={(event) =>
+                openMarketCompLink(event, market.href, market.copyQuery)
+              }
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs font-black text-emerald-400 hover:text-emerald-300"
+            >
+              Check comps ↗
+            </a>
+            {market.broadHref &&
+              (market.broadHref !== market.href || market.broadCopyQuery) && (
+                <a
+                  href={market.broadHref}
+                  onClick={(event) =>
+                    openMarketCompLink(
+                      event,
+                      market.broadHref!,
+                      market.broadCopyQuery
+                    )
+                  }
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs font-semibold text-zinc-400 hover:text-white"
+                >
+                  Broader search ↗
+                </a>
+              )}
+          </div>
+        </div>
       ))}
     </div>
   );
