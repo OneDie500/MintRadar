@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useEffect, useState } from "react";
@@ -5,6 +6,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { supabase } from "../../lib/supabase";
 import { openMarketCompLink } from "../../lib/mobile-market-link";
+import { marketSearchQuery } from "../../lib/market-search";
 
 type CatalogCard = {
   external_id: string;
@@ -62,42 +64,26 @@ function MarketCompButtons({
 }: {
   card: CatalogCard;
 }) {
-  const marketName =
-    normalize(card.category).replace(/\s+/g, "") === "onepiece" &&
-    card.canonical_name?.trim()
-      ? card.canonical_name.trim()
-      : card.name;
-
-  const searchQuery = [
-    marketName,
-    card.year,
-    card.manufacturer,
-    card.release_name || card.set_name,
-    card.card_number
-      ? `#${card.card_number}`
-      : null,
-    card.parallel_name || card.finish,
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  const encoded =
-    encodeURIComponent(searchQuery);
+  const searchQuery = marketSearchQuery(card, "130point");
+  const tcgEncoded = encodeURIComponent(marketSearchQuery(card, "tcgplayer"));
+  const priceEncoded = encodeURIComponent(marketSearchQuery(card, "pricecharting"));
+  const ebayEncoded = encodeURIComponent(marketSearchQuery(card, "ebay"));
+  const ladderEncoded = encodeURIComponent(marketSearchQuery(card, "cardladder"));
 
   const markets = isSports(card)
     ? [
         { name: "130point", href: "https://130point.com/search/", detail: "Sold comps • search terms copied on click" },
         { name: "Market Movers", href: "https://www.marketmoversapp.com/", detail: "Card prices and market trends • account may be required" },
-        { name: "Card Ladder", href: `https://www.cardladder.com/ladder?query=${encoded}`, detail: "Sports market data" },
-        { name: "eBay Sold", href: `https://www.ebay.com/sch/i.html?_nkw=${encoded}&LH_Sold=1&LH_Complete=1`, detail: "Sold listings • eBay sign-in may be required" },
+        { name: "Card Ladder", href: `https://www.cardladder.com/ladder?query=${ladderEncoded}`, detail: "Sports market data" },
+        { name: "eBay Sold", href: `https://www.ebay.com/sch/i.html?_nkw=${ebayEncoded}&LH_Sold=1&LH_Complete=1`, detail: "Sold listings • eBay sign-in may be required" },
       ]
     : [
         { name: "130point", href: "https://130point.com/search/", detail: "Sold comps • search terms copied on click" },
         { name: "Market Movers", href: "https://www.marketmoversapp.com/", detail: "Card prices and market trends • account may be required" },
-        { name: "TCGplayer", href: `https://www.tcgplayer.com/search/all/product?q=${encoded}`, detail: "Market prices" },
-        { name: "PriceCharting", href: `https://www.pricecharting.com/search-products?q=${encoded}&type=prices`, detail: "Sales history" },
+        { name: "TCGplayer", href: `https://www.tcgplayer.com/search/all/product?q=${tcgEncoded}`, detail: "Market prices" },
+        { name: "PriceCharting", href: `https://www.pricecharting.com/search-products?q=${priceEncoded}&type=prices`, detail: "Sales history" },
         { name: "Collectr", href: "https://app.getcollectr.com/", detail: "Collection data" },
-        { name: "eBay Sold", href: `https://www.ebay.com/sch/i.html?_nkw=${encoded}&LH_Sold=1&LH_Complete=1`, detail: "Sold listings • eBay sign-in may be required" },
+        { name: "eBay Sold", href: `https://www.ebay.com/sch/i.html?_nkw=${ebayEncoded}&LH_Sold=1&LH_Complete=1`, detail: "Sold listings • eBay sign-in may be required" },
       ];
 
   return (
