@@ -86,6 +86,7 @@ type ImportDestination =
 type ImportResult = {
   rowNumber: number;
   ok: boolean;
+  skipped?: boolean;
   message: string;
 };
 
@@ -3072,6 +3073,37 @@ function bestConfidentImportCandidate(
   return best.candidate;
 }
 
+// Pokémon printings are distinct catalog identities. A source that explicitly
+// identifies Holofoil must never be linked to a Non-Holo catalog record.
+function pokemonPrintingCompatible(row: NormalizedRow, candidate: any) {
+  const norm = (value: unknown) => normalizeKey(String(value ?? ""));
+  const expectedFinish = norm(row.finish);
+  const actualFinish = norm(candidate?.finish);
+  const expectedEdition = norm(row.edition);
+  const actualEdition = norm(candidate?.edition);
+  const expectedVariant = norm(row.variant);
+  const actualVariant = norm(candidate?.variant);
+
+  // A missing catalog printing is unknown, not proof of a match.
+  if (expectedFinish !== actualFinish) return false;
+  if (expectedEdition !== actualEdition) return false;
+  if (expectedVariant !== actualVariant) return false;
+  return true;
+}
+
+function pokemonCatalogIdentityCompatible(row: NormalizedRow, candidate: any) {
+  if (normalizeKey(row.name) !== normalizeKey(String(candidate?.name || ""))) return false;
+  if (normalizeCardLanguage(row.language) !== normalizeCardLanguage(String(candidate?.language || "EN"))) return false;
+  if (!pokemonPrintingCompatible(row, candidate)) return false;
+  const expectedNumber = compactImportCardNumber(row.cardNumber);
+  const actualNumber = compactImportCardNumber(candidateCardNumber(candidate));
+  if (expectedNumber && expectedNumber !== actualNumber) return false;
+  if (!expectedNumber && actualNumber) return false;
+  // Avoid merging unrelated sets on a name/number coincidence.
+  if (row.setName.trim() && setSimilarityScore(row.setName, candidateSetName(candidate)) < 300) return false;
+  return true;
+}
+
 async function findExistingCard(
   row: NormalizedRow
 ) {
@@ -3087,7 +3119,7 @@ async function findExistingCard(
     } = await supabase
       .from("cards")
       .select(
-        "id,name,set_name,card_number,image_url,external_id,data_source,language,variant,finish"
+        "id,name,set_name,card_number,image_url,external_id,data_source,language,variant,finish,edition"
       )
       .ilike(
         "name",
@@ -3107,23 +3139,25 @@ async function findExistingCard(
       throw error;
     }
 
-    const best =
-      bestConfidentImportCandidate(
-        row,
-        Array.isArray(data)
-          ? data
-          : []
-      );
+    const compatible = (Array.isArray(data) ? data : [])
+      .filter((candidate: any) => pokemonCatalogIdentityCompatible(row, candidate));
 
-    if (best) {
-      return best;
+    // Multiple equally valid catalog identities may exist from older imports.
+    // Reuse only when the printing and collector identity are unambiguous.
+    if (compatible.length === 1) return compatible[0];
+    if (compatible.length > 1) {
+      const exactSet = compatible.filter((candidate: any) =>
+        normalizeKey(String(candidate.set_name || "")) === normalizeKey(row.setName)
+      );
+      if (exactSet.length === 1) return exactSet[0];
     }
+    return null;
   }
 
   let query = supabase
     .from("cards")
     .select(
-      "id,name,set_name,card_number,image_url,external_id,data_source,language,variant,finish"
+      "id,name,set_name,card_number,image_url,external_id,data_source,language,variant,finish,edition"
     )
     .ilike(
       "name",
@@ -3475,8 +3509,9 @@ async function createImportedCard(
   const fallbackExternalId =
     options?.canonicalReplacement
       ? `canonical:${canonicalIdentity}`
-      : row.sourceExternalId ||
-        canonicalIdentity;
+      : row.category.trim().toLowerCase() === "pokemon"
+        ? `pokemon-import:${canonicalIdentity}`
+        : row.sourceExternalId || canonicalIdentity;
 
   const dataSource =
     options?.canonicalReplacement
@@ -3554,59 +3589,9 @@ async function getOrCreateCard(
       string | null
     > = {};
 
-    // resolveImportIdentity() runs before this function. For Pokémon, the
-    // row therefore carries provider-confirmed canonical identity whenever
-    // the resolver found one. Reusing an older imported card must not keep
-    // stale marketplace grouping metadata such as "Alternate Art Promos".
-    if (
-      row.category
-        .trim()
-        .toLowerCase() ===
-      "pokemon"
-    ) {
-      if (
-        row.setName.trim() &&
-        row.setName.trim() !==
-          String(
-            existing.set_name || ""
-          ).trim()
-      ) {
-        updates.set_name =
-          row.setName.trim();
-      }
-
-      if (
-        row.cardNumber.trim() &&
-        row.cardNumber.trim() !==
-          String(
-            existing.card_number || ""
-          ).trim()
-      ) {
-        updates.card_number =
-          row.cardNumber.trim();
-      }
-
-      if (
-        row.language.trim() &&
-        row.language.trim() !==
-          String(
-            existing.language || "EN"
-          ).trim()
-      ) {
-        updates.language =
-          row.language.trim();
-      }
-
-      if (
-        row.variant.trim() !==
-        String(
-          existing.variant || ""
-        ).trim()
-      ) {
-        updates.variant =
-          row.variant.trim() || null;
-      }
-    }
+    // Never rewrite a shared Pokémon catalog identity during CSV import.
+    // findExistingCard already requires matching printing, language, number,
+    // and a sufficiently compatible set. Only backfill missing artwork.
 
     if (resolvedImageUrl) {
       updates.image_url =
@@ -3747,6 +3732,113 @@ async function getOrCreateCard(
   }
 
   return createImportedCard(row);
+}
+
+// Duplicate protection is vendor-scoped and checks the *listing*, not merely
+// whether a catalog card exists. It never changes existing quantity or price.
+type ExistingVendorListing = {
+  card_id: string;
+  listing_type: string | null;
+  condition: string | null;
+  grading_company: string | null;
+  grade: string | null;
+  cert_number: string | null;
+  card: any;
+};
+
+// Duplicate identity comparison is deliberately narrower than catalog search.
+// Only known promo-set aliases are folded together; unrelated sets and printings
+// must never be merged by a loose similarity score.
+function normalizeVendorDuplicateText(value: unknown) {
+  return String(value ?? "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
+}
+
+function normalizeVendorDuplicateSet(value: unknown) {
+  const key = normalizeVendorDuplicateText(value);
+  if ([
+    "svpblackstarpromos", "scarletvioletpromo", "scarletvioletpromos",
+    "scarletandvioletpromo", "scarletandvioletpromos", "scarletvioletblackstarpromos",
+  ].includes(key)) return "svpromo";
+  if ([
+    "smpblackstarpromos", "smblackstarpromos", "sunmoonpromo",
+    "sunmoonpromos", "sunandmoonpromo", "sunandmoonpromos",
+    "sunmoonblackstarpromos", "sunandmoonblackstarpromos",
+  ].includes(key)) return "smpromo";
+  if ([
+    "swshblackstarpromos", "swordshieldpromo", "swordshieldpromos",
+    "swordandshieldpromo", "swordandshieldpromos", "swordshieldblackstarpromos",
+  ].includes(key)) return "swshpromo";
+  return key;
+}
+
+function normalizeVendorDuplicateVariant(value: unknown) {
+  // Some imports repeat the same descriptor (e.g. "Pokemon Center Exclusive •
+  // Pokémon Center Exclusive"). Only identical repeated descriptors collapse.
+  const parts = String(value ?? "").split(/\s*[•|]\s*/)
+    .map(normalizeVendorDuplicateText).filter(Boolean);
+  return Array.from(new Set(parts)).sort().join("|");
+}
+
+function normalizeVendorDuplicateName(value: unknown) {
+  return normalizeVendorDuplicateText(
+    String(value ?? "").replace(/\s*\(pokemon center exclusive\)\s*$/i, "")
+  );
+}
+
+function sameVendorImportListing(row: NormalizedRow, item: ExistingVendorListing) {
+  const card = item.card;
+  if (!card) return false;
+  const norm = (value: unknown) => normalizeKey(String(value ?? ""));
+  if (norm(item.listing_type || "raw") !== norm(row.listingType)) return false;
+  if (row.listingType === "raw" && norm(item.condition || "NM") !== norm(row.condition || "NM")) return false;
+  if (row.listingType === "graded") {
+    if (norm(item.grading_company) !== norm(row.gradingCompany)) return false;
+    if (norm(item.grade) !== norm(row.grade)) return false;
+    if (norm(item.cert_number) !== norm(row.certNumber)) return false;
+  }
+  if (norm(card.category) !== norm(row.category)) return false;
+  if (normalizeVendorDuplicateName(card.name) !== normalizeVendorDuplicateName(row.name)) return false;
+  if (norm(card.language || "EN") !== norm(row.language || "EN")) return false;
+  if (norm(card.edition) !== norm(row.edition)) return false;
+  if (norm(card.finish) !== norm(row.finish)) return false;
+  if (normalizeVendorDuplicateVariant(card.variant) !== normalizeVendorDuplicateVariant(row.variant)) return false;
+  if (compactImportCardNumber(String(card.card_number || "")) !== compactImportCardNumber(row.cardNumber)) return false;
+  // Do not consider similarly named cards from unrelated sets duplicates.
+  if (row.setName.trim() && normalizeVendorDuplicateSet(row.setName) !== normalizeVendorDuplicateSet(card.set_name)) return false;
+  if (!row.setName.trim() && norm(card.set_name)) return false;
+  return true;
+}
+
+async function loadVendorListingsForDuplicateCheck(vendorId: string): Promise<ExistingVendorListing[]> {
+  const inventoryRows: any[] = [];
+  // Fetch all pages; a first-page-only check is unsafe for large inventories.
+  for (let offset = 0; ; offset += 500) {
+    const { data, error } = await supabase.from("inventory")
+      .select("card_id,listing_type,condition,grading_company,grade,cert_number")
+      .eq("vendor_id", vendorId).range(offset, offset + 499);
+    if (error) throw new Error(`Duplicate check could not read vendor inventory: ${error.message}`);
+    inventoryRows.push(...(data || []));
+    if (!data || data.length < 500) break;
+  }
+  const ids = Array.from(new Set(inventoryRows.map((item) => String(item.card_id || "")).filter(Boolean)));
+  const cards = new Map<string, any>();
+  for (let offset = 0; offset < ids.length; offset += 200) {
+    const { data, error } = await supabase.from("cards")
+      .select("id,name,category,set_name,card_number,language,edition,finish,variant")
+      .in("id", ids.slice(offset, offset + 200));
+    if (error) throw new Error(`Duplicate check could not read catalog cards: ${error.message}`);
+    for (const card of data || []) cards.set(String(card.id), card);
+  }
+  // Fail closed if a linked catalog record cannot be read.
+  if (inventoryRows.some((item) => !cards.has(String(item.card_id)))) {
+    throw new Error("Duplicate check cannot verify every existing catalog record. Import stopped to avoid duplicates.");
+  }
+  return inventoryRows.map((item) => ({ ...item, card: cards.get(String(item.card_id)) }));
 }
 
 export default function VendorImportPage() {
@@ -4221,6 +4313,19 @@ export default function VendorImportPage() {
     const importResults:
       ImportResult[] = [];
 
+    // Read existing listings BEFORE creating any catalog cards or inventory.
+    // If this read fails, stop rather than risk importing duplicates.
+    let existingVendorListings: ExistingVendorListing[] = [];
+    if (selectedDestination.kind === "vendor") {
+      try {
+        existingVendorListings = await loadVendorListingsForDuplicateCheck(selectedDestination.membership.vendor_id);
+      } catch (error: any) {
+        setPageError(error?.message || "Unable to verify existing vendor inventory. Nothing imported.");
+        setImporting(false);
+        return;
+      }
+    }
+
     for (
       let index = 0;
       index < validRows.length;
@@ -4244,6 +4349,18 @@ export default function VendorImportPage() {
         );
 
       try {
+        if (selectedDestination.kind === "vendor" &&
+            existingVendorListings.some((item) => sameVendorImportListing(row, item))) {
+          importResults.push({
+            rowNumber: row.rowNumber,
+            ok: true,
+            skipped: true,
+            message: `${row.name} skipped — matching listing already exists in ${selectedDestination.label}. Existing quantity and price unchanged.`,
+          });
+          setImportProgress({ current: index + 1, total: validRows.length });
+          continue;
+        }
+
         const notes =
           buildNotes({
             notes: row.notes,
@@ -4415,6 +4532,21 @@ export default function VendorImportPage() {
           if (inventoryError) {
             throw inventoryError;
           }
+          // Include the new listing in this run's duplicate checks, so
+          // repeated rows in the same CSV are skipped as well.
+          existingVendorListings.push({
+            card_id: cardId,
+            listing_type: row.listingType,
+            condition: row.listingType === "raw" ? row.condition || "NM" : null,
+            grading_company: row.listingType === "graded" ? row.gradingCompany || null : null,
+            grade: row.listingType === "graded" ? row.grade || null : null,
+            cert_number: row.listingType === "graded" ? row.certNumber || null : null,
+            card: {
+              name: row.name, category: row.category, set_name: row.setName,
+              card_number: row.cardNumber, language: row.language,
+              edition: row.edition, finish: row.finish, variant: row.variant,
+            },
+          });
         }
 
         importResults.push({
@@ -4612,8 +4744,10 @@ export default function VendorImportPage() {
 
   const successfulImports =
     results.filter(
-      (result) => result.ok
+      (result) => result.ok && !result.skipped
     ).length;
+
+  const skippedImports = results.filter((result) => result.skipped).length;
 
   const failedImports =
     results.filter(
@@ -4689,7 +4823,7 @@ export default function VendorImportPage() {
           >
             <p className="font-black">
               Import finished:{" "}
-              {successfulImports} imported
+              {successfulImports} imported{skippedImports > 0 ? `, ${skippedImports} skipped (already listed)` : ""}
               {failedImports > 0
                 ? `, ${failedImports} failed`
                 : ""}.

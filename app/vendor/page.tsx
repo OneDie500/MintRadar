@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { registerPlugin } from "@capacitor/core";
 import Link from "next/link";
 import Image from "next/image";
@@ -242,358 +242,155 @@ function isPokemonCategory(value?: string | null) {
   );
 }
 
-function VendorCardImage({
-  card,
-}: {
-  card?: Card | null;
-}) {
-  const sportsCard =
-    isSportsCategory(card?.category);
+function isOnePieceCategory(value?: string | null) {
+  const normalized = normalizeImageCategory(value);
+  return normalized.includes("one piece") || normalized.includes("onepiece");
+}
 
-  const pokemonCard =
-    isPokemonCategory(card?.category);
+// Display-only normalization; never changes the saved card name.
+function vendorPokemonDisplayName(card?: Card | null) {
+  const name = getCardDisplayIdentity(card).name || "";
+  if (!isPokemonCategory(card?.category)) return name;
+  return name.replace(/\bStar$/i, "☆");
+}
 
-  const nonEnglishPokemonCard =
-    pokemonCard &&
+function VendorCardImage({ card }: { card?: Card | null }) {
+  const sportsCard = isSportsCategory(card?.category);
+  const pokemonCard = isPokemonCategory(card?.category);
+  const onePieceCard = isOnePieceCategory(card?.category);
+  const nonEnglishPokemonCard = pokemonCard &&
     Boolean(card?.language?.trim()) &&
-    card?.language?.trim().toUpperCase() !== "EN";
+    !["EN", "ENG", "ENGLISH"].includes(card?.language?.trim().toUpperCase() || "");
 
-  const [currentSrc, setCurrentSrc] =
-    useState<string | null>(
-      nonEnglishPokemonCard
-        ? null
-        : card?.image_url || null
-    );
-
-  const [sportsFallbackAttempted, setSportsFallbackAttempted] =
-    useState(false);
-
-  const [pokemonFallbackAttempted, setPokemonFallbackAttempted] =
-    useState(false);
-
-  const [imageFailed, setImageFailed] =
-    useState(false);
-
-  function buildPokemonFallbackUrl() {
-    if (
-      !pokemonCard ||
-      !card?.name?.trim()
-    ) {
-      return null;
-    }
-
-    const params =
-      new URLSearchParams();
-
-    params.set(
-      "name",
-      card.name.trim()
-    );
-
-    if (card.set_name?.trim()) {
-      params.set(
-        "setName",
-        card.set_name.trim()
-      );
-    }
-
-    if (card.card_number?.trim()) {
-      params.set(
-        "cardNumber",
-        card.card_number.trim()
-      );
-    }
-
-    if (card.language?.trim()) {
-      params.set(
-        "language",
-        card.language.trim()
-      );
-    }
-
-    if (card.variant?.trim()) {
-      params.set(
-        "variant",
-        card.variant.trim()
-      );
-    }
-
-    return (
-      `/api/catalog/pokemon-image-fallback?${params.toString()}`
-    );
-  }
+  const [currentSrc, setCurrentSrc] = useState<string | null>(null);
+  const [imageFailed, setImageFailed] = useState(false);
+  const [attempted, setAttempted] = useState(false);
+  const identityKey = [card?.id, card?.external_id, card?.name, card?.set_name,
+    card?.card_number, card?.language, card?.variant, card?.finish,
+    card?.category, card?.image_url].join("|");
+  const fallbackRef = useRef<(() => void) | null>(null);
+  const backupImageRef = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
-
-    setSportsFallbackAttempted(false);
-    setPokemonFallbackAttempted(false);
+    const controller = new AbortController();
+    const importedImage = nonEnglishPokemonCard ? null : card?.image_url?.trim() || null;
+    backupImageRef.current = importedImage;
+    setAttempted(false);
     setImageFailed(false);
+    // Show an existing imported image first. Eagerly resolving hundreds of
+    // Pokémon at once can overwhelm upstream providers and cause timeouts.
+    // Missing images, and imported URLs that fail to load, use the resolver.
+    setCurrentSrc(importedImage);
 
-    // Localized Pokémon artwork is not an optional fallback. Older imported
-    // image_url values may point to valid English artwork, so JP/CN cards must
-    // resolve from their complete localized identity every time that identity
-    // changes.
-    if (nonEnglishPokemonCard) {
-      setCurrentSrc(null);
+    if (!importedImage) void resolveFallback();
 
-      const fallbackUrl =
-        buildPokemonFallbackUrl();
-
-      if (!fallbackUrl) {
-        setImageFailed(true);
-
-        return () => {
-          active = false;
-        };
+    async function resolveFallback() {
+      if (!active) return;
+      setAttempted(true);
+      let url: string | null = null;
+      if (pokemonCard && card?.name?.trim()) {
+        const normalizedName = card.name.trim().replace(/\bStar$/i, "☆");
+        const params = new URLSearchParams({ name: normalizedName });
+        if (card.set_name?.trim()) params.set("setName", card.set_name.trim());
+        if (card.card_number?.trim()) params.set("cardNumber", card.card_number.trim());
+        if (card.language?.trim()) params.set("language", card.language.trim());
+        if (card.variant?.trim() || card.finish?.trim())
+          params.set("variant", (card.variant || card.finish || "").trim());
+        url = `/api/catalog/pokemon-image-fallback?${params.toString()}`;
+      } else if (onePieceCard && card?.name?.trim() && card?.card_number?.trim()) {
+        const params = new URLSearchParams({
+          name: card.name.trim(),
+          setName: card.set_name?.trim() || "",
+          cardNumber: card.card_number.trim(),
+          variant: card.variant?.trim() || card.finish?.trim() || "",
+          language: card.language?.trim() || "",
+        });
+        url = `/api/catalog/onepiece-image-fallback?${params.toString()}`;
+      } else if (sportsCard && card?.external_id?.trim()) {
+        if (active) setCurrentSrc(`/api/catalog/sports-image?id=${encodeURIComponent(card.external_id.trim())}`);
+        return;
       }
-
-      setPokemonFallbackAttempted(true);
-
-      void (async () => {
-        try {
-          const response =
-            await fetch(
-              fallbackUrl,
-              {
-                method: "GET",
-                cache: "no-store",
-              }
-            );
-
-          if (!response.ok) {
-            if (active) {
-              setImageFailed(true);
-            }
-
-            return;
-          }
-
-          const payload =
-            (await response.json()) as {
-              ok?: boolean;
-              imageUrl?: string | null;
-            };
-
-          if (
-            active &&
-            payload.ok &&
-            typeof payload.imageUrl === "string" &&
-            payload.imageUrl.trim()
-          ) {
-            setCurrentSrc(
-              payload.imageUrl.trim()
-            );
-
-            setImageFailed(false);
-            return;
-          }
-
-          if (active) {
-            setImageFailed(true);
-          }
-        } catch (error) {
-          console.warn(
-            "Localized Pokemon inventory image lookup failed:",
-            error
-          );
-
-          if (active) {
-            setImageFailed(true);
-          }
+      if (!url) {
+        if (active && !importedImage) setImageFailed(true);
+        return;
+      }
+      try {
+        const response = await fetch(url, { signal: controller.signal, cache: "no-store" });
+        const result = response.ok ? await response.json() as {
+          ok?: boolean; imageUrl?: string | null; reason?: string;
+        } : null;
+        if (!active) return;
+        if (result?.ok && result.imageUrl?.trim()) {
+          // Bandai images can open in a tab but fail as cross-site <img> requests.
+          // Serve official Japanese card art through our same-origin image proxy.
+          const resolvedImage = result.imageUrl.trim();
+          const isOfficialJapaneseOnePieceImage = onePieceCard &&
+            /^https:\/\/(?:www\.)?onepiece-cardgame\.com\/images\/cardlist\/card\/[A-Za-z0-9_-]+\.(?:png|jpe?g|webp)(?:\?[^#]*)?$/i.test(resolvedImage);
+          setCurrentSrc(isOfficialJapaneseOnePieceImage
+            ? `/api/catalog/onepiece-jp-image-proxy?url=${encodeURIComponent(resolvedImage)}`
+            : resolvedImage);
+          setImageFailed(false);
+        } else {
+          console.warn("MintRadar inventory image unresolved", {
+            card: card?.name, category: card?.category, set: card?.set_name,
+            number: card?.card_number, language: card?.language,
+            variant: card?.variant, reason: result?.reason || response.status,
+          });
+          if (importedImage) setCurrentSrc(importedImage);
+          else setImageFailed(true);
         }
-      })();
-
-      return () => {
-        active = false;
-      };
+      } catch (error) {
+        if (active && !controller.signal.aborted) {
+          console.warn("MintRadar inventory image request failed", card?.name, error);
+          if (importedImage) setCurrentSrc(importedImage);
+          else setImageFailed(true);
+        }
+      }
     }
-
-    setCurrentSrc(
-      card?.image_url || null
-    );
-
+    fallbackRef.current = () => { if (active) void resolveFallback(); };
     return () => {
       active = false;
+      controller.abort();
+      fallbackRef.current = null;
     };
-  }, [
-    card?.id,
-    card?.external_id,
-    card?.image_url,
-    card?.category,
-    card?.name,
-    card?.set_name,
-    card?.card_number,
-    card?.language,
-    card?.variant,
-    nonEnglishPokemonCard,
-  ]);
-
-  function trySportsFallback() {
-    if (
-      !sportsCard ||
-      sportsFallbackAttempted ||
-      !card?.external_id?.trim()
-    ) {
-      setImageFailed(true);
-      return;
-    }
-
-    setSportsFallbackAttempted(true);
-    setImageFailed(false);
-
-    setCurrentSrc(
-      `/api/catalog/sports-image?id=${encodeURIComponent(
-        card.external_id.trim()
-      )}`
-    );
-  }
-
-  async function tryPokemonFallback() {
-    if (
-      !pokemonCard ||
-      nonEnglishPokemonCard ||
-      pokemonFallbackAttempted
-    ) {
-      setImageFailed(true);
-      return;
-    }
-
-    const fallbackUrl =
-      buildPokemonFallbackUrl();
-
-    if (!fallbackUrl) {
-      setImageFailed(true);
-      return;
-    }
-
-    setPokemonFallbackAttempted(true);
-    setImageFailed(false);
-
-    try {
-      const response =
-        await fetch(
-          fallbackUrl,
-          {
-            method: "GET",
-            cache: "no-store",
-          }
-        );
-
-      if (!response.ok) {
-        setImageFailed(true);
-        return;
-      }
-
-      const payload =
-        (await response.json()) as {
-          ok?: boolean;
-          imageUrl?: string | null;
-        };
-
-      if (
-        payload.ok &&
-        typeof payload.imageUrl === "string" &&
-        payload.imageUrl.trim()
-      ) {
-        setCurrentSrc(
-          payload.imageUrl.trim()
-        );
-
-        return;
-      }
-
-      setImageFailed(true);
-    } catch (error) {
-      console.warn(
-        "Pokemon inventory image fallback failed:",
-        error
-      );
-
-      setImageFailed(true);
-    }
-  }
-
-  useEffect(() => {
-    if (
-      nonEnglishPokemonCard ||
-      currentSrc ||
-      sportsFallbackAttempted ||
-      pokemonFallbackAttempted ||
-      imageFailed
-    ) {
-      return;
-    }
-
-    if (sportsCard) {
-      trySportsFallback();
-    } else if (pokemonCard) {
-      void tryPokemonFallback();
-    } else {
-      setImageFailed(true);
-    }
-  }, [
-    currentSrc,
-    sportsCard,
-    pokemonCard,
-    nonEnglishPokemonCard,
-    sportsFallbackAttempted,
-    pokemonFallbackAttempted,
-    imageFailed,
-  ]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [identityKey]);
 
   if (imageFailed) {
     return (
       <div className="w-full h-full flex flex-col items-center justify-center text-center p-2">
-        <p className="text-emerald-400 text-[9px] font-black uppercase tracking-[0.12em]">
-          MintRadar
-        </p>
-
-        <p className="text-zinc-700 text-[10px] mt-1">
-          No Image
-        </p>
+        <p className="text-emerald-400 text-[9px] font-black uppercase tracking-[0.12em]">MintRadar</p>
+        <p className="text-zinc-700 text-[10px] mt-1">No Image</p>
       </div>
     );
   }
-
   if (!currentSrc) {
-    return (
-      <div className="w-full h-full flex items-center justify-center text-zinc-700 text-xs text-center p-2">
-        Loading...
-      </div>
-    );
+    return <div className="w-full h-full flex items-center justify-center text-zinc-700 text-xs text-center p-2">Loading...</div>;
   }
-
   return (
     <img
+      key={`${identityKey}:${currentSrc}`}
       src={currentSrc}
-      alt={getCardDisplayIdentity(card).name || "Card"}
+      alt={vendorPokemonDisplayName(card) || "Card"}
       className="w-full h-full object-contain"
       onError={() => {
-        const alreadyUsingSportsRoute =
-          currentSrc.startsWith(
-            "/api/catalog/sports-image?"
-          );
-
-        if (
-          sportsCard &&
-          !alreadyUsingSportsRoute
-        ) {
-          trySportsFallback();
+        // If the resolved provider URL fails, try the imported URL once,
+        // but never use an English import as a JP/CN image fallback.
+        const backup = backupImageRef.current;
+        if (pokemonCard && backup && currentSrc !== backup) {
+          setCurrentSrc(backup);
           return;
         }
-
-        if (
-          pokemonCard &&
-          !nonEnglishPokemonCard &&
-          !pokemonFallbackAttempted
-        ) {
+        if (!attempted && (pokemonCard || onePieceCard || sportsCard)) {
           setCurrentSrc(null);
-          void tryPokemonFallback();
-          return;
+          fallbackRef.current?.();
+        } else {
+          console.warn("MintRadar inventory image failed to load", {
+            name: card?.name, category: card?.category, src: currentSrc,
+          });
+          setImageFailed(true);
         }
-
-        setImageFailed(true);
       }}
     />
   );
@@ -777,6 +574,8 @@ export default function VendorDashboardPage() {
   ] = useState<
     "all" | "needs-price" | "published"
   >("all");
+
+  const [inventorySearch, setInventorySearch] = useState("");
 
   const [loading, setLoading] =
     useState(true);
@@ -4327,8 +4126,28 @@ export default function VendorDashboardPage() {
         Number(item.price ?? 0) > 0
     ).length;
 
+  const normalizedInventorySearch = inventorySearch.trim().toLocaleLowerCase();
+  const searchTerms = normalizedInventorySearch.split(/\s+/).filter(Boolean);
+
   const visibleInventory =
     inventory.filter((item) => {
+      const card = item.cards;
+      const searchableText = [
+        card?.name,
+        vendorPokemonDisplayName(card),
+        card?.set_name,
+        card?.card_number,
+        card?.external_id,
+        card?.language,
+        card?.variant,
+        card?.finish,
+        card?.edition,
+      ].filter(Boolean).join(" ").toLocaleLowerCase();
+
+      if (searchTerms.length && !searchTerms.every((term) => searchableText.includes(term))) {
+        return false;
+      }
+
       const hasPrice =
         Number(item.price ?? 0) > 0;
 
@@ -4646,6 +4465,31 @@ export default function VendorDashboardPage() {
                 </p>
               </div>
 
+              <div className="relative max-w-xl">
+                <label htmlFor="vendor-inventory-search" className="mb-2 block text-xs font-bold text-zinc-400">
+                  Search your inventory
+                </label>
+                <div className="flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950 px-3 focus-within:border-emerald-400">
+                  <svg aria-hidden="true" className="h-4 w-4 shrink-0 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                    <circle cx="11" cy="11" r="7" /><path d="m16 16 5 5" />
+                  </svg>
+                  <input
+                    id="vendor-inventory-search"
+                    type="search"
+                    value={inventorySearch}
+                    onChange={(event) => setInventorySearch(event.target.value)}
+                    placeholder="Search card, set, number, language..."
+                    autoComplete="off"
+                    className="min-w-0 flex-1 bg-transparent py-3 text-sm text-white outline-none placeholder:text-zinc-600"
+                  />
+                  {inventorySearch && (
+                    <button type="button" onClick={() => setInventorySearch("")} className="shrink-0 text-xs font-bold text-emerald-400 hover:text-emerald-300">
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+
               <div className="flex flex-wrap gap-2">
                 {[
                   {
@@ -4684,6 +4528,15 @@ export default function VendorDashboardPage() {
                 ))}
               </div>
             </div>
+
+            {visibleInventory.length === 0 && inventorySearch.trim() && (
+              <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-5 text-sm text-zinc-400">
+                No cards match your search in this inventory filter.
+                <button type="button" onClick={() => { setInventorySearch(""); setInventoryFilter("all"); }} className="ml-2 font-bold text-emerald-400 hover:text-emerald-300">
+                  Clear search and filters
+                </button>
+              </div>
+            )}
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
 
@@ -4726,7 +4579,7 @@ export default function VendorDashboardPage() {
 
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-lg font-black">
-                            {getCardDisplayIdentity(card).name ||
+                            {vendorPokemonDisplayName(card) ||
                               "Unknown Card"}
                           </p>
 
