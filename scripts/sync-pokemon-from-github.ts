@@ -114,6 +114,36 @@ type IdentityModifiers = {
 
 const englishIdentities: CardIdentity[] = [];
 
+// Search-only translations. These never assert an English printing or art match.
+// Derive species names from unmodified English Pokémon identities sharing one
+// unambiguous National Pokédex ID. Do not infer forms or mechanics.
+function resolveVintageJapaneseSearchName(source: CardIdentity): string | null {
+  if (!/^PMCG\d+-/i.test(source.externalId)) return null;
+  if (source.dexIds.length !== 1) return null;
+  const m = source.modifiers;
+  if (m.exLower || m.exUpper || m.gx || m.v || m.vmax || m.vstar ||
+      m.break || m.legend || m.radiant || m.mega || m.alolan ||
+      m.galarian || m.teamRocket || m.spG || m.prismStar) return null;
+  // Only plain and the vintage 'Dark' modifier are handled automatically.
+  const speciesNames = new Set<string>();
+  for (const en of englishIdentities) {
+    if (en.dexIds.length !== 1 || en.dexIds[0] !== source.dexIds[0]) continue;
+    const em = en.modifiers;
+    if (Object.values(em).some(Boolean)) continue;
+    if (!/^[A-Za-z][A-Za-z .'-]*$/.test(en.name)) continue;
+    speciesNames.add(en.name.trim());
+    if (speciesNames.size > 1) return null;
+  }
+  if (speciesNames.size !== 1) return null;
+  const species = [...speciesNames][0];
+  if (m.dark) {
+    if (!source.name.startsWith("わるい")) return null;
+    return `Dark ${species}`;
+  }
+  return species;
+}
+
+
 type CnGemDiagnosticRow = {
   setId: string;
   setName: string;
@@ -839,7 +869,9 @@ async function main() {
               finish:
                 variant.finish,
               canonical_name:
-                canonical?.name ?? null,
+                canonical?.name ?? (language === "JP"
+                  ? resolveVintageJapaneseSearchName(sourceIdentity)
+                  : null),
               canonical_external_id:
                 canonical?.externalId ?? null,
               canonical_language:
@@ -946,6 +978,13 @@ async function main() {
     );
   }
 
+  // Resolve existing searchable names BEFORE the dry-run gate. This is a
+  // read-only Supabase lookup; the in-memory rows are never written in dry-run.
+  await preserveExistingPokemonSearchNames(dedupedCardRows);
+  promoteJapaneseSearchNamesV104(dedupedCardRows);
+  printJapaneseCanonicalReport(dedupedCardRows);
+  printJapaneseUnresolvedAudit(dedupedCardRows);
+
   const pokemonSyncDryRun =
     process.env.POKEMON_SYNC_DRY_RUN === "1";
 
@@ -985,6 +1024,216 @@ async function main() {
   );
 }
 
+
+async function preserveExistingPokemonSearchNames(rows: CardRow[]) {
+  const unresolved = rows.filter((row) =>
+    row.language === "JP" && !row.canonical_name
+  );
+  let preserved = 0;
+  for (let start = 0; start < unresolved.length; start += 150) {
+    const batch = unresolved.slice(start, start + 150);
+    const { data, error } = await supabase.from("cards")
+      .select("external_id,canonical_name")
+      .eq("data_source", "tcgdex")
+      .eq("language", "JP")
+      .in("external_id", batch.map((row) => row.external_id));
+    if (error) throw new Error(`Canonical preservation read failed: ${error.message}`);
+    const existing = new Map((data ?? []).map((row) =>
+      [row.external_id as string, row.canonical_name as string | null]
+    ));
+    for (const row of batch) {
+      const previous = existing.get(row.external_id)?.trim();
+      if (previous) { row.canonical_name = previous; preserved++; }
+    }
+  }
+  console.log(`Preserved ${preserved} existing JP searchable names that the new sync could not resolve.`);
+}
+
+function printJapaneseCanonicalReport(rows: CardRow[]) {
+  const japanese = rows.filter((row) => row.language === "JP");
+  const named = japanese.filter((row) => Boolean(row.canonical_name?.trim()));
+  const unresolved = japanese.length - named.length;
+  const darkHypno = japanese.find((row) => row.external_id === "PMCG4-037");
+  const darkHypnoPass = darkHypno?.canonical_name?.trim() === "Dark Hypno";
+
+  console.log("\\n=== JP CANONICAL SEARCH REPORT (V10.4) ===");
+  console.log(`JP cards: ${japanese.length}`);
+  console.log(`With English searchable names: ${named.length}`);
+  console.log(`Without English searchable names: ${unresolved}`);
+  console.log(
+    `PMCG4-037 Dark Hypno: ${darkHypnoPass ? "PASS" : "FAIL"} ` +
+    `(prepared=${JSON.stringify(darkHypno?.canonical_name ?? null)})`
+  );
+  console.log("=== END JP CANONICAL SEARCH REPORT ===\\n");
+}
+
+// V10.2: Read-only diagnostic. No canonical assignments or Supabase writes.
+// Exports unresolved Japanese printings so resolver improvements can be based
+// on real source patterns rather than speculative name translations.
+function printJapaneseUnresolvedAudit(rows: CardRow[]) {
+  const unresolved = rows.filter((row) =>
+    row.language === "JP" && !row.canonical_name?.trim()
+  );
+  const setIdOf = (row: CardRow) =>
+    row.external_id.slice(0, -(row.card_number.length + 1));
+  const bucketOf = (row: CardRow): string => {
+    const name = row.name.trim();
+    if (/^(?:わるい|やさしい)/u.test(name)) return "Vintage Dark / Light modifier";
+    if (/^(?:ロケット団の|R団の|アクア団の|マグマ団の)/u.test(name)) return "Team / owner prefix";
+    if (/(?:VMAX|VSTAR|BREAK|LEGEND|GX|EX|ex|V)$/u.test(name)) return "Mechanic suffix";
+    if (/(?:の|＆|&|・)/u.test(name)) return "Possessive / multi-name";
+    if (/(?:エネルギー|Energy)/iu.test(name)) return "Energy";
+    if (/(?:ボール|サポート|スタジアム)/u.test(name)) return "Trainer / item candidate";
+    if (/^PMCG/i.test(row.external_id)) return "Vintage PMCG other";
+    return "Other / requires inspection";
+  };
+  const groups = new Map<string, { name: string; count: number; examples: CardRow[] }>();
+  const patterns = new Map<string, number>();
+  for (const row of unresolved) {
+    const id = setIdOf(row);
+    const group = groups.get(id) ?? { name: row.set_name, count: 0, examples: [] };
+    group.count++;
+    if (group.examples.length < 3) group.examples.push(row);
+    groups.set(id, group);
+    const bucket = bucketOf(row);
+    patterns.set(bucket, (patterns.get(bucket) ?? 0) + 1);
+  }
+  console.log("\\n=== JP UNRESOLVED AUDIT (V10.2 / READ-ONLY) ===");
+  console.log(`Unresolved JP cards: ${unresolved.length}; sets affected: ${groups.size}`);
+  console.log("Top 25 sets by unresolved count:");
+  for (const [id, group] of [...groups.entries()]
+    .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
+    .slice(0, 25)) {
+    console.log(`  ${id} | ${group.count} | ${group.name}`);
+    for (const row of group.examples) {
+      console.log(`    ${row.external_id} | ${row.name}`);
+    }
+  }
+  console.log("Heuristic name patterns (diagnostic only; not translations):");
+  for (const [pattern, count] of [...patterns.entries()].sort((a, b) => b[1] - a[1])) {
+    console.log(`  ${pattern}: ${count}`);
+  }
+  const csv = (value: string) => `"${value.replace(/"/g, '""')}"`;
+  const exportDir = join(ROOT, ".cache", "pokemon-jp-audit");
+  mkdirSync(exportDir, { recursive: true });
+  const exportPath = join(exportDir, "unresolved-jp-v10.2.csv");
+  writeFileSync(exportPath, [
+    "external_id,set_id,set_name,card_number,japanese_name,pattern",
+    ...unresolved.map((row) => [
+      row.external_id, setIdOf(row), row.set_name,
+      row.card_number, row.name, bucketOf(row)
+    ].map(csv).join(","))
+  ].join("\n") + "\n", "utf8");
+  console.log(`Local CSV audit: ${exportPath}`);
+  console.log("=== END JP UNRESOLVED AUDIT ===\\n");
+}
+
+// V10.4: Search-name-only propagation. Exact normalized Japanese names must
+// have >=2 distinct high-confidence JP->EN printing matches, all agreeing on
+// one English name. Never assert an English counterpart for the target card.
+// Dry runs preview promotions in memory; production requires explicit opt-in.
+function promoteJapaneseSearchNamesV104(rows: CardRow[]) {
+  type Evidence = { names: Set<string>; ids: Set<string>; sets: Set<string> };
+  const jp = rows.filter((row) => row.language === "JP");
+  const evidence = new Map<string, Evidence>();
+  const normalized = (name: string) => name.normalize("NFKC").trim();
+  const setId = (row: CardRow) =>
+    row.external_id.slice(0, -(row.card_number.length + 1));
+
+  // Only a printing-level, high-confidence canonical match is evidence.
+  // Preserved manually entered search names are NOT evidence.
+  for (const row of jp) {
+    if (!row.canonical_external_id || !row.canonical_name?.trim() ||
+        (row.canonical_confidence ?? 0) < 95) continue;
+    const key = normalized(row.name);
+    if (!key) continue;
+    const found = evidence.get(key) ?? {
+      names: new Set<string>(), ids: new Set<string>(), sets: new Set<string>()
+    };
+    found.names.add(row.canonical_name.trim());
+    found.ids.add(row.external_id);
+    found.sets.add(setId(row));
+    evidence.set(key, found);
+  }
+
+  // The Japanese name must explicitly encode the same mechanic as the English
+  // name. Avoid accidental cross-era EX/ex and special-form promotion.
+  const mechanics = (name: string) => {
+    const n = normalized(name);
+    return {
+      exLower: /ex$/u.test(n), exUpper: /EX$/u.test(n),
+      gx: /GX$/u.test(n), vmax: /VMAX$/u.test(n),
+      vstar: /VSTAR$/u.test(n), v: /(?<!MAX|STAR)V$/u.test(n),
+      break: /BREAK$/u.test(n), legend: /LEGEND$/u.test(n),
+      mega: /^(?:メガ|Mega\s)/u.test(n),
+      rocket: /^(?:ロケット団の|Team Rocket's\s)/u.test(n),
+      dark: /^(?:わるい|Dark\s)/u.test(n),
+      light: /^(?:やさしい|Light\s)/u.test(n),
+    };
+  };
+  const sameMechanics = (a: string, b: string) => {
+    const left = mechanics(a);
+    const right = mechanics(b);
+    return (Object.keys(left) as Array<keyof typeof left>)
+      .every((key) => left[key] === right[key]);
+  };
+
+  const unresolved = jp.filter((row) => !row.canonical_name?.trim());
+  const eligible: Array<{ row: CardRow; english: string; support: number; sets: number }> = [];
+  let ambiguous = 0;
+  let insufficient = 0;
+  let mechanicRejected = 0;
+  let singleSet = 0;
+  for (const row of unresolved) {
+    const match = evidence.get(normalized(row.name));
+    if (!match || match.ids.size < 2) { insufficient++; continue; }
+    if (match.names.size !== 1) { ambiguous++; continue; }
+    // Require independently supported releases, not two variants within one set.
+    if (match.sets.size < 2) { singleSet++; continue; }
+    const english = [...match.names][0];
+    if (!sameMechanics(row.name, english)) { mechanicRejected++; continue; }
+    eligible.push({ row, english, support: match.ids.size, sets: match.sets.size });
+  }
+
+  const dir = join(ROOT, ".cache", "pokemon-jp-audit");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "jp-name-promotions-v10.4.csv");
+  const csv = (value: string) => `"${value.replace(/"/g, '""')}"`;
+  writeFileSync(path, [
+    "external_id,japanese_name,english_search_name,supporting_prints,supporting_sets",
+    ...eligible.map(({ row, english, support, sets }) =>
+      [row.external_id, row.name, english, String(support), String(sets)]
+        .map(csv).join(","))
+  ].join("\n") + "\n", "utf8");
+
+  const dryRun = process.env.POKEMON_SYNC_DRY_RUN === "1";
+  const optIn = process.env.JP_SEARCH_NAME_PROMOTE === "1";
+  const apply = dryRun || optIn;
+  if (apply) {
+    for (const { row, english } of eligible) {
+      row.canonical_name = english;
+      // Deliberately leave canonical_external_id, canonical_language,
+      // canonical_confidence and image_url untouched.
+    }
+  }
+  console.log("\\n=== JP SEARCH NAME PROMOTIONS (V10.4) ===");
+  console.log(`Previously unresolved JP cards: ${unresolved.length}`);
+  console.log(`Eligible with cross-set evidence and mechanic agreement: ${eligible.length}`);
+  console.log(`Ambiguous English names: ${ambiguous}`);
+  console.log(`Insufficient evidence: ${insufficient}`);
+  console.log(`Single-set evidence only: ${singleSet}`);
+  console.log(`Mechanic mismatch rejected: ${mechanicRejected}`);
+  console.log(`Mode: ${dryRun ? "DRY-RUN PREVIEW (in-memory only)" : optIn ? "OPTED IN (prepared for Supabase upsert)" : "DISABLED (no names assigned)"}`);
+  console.log(`JP search names after ${apply ? "preview/promotion" : "no promotion"}: ${jp.filter((row) => row.canonical_name?.trim()).length}/${jp.length}`);
+  console.log("Examples:");
+  for (const { row, english, support, sets } of eligible.slice(0, 25)) {
+    console.log(`  ${row.external_id} | ${row.name} => ${english} | prints=${support} sets=${sets}`);
+  }
+  console.log(`Review CSV: ${path}`);
+  console.log("No target canonical IDs, confidence, language, or artwork changed by promotion.");
+  console.log("Production opt-in: JP_SEARCH_NAME_PROMOTE=1 (after reviewing dry run).");
+  console.log("=== END JP SEARCH NAME PROMOTIONS ===\\n");
+}
 
 // Optional Japanese artwork enrichment. This does not change card identity,
 // canonical matching, CN imports, or the existing Supabase write controls.

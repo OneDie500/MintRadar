@@ -756,6 +756,176 @@ const JP_SET_NAME_ALIASES: Record<string, string[]> = {
   "eevee heroes": ["イーブイヒーローズ"],
 };
 
+// Curated set identities, NOT card-number or artwork overrides.
+// The 1997 Japanese Rocket Gang release is PMCG4. Marketplace labels can
+// use the English expansion name even when TCGdex indexes it as ロケット団.
+// Keep this map exact to avoid confusing it with modern Team Rocket sets.
+const VERIFIED_JP_VINTAGE_SET_IDS: Record<string, string> = {
+  "team rocket japanese": "PMCG4",
+  "japanese team rocket": "PMCG4",
+  "rocket gang japanese": "PMCG4",
+  "rocket gang": "PMCG4",
+};
+
+// Resolve marketplace English-language labels against the provider's English
+// set index, then verify that the same provider ID exists in the JP index.
+// Never guess an ID from a similar-sounding expansion title.
+async function verifiedJapaneseSetId(setName?: string | null) {
+  const key = normalizeMetadataText(setName || "");
+  if (!key) return null;
+  const englishSets = await fetchJsonWithTimeout<TcgdexSetBrief[]>(
+    "https://api.tcgdex.net/v2/en/sets"
+  );
+  if (!Array.isArray(englishSets)) return null;
+  const matches = englishSets.filter((set) =>
+    Boolean(set.id) && normalizeMetadataText(set.name || "") === key
+  );
+  if (matches.length !== 1 || !matches[0].id) return null;
+  const id = matches[0].id;
+  const japaneseSet = await fetchJsonWithTimeout<TcgdexJapaneseSetDetail>(
+    `https://api.tcgdex.net/v2/ja/sets/${encodeURIComponent(id)}`
+  );
+  return japaneseSet?.id === id ? id : null;
+}
+
+// Discover Japanese sets by their actual catalog name, not by collector
+// number. An ambiguous or missing set must never produce guessed artwork.
+async function discoverJapaneseSetId(setName?: string | null) {
+  const requested = (setName || "").trim();
+  if (!requested) return null;
+  // Exact, source-verified vintage expansion code. This does NOT convert
+  // a Pokédex number (e.g. Dark Hypno 97) into a collector number (037).
+  const vintageId = VERIFIED_JP_VINTAGE_SET_IDS[
+    normalizeMetadataText(requested)
+  ];
+  if (vintageId) return vintageId;
+  const verified = await verifiedJapaneseSetId(requested);
+  if (verified) return verified;
+  const aliases = JP_SET_NAME_ALIASES[normalizeMetadataText(requested)] || [];
+  const sets = await fetchJsonWithTimeout<TcgdexSetBrief[]>(
+    "https://api.tcgdex.net/v2/ja/sets"
+  );
+  if (!Array.isArray(sets)) return null;
+  const names = [requested, ...aliases];
+  const matches = sets.filter((set) =>
+    Boolean(set.id) && names.some((name) =>
+      name.trim() === (set.name || "").trim() ||
+      (normalizeMetadataText(name) !== "" &&
+       normalizeMetadataText(name) === normalizeMetadataText(set.name || ""))
+    )
+  );
+  return matches.length === 1 ? matches[0].id || null : null;
+}
+
+
+// Diagnostic-only cross-language vintage identity resolution. PokeAPI species
+// names are independent of TCGdex set IDs. This is not an artwork provider.
+// Match the complete Japanese card name (including Dark/Light modifiers) and
+// require a UNIQUE result in the already-verified Japanese TCGdex set.
+type PokemonSpeciesTranslation = {
+  id?: number;
+  names?: Array<{ name?: string; language?: { name?: string } }>;
+};
+
+function vintageEnglishNameParts(name: string) {
+  const clean = (name || "").trim().replace(/\s+/g, " ");
+  const modifier = /^(Dark|Light)\s+/i.exec(clean);
+  const species = modifier ? clean.slice(modifier[0].length) : clean;
+  // Conservative: don't misidentify EX, ex, LV.X, GX, V, etc. as a species.
+  if (!/^[a-z][a-z .'-]*$/i.test(species) ||
+      /\b(?:ex|gx|vmax|vstar|break|lv\.?x|mega)\b/i.test(species)) return null;
+  return { modifier: modifier?.[1].toLowerCase() || null, species };
+}
+
+async function inspectJapaneseVintageIdentity({
+  setId, name, suppliedNumber,
+}: {
+  setId: string;
+  name: string;
+  suppliedNumber?: string | null;
+}) {
+  const japaneseSet = await fetchJsonWithTimeout<TcgdexJapaneseSetDetail>(
+    `https://api.tcgdex.net/v2/ja/sets/${encodeURIComponent(setId)}`
+  );
+  if (!Array.isArray(japaneseSet?.cards)) {
+    return { status: "japanese-catalog-unavailable", providerSetId: setId };
+  }
+
+  const cards = japaneseSet.cards;
+  const numberVariants = new Set(
+    buildCollectorNumberVariants(suppliedNumber).map(normalize)
+  );
+  const matchingCards = numberVariants.size
+    ? cards.filter((card) =>
+        Boolean(card.id && card.localId) &&
+        buildCollectorNumberVariants(card.localId).some((number) =>
+          numberVariants.has(normalize(number))
+        )
+      )
+    : [];
+  const numberCandidate = matchingCards.length === 1 ? matchingCards[0] : null;
+  const parts = vintageEnglishNameParts(name);
+  let translatedJapaneseName: string | null = null;
+  let speciesId: number | null = null;
+  let translationSource: string | null = null;
+  if (parts) {
+    const slug = parts.species.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const species = await fetchJsonWithTimeout<PokemonSpeciesTranslation>(
+      `https://pokeapi.co/api/v2/pokemon-species/${encodeURIComponent(slug)}/`
+    );
+    const enName = species?.names?.find((entry) => entry.language?.name === "en")?.name;
+    const jaName = species?.names?.find((entry) => entry.language?.name?.toLowerCase() === "ja-hrkt")?.name || species?.names?.find((entry) => entry.language?.name?.toLowerCase() === "ja")?.name;
+    // Japanese TCGdex names use Japanese kana. No transliteration guesses.
+    if (enName && jaName && normalizeMetadataText(enName) === normalizeMetadataText(parts.species)) {
+      speciesId = typeof species?.id === "number" ? species.id : null;
+      translatedJapaneseName = `${parts.modifier === "dark" ? "わるい" : parts.modifier === "light" ? "やさしい" : ""}${jaName}`;
+      translationSource = "pokeapi-species-ja-hrkt-or-ja";
+    }
+  }
+
+  const nameMatches = translatedJapaneseName
+    ? cards.filter((card) => card.id && card.localId &&
+        (card.name || "").normalize("NFKC").replace(/\s+/g, "") ===
+        translatedJapaneseName.normalize("NFKC").replace(/\s+/g, ""))
+    : [];
+  const verified = nameMatches.length === 1 ? nameMatches[0] : null;
+  const numberMatchesVerified = Boolean(verified && numberCandidate && verified.id === numberCandidate.id);
+  const suppliedNumberIsSpeciesId = Boolean(speciesId && /^\d+$/.test((suppliedNumber || "").trim()) &&
+    Number(suppliedNumber) === speciesId);
+  // The name match must be unique. If a supplied number points at a different
+  // printing, only reconcile it when that number is the species Pokédex ID.
+  const identityVerified = Boolean(verified &&
+    (!numberCandidate || numberMatchesVerified || suppliedNumberIsSpeciesId));
+  const status = identityVerified
+    ? "cross-language-identity-verified"
+    : verified ? "number-conflicts-with-translated-identity"
+    : numberCandidate ? "collector-number-candidate-needs-name-verification"
+    : "translation-source-required";
+  return {
+    status,
+    providerSetId: setId,
+    requestedEnglishName: name,
+    suppliedNumber: suppliedNumber || null,
+    japaneseSetName: japaneseSet.name || null,
+    japaneseSetCardCount: cards.length,
+    translationSource,
+    translatedJapaneseName,
+    speciesPokedexNumber: speciesId,
+    ...(numberCandidate ? {
+      numberCandidateProviderCardId: numberCandidate.id,
+      numberCandidateJapaneseName: numberCandidate.name || null,
+    } : {}),
+    ...(identityVerified && verified ? {
+      candidateProviderCardId: verified.id,
+      candidateJapaneseName: verified.name || null,
+      candidateCollectorNumber: verified.localId,
+      numberReconciliationNeeded: !numberMatchesVerified,
+      suppliedNumberIsSpeciesId,
+    } : {}),
+    identityVerified,
+    artworkVerified: false,
+  };
+}
 async function resolveJapaneseSetScopedImage({
   name,
   setName,
@@ -1601,7 +1771,7 @@ async function resolveLocalVintageJapaneseImage({
   const requestedNumber = normalizePrintedCollectorNumber(cardNumber);
   const match = requestedNumber.match(/^(\d{1,4})$/);
 
-  if (!/^PCG[1-9]$/.test(exactSetId) || !match) return null;
+  if (!/^(?:PCG[1-9]|PMCG[1-9])$/.test(exactSetId) || !match) return null;
 
   // Full collector numbers need their own denominator verification;
   // local assets are indexed only by exact set-scoped short IDs.
@@ -1625,6 +1795,107 @@ async function resolveLocalVintageJapaneseImage({
     }
   }
   return null;
+}
+
+// V7: Resolve artwork only AFTER cross-language identity has been verified.
+// A reconciled local ID is never inferred from the imported Pokédex number.
+async function resolveVerifiedVintageJapaneseArtwork({
+  setId, collectorNumber, providerCardId, diagnostics,
+}: {
+  setId: string;
+  collectorNumber: string;
+  providerCardId: string;
+  diagnostics?: Record<string, unknown>;
+}) {
+  const report = (status: string, extra?: Record<string, unknown>) => {
+    if (diagnostics) {
+      diagnostics.status = status;
+      if (extra) Object.assign(diagnostics, extra);
+    }
+  };
+  const expectedId = `${setId}-${collectorNumber}`;
+  if (providerCardId !== expectedId) {
+    report("provider-card-id-mismatch", { expectedId, providerCardId });
+    return null;
+  }
+
+  const local = await resolveLocalVintageJapaneseImage({
+    setId, cardNumber: collectorNumber,
+  });
+  if (local) {
+    report("verified-local-artwork-found");
+    return { ...local, artworkVerified: true };
+  }
+  report("local-artwork-not-found");
+
+  const detail = await fetchJsonWithTimeout<TcgdexCardDetail>(
+    `https://api.tcgdex.net/v2/ja/cards/${encodeURIComponent(providerCardId)}`
+  );
+  if (!detail) {
+    report("tcgdex-card-detail-unavailable");
+    return null;
+  }
+  if (detail.id !== providerCardId ||
+      detail.localId !== collectorNumber ||
+      detail.set?.id !== setId) {
+    report("tcgdex-card-detail-identity-mismatch", {
+      returnedCardId: detail.id || null,
+      returnedLocalId: detail.localId || null,
+      returnedSetId: detail.set?.id || null,
+    });
+    return null;
+  }
+  if (!detail.image) {
+    report("tcgdex-exact-printing-has-no-image");
+    return null;
+  }
+
+  let base: URL;
+  try { base = new URL(detail.image); }
+  catch { report("tcgdex-image-url-invalid"); return null; }
+  if (base.protocol !== "https:" ||
+      base.hostname !== "assets.tcgdex.net" ||
+      !base.pathname.startsWith("/ja/")) {
+    report("tcgdex-image-url-not-allowed", {
+      imageHost: base.hostname,
+      imagePath: base.pathname,
+    });
+    return null;
+  }
+
+  const imageUrl = tcgdexImageUrl(detail.image);
+  if (!imageUrl) {
+    report("tcgdex-image-url-unavailable");
+    return null;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(imageUrl, {
+      method: "GET", cache: "no-store", signal: controller.signal,
+    });
+    const contentType = (response.headers.get("content-type") || "").toLowerCase();
+    if (!response.ok || !contentType.startsWith("image/")) {
+      report("tcgdex-image-response-not-verified", {
+        imageHttpStatus: response.status,
+        imageContentType: contentType || null,
+      });
+      await response.body?.cancel();
+      return null;
+    }
+    await response.body?.cancel();
+  } catch {
+    report("tcgdex-image-fetch-failed-or-timed-out");
+    return null;
+  } finally { clearTimeout(timer); }
+
+  report("verified-tcgdex-artwork-found");
+  return {
+    imageUrl,
+    provider: "tcgdex-jp-verified-vintage-identity",
+    match: { id: providerCardId, setId, cardNumber: collectorNumber },
+    artworkVerified: true,
+  };
 }
 
 type SimplifiedChineseSetIdentity = {
@@ -3886,11 +4157,13 @@ export async function GET(request: NextRequest) {
 
     if (tcgdexLanguage === "ja") {
       const officialJapanDiagnostics: Record<string, unknown> = {};
+      const discoveredJapaneseSetId = suppliedSetId ||
+        await discoverJapaneseSetId(resolverSetName);
       const jpSetScoped =
         await resolveJapaneseSetScopedImage({
           name: canonicalName,
           setName: resolverSetName,
-          setId: suppliedSetId,
+          setId: discoveredJapaneseSetId,
           cardNumber,
         });
 
@@ -3934,7 +4207,7 @@ export async function GET(request: NextRequest) {
         ] || [];
 
       let officialJapanSetId =
-        suppliedSetId;
+        discoveredJapaneseSetId;
 
       // Backward compatibility for older callers that do not yet send setId.
       if (!officialJapanSetId && jpAliases.length) {
@@ -4036,7 +4309,7 @@ export async function GET(request: NextRequest) {
       // Never fall through to a global localId search when we know the set.
       const recognizedJpSet =
         Boolean(
-          suppliedSetId ||
+          discoveredJapaneseSetId ||
           JP_SET_NAME_ALIASES[
             normalizeMetadataText(
               resolverSetName || ""
@@ -4045,6 +4318,48 @@ export async function GET(request: NextRequest) {
         );
 
       if (recognizedJpSet) {
+        const vintageIdentity = discoveredJapaneseSetId &&
+          /^PMCG[1-9]$/i.test(discoveredJapaneseSetId)
+          ? await inspectJapaneseVintageIdentity({
+              setId: discoveredJapaneseSetId,
+              name: canonicalName,
+              suppliedNumber: cardNumber,
+            })
+          : null;
+        const vintageArtworkDiagnostics: Record<string, unknown> = {
+          status: "not-attempted-identity-not-verified",
+        };
+        // V8: the supplied Collectr number may be a Pokédex number.
+        // Retry artwork ONLY using the independently verified Japanese identity.
+        if (vintageIdentity &&
+            "identityVerified" in vintageIdentity &&
+            vintageIdentity.identityVerified === true &&
+            "candidateProviderCardId" in vintageIdentity &&
+            typeof vintageIdentity.candidateProviderCardId === "string" &&
+            "candidateCollectorNumber" in vintageIdentity &&
+            typeof vintageIdentity.candidateCollectorNumber === "string" &&
+            typeof vintageIdentity.providerSetId === "string") {
+          const verifiedArtwork = await resolveVerifiedVintageJapaneseArtwork({
+            setId: vintageIdentity.providerSetId,
+            collectorNumber: vintageIdentity.candidateCollectorNumber,
+            providerCardId: vintageIdentity.candidateProviderCardId,
+            diagnostics: vintageArtworkDiagnostics,
+          });
+          if (verifiedArtwork) {
+            return NextResponse.json({
+              ok: true,
+              imageUrl: verifiedArtwork.imageUrl,
+              provider: verifiedArtwork.provider,
+              match: verifiedArtwork.match,
+              regionalArtworkVerified: true,
+              diagnostics: {
+                discoveredJapaneseSetId,
+                vintageIdentity: { ...vintageIdentity, artworkVerified: true },
+                vintageArtwork: vintageArtworkDiagnostics,
+              },
+            });
+          }
+        }
         return NextResponse.json({
           ok: false,
           imageUrl: null,
@@ -4059,11 +4374,14 @@ export async function GET(request: NextRequest) {
             requestedSet:
               setName || null,
             suppliedSetId,
+            discoveredJapaneseSetId,
             resolverSetName:
               resolverSetName || null,
             requestedNumber:
               cardNumber || null,
             officialJapan: officialJapanDiagnostics,
+            vintageIdentity,
+            vintageArtwork: vintageArtworkDiagnostics,
           },
         });
       }

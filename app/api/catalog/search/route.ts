@@ -57,7 +57,8 @@ type SetCandidate = {
   score: number;
 };
 
-const PAGE_SIZE = 20;
+const DEFAULT_PAGE_SIZE = 20;
+const MAX_PAGE_SIZE = 50;
 
 const STOP_WORDS = new Set([
   "from",
@@ -193,6 +194,11 @@ export async function GET(
         ) || "1"
       );
 
+    const requestedPageSize = Number(request.nextUrl.searchParams.get("pageSize") || String(DEFAULT_PAGE_SIZE));
+    const pageSize = Number.isFinite(requestedPageSize)
+      ? Math.min(MAX_PAGE_SIZE, Math.max(1, Math.floor(requestedPageSize)))
+      : DEFAULT_PAGE_SIZE;
+
     const page =
       Number.isFinite(requestedPage) &&
       requestedPage > 0
@@ -283,9 +289,9 @@ export async function GET(
     }
 
     const start =
-      (page - 1) * PAGE_SIZE;
+      (page - 1) * pageSize;
     const end =
-      start + PAGE_SIZE;
+      start + pageSize;
 
     const pageRows =
       matchingCards.slice(
@@ -311,8 +317,10 @@ export async function GET(
     return NextResponse.json({
       query,
       page,
-      pageSize: PAGE_SIZE,
+      pageSize,
       count: enrichedResults.length,
+      total: matchingCards.length,
+      totalPages: Math.ceil(matchingCards.length / pageSize),
       hasMore:
         end < matchingCards.length,
 
@@ -1194,8 +1202,10 @@ function normalizeText(
       /pokémon/g,
       "pokemon"
     )
+    // Preserve Unicode letters, numbers, and combining marks so
+    // Japanese/Chinese names remain searchable alongside English.
     .replace(
-      /[^a-z0-9]+/g,
+      /[^\p{L}\p{N}\p{M}]+/gu,
       " "
     )
     .trim()

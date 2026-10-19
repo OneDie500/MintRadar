@@ -73,11 +73,11 @@ function matchesUniversalCatalogQuery(card: CatalogCard, query: string): boolean
     value.normalize("NFKD")
       .toLowerCase()
       .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
       .trim();
 
   const queryTokens = normalize(query).split(/\s+/).filter(Boolean);
-  if (queryTokens.length < 2) return true;
+  if (queryTokens.length === 0) return false;
 
   const searchable = normalize([
     card.name,
@@ -139,6 +139,7 @@ const CATALOGS: CatalogOption[] = [
 type PokemonImageFallbackResponse = {
   ok?: boolean;
   imageUrl?: string | null;
+  regionalArtworkVerified?: boolean;
 };
 
 const pokemonImageFallbackCache = new Map<string, string | null>();
@@ -242,10 +243,17 @@ async function requestPokemonFallbackImage({
       const payload =
         (await response.json()) as PokemonImageFallbackResponse;
 
-      const imageUrl =
-        payload.ok && payload.imageUrl
-          ? payload.imageUrl
-          : null;
+       // Vintage JP printings must never accept an unverified regional image.
+       // Modern JP and other-language behavior remains unchanged.
+       const vintageJapanese =
+         /^(?:PMCG[1-9]|PCG[1-9])$/i.test((setId || "").trim()) ||
+         (/^(?:ja|jp|japanese)$/i.test((language || "").trim()) &&
+           /^(?:team rocket|rocket gang)\s*\(japanese\)$/i.test((setName || "").trim()));
+       const imageUrl =
+         payload.ok && payload.imageUrl &&
+         (!vintageJapanese || payload.regionalArtworkVerified === true)
+           ? payload.imageUrl
+           : null;
 
       if (imageUrl) {
         pokemonImageFallbackCache.set(key, imageUrl);
@@ -554,11 +562,7 @@ export default function Home() {
         };
 
         const selectedRoutes =
-          activeCategory === "All"
-            ? Object.values(routes)
-            : routes[activeCategory]
-            ? [routes[activeCategory]]
-            : [];
+          Object.values(routes);
 
         if (selectedRoutes.length === 0) {
           if (requestId === catalogSearchRequestId.current) {
@@ -656,11 +660,9 @@ export default function Home() {
         });
 
         const catalogMatches = Array.from(unique.values());
-        const relevantResults = activeCategory === "All"
-          ? catalogMatches.filter((card) => matchesUniversalCatalogQuery(card, query))
-          : catalogMatches;
+        const relevantResults = catalogMatches.filter((card) => matchesUniversalCatalogQuery(card, query));
 
-        setCatalogResults(relevantResults.slice(0, 60));
+        setCatalogResults(relevantResults.slice(0, 20));
 
         if (
           responses.every(
@@ -698,7 +700,7 @@ export default function Home() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [searchTerm, activeCategory]);
+  }, [searchTerm]);
 
   async function addToWishlist(card: CatalogCard) {
     const key = `${card.data_source}:${card.external_id}`;
@@ -1133,13 +1135,20 @@ export default function Home() {
                   <CatalogCardView
                     key={key}
                     card={card}
-                    cardId={liveCardIds.get(key) || null}
+                    cardId={liveCardIds.get(legacyKey) || null}
                     wished={wished}
                     busy={wishlistBusy === key}
                     onWishlist={() => addToWishlist(card)}
                   />
                 );
               })}
+            </div>
+          )}
+          {!catalogLoading && !catalogError && searchTerm.trim().length >= 2 && catalogResults.length > 0 && (
+            <div className="mt-7 text-center">
+              <Link href={`/catalog?q=${encodeURIComponent(searchTerm.trim())}`} className="inline-flex rounded-xl border border-emerald-400 bg-emerald-400 px-6 py-3 font-black text-black hover:bg-emerald-300 transition">
+                View All {searchTerm.trim()} →
+              </Link>
             </div>
           )}
         </section>
@@ -1323,6 +1332,7 @@ function HomeCard({
             category={card.category}
             setName={card.set_name}
             cardNumber={card.card_number}
+            language={card.language}
             className="w-full h-full object-contain p-3 group-hover:scale-[1.03] transition duration-200"
           />
 

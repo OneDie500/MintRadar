@@ -258,6 +258,10 @@ function VendorCardImage({ card }: { card?: Card | null }) {
   const sportsCard = isSportsCategory(card?.category);
   const pokemonCard = isPokemonCategory(card?.category);
   const onePieceCard = isOnePieceCategory(card?.category);
+  const japaneseOnePieceCard = onePieceCard && (
+    card?.language?.trim().toUpperCase() === "JP" ||
+    /\(JP\)|\bJapanese\b/i.test(`${card?.set_name || ""} ${card?.name || ""}`)
+  );
   const nonEnglishPokemonCard = pokemonCard &&
     Boolean(card?.language?.trim()) &&
     !["EN", "ENG", "ENGLISH"].includes(card?.language?.trim().toUpperCase() || "");
@@ -274,7 +278,7 @@ function VendorCardImage({ card }: { card?: Card | null }) {
   useEffect(() => {
     let active = true;
     const controller = new AbortController();
-    const importedImage = nonEnglishPokemonCard ? null : card?.image_url?.trim() || null;
+    const importedImage = (nonEnglishPokemonCard || japaneseOnePieceCard) ? null : card?.image_url?.trim() || null;
     backupImageRef.current = importedImage;
     setAttempted(false);
     setImageFailed(false);
@@ -303,8 +307,8 @@ function VendorCardImage({ card }: { card?: Card | null }) {
           name: card.name.trim(),
           setName: card.set_name?.trim() || "",
           cardNumber: card.card_number.trim(),
-          variant: card.variant?.trim() || card.finish?.trim() || "",
-          language: card.language?.trim() || "",
+          variant: [card.variant, card.finish].filter(Boolean).join(" ").trim(),
+          language: japaneseOnePieceCard ? "JP" : card.language?.trim() || "",
         });
         url = `/api/catalog/onepiece-image-fallback?${params.toString()}`;
       } else if (sportsCard && card?.external_id?.trim()) {
@@ -318,10 +322,10 @@ function VendorCardImage({ card }: { card?: Card | null }) {
       try {
         const response = await fetch(url, { signal: controller.signal, cache: "no-store" });
         const result = response.ok ? await response.json() as {
-          ok?: boolean; imageUrl?: string | null; reason?: string;
+          ok?: boolean; imageUrl?: string | null; reason?: string; regionalArtworkVerified?: boolean;
         } : null;
         if (!active) return;
-        if (result?.ok && result.imageUrl?.trim()) {
+        if (result?.ok && result.imageUrl?.trim() && (!japaneseOnePieceCard || result.regionalArtworkVerified === true)) {
           // Bandai images can open in a tab but fail as cross-site <img> requests.
           // Serve official Japanese card art through our same-origin image proxy.
           const resolvedImage = result.imageUrl.trim();
@@ -375,8 +379,8 @@ function VendorCardImage({ card }: { card?: Card | null }) {
       alt={vendorPokemonDisplayName(card) || "Card"}
       className="w-full h-full object-contain"
       onError={() => {
-        // If the resolved provider URL fails, try the imported URL once,
-        // but never use an English import as a JP/CN image fallback.
+        // Never substitute an unverified imported image for JP One Piece artwork.
+        // The resolver is authoritative for these cards.
         const backup = backupImageRef.current;
         if (pokemonCard && backup && currentSrc !== backup) {
           setCurrentSrc(backup);

@@ -23,6 +23,8 @@ type CatalogType =
 type CatalogCard = {
   external_id: string;
   data_source: string;
+  language?: string | null;
+  canonical_name?: string | null;
 
   name?: string | null;
   set_name?: string | null;
@@ -64,6 +66,20 @@ type PendingListingPhoto = {
   file: File;
   imageType: ListingPhotoType;
 };
+
+function catalogCardKey(card: CatalogCard): string {
+  return [card.data_source, card.language || "", card.external_id].join(":");
+}
+
+function uniqueCatalogCards(cards: CatalogCard[]): CatalogCard[] {
+  const unique = new Map<string, CatalogCard>();
+  for (const card of cards) {
+    if (!card.external_id || !card.data_source) continue;
+    const key = catalogCardKey(card);
+    if (!unique.has(key)) unique.set(key, card);
+  }
+  return Array.from(unique.values());
+}
 
 const MAX_DETAIL_PHOTOS = 4;
 const MAX_LISTING_PHOTO_BYTES = 10 * 1024 * 1024;
@@ -608,6 +624,27 @@ export default function AddInventoryPage() {
   const [photoError, setPhotoError] =
     useState("");
 
+  // Receive an exact catalog selection from the full browser tab.
+  // This tab never navigates, so price, grading, notes and photos remain intact.
+  useEffect(() => {
+    function receiveCatalogSelection(event: StorageEvent) {
+      if (event.key !== "mintradar:vendor-catalog-selection" || !event.newValue) return;
+      try {
+        const payload = JSON.parse(event.newValue) as { card?: CatalogCard; category?: CatalogType };
+        if (!payload.card?.external_id || !payload.card?.data_source) return;
+        if (payload.category) setCatalogType(payload.category);
+        setSelectedCard(payload.card);
+        setEdition(payload.card.edition || "");
+        setFinish(payload.card.category === "Sports" ? payload.card.parallel_name || payload.card.finish || "" : payload.card.finish || "");
+        setPublishError("");
+        setPublishSuccess("");
+        window.setTimeout(() => document.getElementById("selected-card")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+      } catch (error) { console.error("Catalog selection could not be received", error); }
+    }
+    window.addEventListener("storage", receiveCatalogSelection);
+    return () => window.removeEventListener("storage", receiveCatalogSelection);
+  }, []);
+
   // -----------------------------------------
   // BACK TO TOP
   // -----------------------------------------
@@ -783,9 +820,7 @@ export default function AddInventoryPage() {
             );
           }
 
-          setResults(
-            data.results || []
-          );
+          setResults(uniqueCatalogCards(data.results || []));
 
           setHasMore(
             Boolean(data.hasMore)
@@ -896,33 +931,8 @@ export default function AddInventoryPage() {
         );
       }
 
-      setResults(
-        (current) => {
-          const existingIds =
-            new Set(
-              current.map(
-                (card) =>
-                  card.external_id
-              )
-            );
-
-          const newCards =
-            (
-              data.results || []
-            ).filter(
-              (
-                card: CatalogCard
-              ) =>
-                !existingIds.has(
-                  card.external_id
-                )
-            );
-
-          return [
-            ...current,
-            ...newCards,
-          ];
-        }
+      setResults((current) =>
+        uniqueCatalogCards([...current, ...(data.results || [])])
       );
 
       setPage(nextPage);
@@ -2185,14 +2195,12 @@ export default function AddInventoryPage() {
 
                   <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
 
-                    {results.map(
+                    {results.slice(0, 20).map(
                       (
                         card
                       ) => (
                         <button
-                          key={
-                            card.external_id
-                          }
+                          key={catalogCardKey(card)}
                           type="button"
                           onClick={() =>
                             selectCard(
@@ -2298,7 +2306,17 @@ export default function AddInventoryPage() {
 
                   </div>
 
-                  {hasMore && (
+                   {searchTerm.trim().length >= 2 && (
+                     <div className="text-center mt-6">
+                       <a href={`/catalog?q=${encodeURIComponent(searchTerm.trim())}&category=${encodeURIComponent(catalogType)}&mode=vendor`}
+                         target="_blank" rel="noopener noreferrer"
+                         className="inline-flex rounded-xl bg-emerald-400 px-6 py-3 font-black text-black hover:bg-emerald-300 transition">
+                         View All {searchTerm.trim()} ↗
+                       </a>
+                       <p className="text-xs text-zinc-500 mt-2">Opens in a new tab so your listing details and photos stay here.</p>
+                     </div>
+                   )}
+                   {false && hasMore && (
                     <div className="text-center mt-6">
 
                       <button
