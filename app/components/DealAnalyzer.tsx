@@ -947,7 +947,31 @@ function CatalogCardSearch({
 
 type DealMode = "buy" | "trade";
 type ScanMode = "single" | "continuous";
-type ScanCapture = { id: string; image: string; matched: boolean };
+type ScanPrice = { printing?: string; market_price?: number | null; low_price?: number | null; median_price?: number | null; last_updated_at?: string | null };
+type ScanCandidate = { card_id?: number; tcgplayer_id?: number; name?: string; number?: string; rarity?: string; image_url?: string; suggested_printing?: string; set?: { name?: string }; game?: { slug?: string; name?: string }; prices?: ScanPrice[] };
+type ScanResult = { ok?: boolean; error?: string; data?: { status?: string; message?: string | null; candidates?: ScanCandidate[]; warnings?: string[] }; meta?: { scans_remaining?: number } };
+type ScanCapture = { id: string; image: string; matched: boolean; status: "identifying" | "review" | "error" | "added"; result?: ScanResult; error?: string; selectedIndex: number };
+
+function scanCandidatePrice(candidate: ScanCandidate): ScanPrice | null {
+  return candidate.prices?.find(price => price.printing === candidate.suggested_printing) ?? candidate.prices?.[0] ?? null;
+}
+function scanGameType(candidate: ScanCandidate): CatalogType {
+  const slug = (candidate.game?.slug ?? candidate.game?.name ?? "").toLowerCase();
+  if (slug.includes("magic")) return "Magic: The Gathering";
+  if (slug.includes("yugioh") || slug.includes("yu-gi")) return "Yu-Gi-Oh!";
+  if (slug.includes("lorcana")) return "Lorcana";
+  if (slug.includes("onepiece") || slug.includes("one piece")) return "One Piece";
+  return "Pokemon";
+}
+function dataUrlToFile(dataUrl: string): File {
+  const [header, base64] = dataUrl.split(",");
+  if (!header || !base64 || !header.includes("base64")) throw new Error("Camera returned an invalid image.");
+  const mime = header.match(/^data:([^;]+)/)?.[1] ?? "image/jpeg";
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new File([bytes], "mintradar-scan.jpg", { type: mime });
+}
 
 function clampPercentage(value: number) {
   return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
@@ -969,11 +993,13 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
   const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const fileRef = useRef<HTMLInputElement | null>(null);
   const nativeCameraRef = useRef(false);
   const nativeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nativeBusyRef = useRef(false);
   const [nativeCameraBusy, setNativeCameraBusy] = useState(false);
+  const [identifying, setIdentifying] = useState(false);
+  const scanRequestRef = useRef(false);
+  const scanSessionRef = useRef(0);
 
   const activeInventory = useMemo(() => {
     if (!open || mode !== "trade" || targetInventory) return [];
@@ -1015,9 +1041,10 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     setTargetInventory(null);
     setTargetPrice("");
     setInventorySearch("");
+    stopCamera();
+    scanSessionRef.current += 1;
     setCaptures([]);
     setSelectedCaptureId(null);
-    stopCamera();
   }
   function stopCamera() {
     if (nativeTimerRef.current) {
@@ -1040,12 +1067,11 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
 
   async function startCamera() {
     setCameraError("");
-    if (nativeBusyRef.current) return;
+    if (nativeBusyRef.current || scanRequestRef.current) return;
 
     if (Capacitor.isNativePlatform()) {
-      // Phase 1 native smoke test: the native preview sits above the WebView.
-      // Capture automatically after a short countdown so no hidden WebView
-      // button is required. This is NOT card recognition or continuous scanning.
+      // Native preview sits above the WebView; capture after a brief alignment window.
+      // Stop the preview before showing the identification/confirmation UI.
       nativeBusyRef.current = true;
       setNativeCameraBusy(true);
       try {
@@ -1087,7 +1113,7 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     }
 
     if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraError("Live camera is unavailable here. Use Take Photo / Upload instead.");
+      setCameraError("Live camera is unavailable on this device or browser.");
       return;
     }
     try {
@@ -1115,13 +1141,69 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     }
   }, []);
 
-  function addCapture(image: string) {
+  async function addCapture(image: string) {
+    if (scanRequestRef.current) return;
     const id = crypto.randomUUID();
-    setCaptures(current => [...current, { id, image, matched: false }]);
+    const session = scanSessionRef.current;
+    scanRequestRef.current = true;
+    setIdentifying(true);
+    setCameraError("");
+    setCaptures(current => [...current, { id, image, matched: false, status: "identifying", selectedIndex: 0 }]);
     setSelectedCaptureId(id);
-    // Continuous mode keeps the camera running for the next capture.
-    if (scanMode === "single" && !Capacitor.isNativePlatform()) stopCamera();
+    // A live browser camera may remain open, but we never send overlapping recognition requests.
+    if (!Capacitor.isNativePlatform()) stopCamera();
+    try {
+      const file = dataUrlToFile(image);
+      if (file.size > 8 * 1024 * 1024) throw new Error("Captured image is too large (8 MB maximum).");
+      const form = new FormData();
+      form.append("image", file);
+      const response = await fetch("/api/scanner/identify", { method: "POST", body: form, cache: "no-store" });
+      const payload = await response.json() as ScanResult;
+      if (!response.ok || !payload.ok) throw new Error(payload.error || "Card recognition failed.");
+      if (session !== scanSessionRef.current) return;
+      const hasCandidates = (payload.data?.candidates?.length ?? 0) > 0;
+      const needsRetake = payload.data?.status === "retake" || !hasCandidates;
+      setCaptures(current => current.map(item => item.id === id ? {
+        ...item, result: payload, status: needsRetake ? "error" : "review",
+        error: needsRetake ? (payload.data?.message || "No reliable match. Try scanning again.") : undefined,
+      } : item));
+    } catch (error) {
+      if (session !== scanSessionRef.current) return;
+      setCaptures(current => current.map(item => item.id === id ? {
+        ...item, status: "error", error: error instanceof Error ? error.message : "Card recognition failed.",
+      } : item));
+    } finally {
+      scanRequestRef.current = false;
+      if (session === scanSessionRef.current) setIdentifying(false);
+    }
   }
+
+  function confirmScan(capture: ScanCapture) {
+    if (capture.matched || capture.status !== "review") return;
+    const candidate = capture.result?.data?.candidates?.[capture.selectedIndex];
+    if (!candidate?.name || !candidate.number) return;
+    const price = scanCandidatePrice(candidate);
+    const gameType = scanGameType(candidate);
+    const card: CatalogCard = {
+      external_id: candidate.tcgplayer_id != null ? `tcgplayer-${candidate.tcgplayer_id}` : `tcgapi-${candidate.card_id ?? crypto.randomUUID()}`,
+      data_source: "tcgapi", name: candidate.name, set_name: candidate.set?.name ?? "",
+      card_number: candidate.number, image_url: candidate.image_url ?? null,
+      category: gameType, rarity: candidate.rarity ?? null,
+      finish: price?.printing ?? candidate.suggested_printing ?? null,
+    };
+    const row: AnalyzerCardRow = {
+      ...newRow(), card, catalogType: gameType, percentage: defaultPercentage,
+      marketValue: typeof price?.market_price === "number" && Number.isFinite(price.market_price)
+        ? String(price.market_price) : "",
+    };
+    setRows(current => {
+      const firstEmpty = current.findIndex(item => !item.card && !item.marketValue.trim());
+      if (firstEmpty < 0) return [...current, row];
+      return current.map((item, index) => index === firstEmpty ? { ...row, localId: item.localId } : item);
+    });
+    setCaptures(current => current.map(item => item.id === capture.id ? { ...item, matched: true, status: "added" } : item));
+  }
+
   function captureFrame() {
     const video = videoRef.current;
     if (!video || !video.videoWidth) {
@@ -1135,21 +1217,12 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    addCapture(canvas.toDataURL("image/jpeg", 0.78));
+    void addCapture(canvas.toDataURL("image/jpeg", 0.78));
   }
-  function handleFile(file?: File) {
-    if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      setCameraError("Choose an image file.");
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") addCapture(reader.result);
-    };
-    reader.readAsDataURL(file);
-  }
+
   const selectedCapture = captures.find(capture => capture.id === selectedCaptureId) ?? null;
+  const selectedCandidate = selectedCapture?.result?.data?.candidates?.[selectedCapture.selectedIndex] ?? null;
+  const selectedPrice = selectedCandidate ? scanCandidatePrice(selectedCandidate) : null;
 
   const inputClass = "w-full rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-emerald-400/60";
   const buttonClass = "rounded-xl border border-zinc-800 bg-black px-3 py-2 text-xs font-black text-zinc-300 transition hover:border-emerald-400/50 hover:text-white";
@@ -1175,14 +1248,35 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
             <div className="mt-3 flex flex-wrap gap-2">{QUICK_PERCENTAGES.map(rate => <button key={rate} type="button" onClick={() => applyDefault(rate)} className={`rounded-lg px-3 py-2 text-xs font-black ${defaultPercentage === rate ? "bg-emerald-400 text-black" : "border border-zinc-800 bg-black text-zinc-400"}`}>{rate}%</button>)}</div>
           </section>
 
-          <section className="rounded-2xl border border-zinc-800 bg-black p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-lg font-black">Camera Intake</h3><p className="text-xs text-zinc-500">Native iPhone preview test: opens the camera, waits four seconds, then captures automatically. Recognition is not connected yet.</p></div><div className="flex gap-2"><button type="button" onClick={() => { setScanMode("single"); stopCamera(); }} className={`${buttonClass} ${scanMode === "single" ? "!border-emerald-400 !text-emerald-300" : ""}`}>Single</button><button type="button" onClick={() => { setScanMode("continuous"); stopCamera(); }} className={`${buttonClass} ${scanMode === "continuous" ? "!border-emerald-400 !text-emerald-300" : ""}`}>Continuous</button></div></div>
-            <div className="mt-3 flex flex-wrap gap-2"><button type="button" className={buttonClass} disabled={nativeCameraBusy} onClick={() => { if (scannerOpen) stopCamera(); else void startCamera(); }}>{nativeCameraBusy ? "Native Camera Active (4s Auto Capture)" : scannerOpen ? "Stop Camera" : "Open Camera"}</button><button type="button" className={buttonClass} onClick={() => fileRef.current?.click()}>Take Photo / Upload</button><input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { handleFile(e.target.files?.[0]); e.target.value = ""; }}/></div>
-            {Capacitor.isNativePlatform() && <p className="mt-2 text-xs text-zinc-500">Native camera preview will temporarily cover the app and automatically capture after 4 seconds. Keep the card centered. This is a camera connectivity test, not the finished continuous scanner.</p>}
+          <section className="rounded-2xl border border-emerald-400/25 bg-black p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div><h3 className="text-lg font-black">MintRadar Live Scanner</h3><p className="text-xs text-zinc-500">Scan directly with your camera. Recognized cards flow into the deal automatically after confirmation.</p></div>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => { setScanMode("single"); stopCamera(); }} className={`${buttonClass} ${scanMode === "single" ? "!border-emerald-400 !text-emerald-300" : ""}`}>Single</button>
+                <button type="button" onClick={() => { setScanMode("continuous"); stopCamera(); }} className={`${buttonClass} ${scanMode === "continuous" ? "!border-emerald-400 !text-emerald-300" : ""}`}>Scan More</button>
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button type="button" disabled={nativeCameraBusy || identifying} onClick={() => { if (scannerOpen) stopCamera(); else void startCamera(); }} className="rounded-xl bg-emerald-400 px-5 py-3 text-sm font-black text-black disabled:opacity-50">
+                {identifying ? "Identifying Card..." : nativeCameraBusy ? "Camera Active · Align Card" : scannerOpen ? "Stop Camera" : "Open Live Camera"}
+              </button>
+              {scannerOpen && !Capacitor.isNativePlatform() && <button type="button" disabled={identifying} onClick={captureFrame} className={buttonClass}>Scan Card</button>}
+            </div>
+            {Capacitor.isNativePlatform() && <p className="mt-2 text-xs text-zinc-500">iPhone camera: hold the card centered for approximately 4 seconds. The camera captures automatically, then opens the match review. This is timed capture, not yet motion-based card detection.</p>}
             {cameraError && <p role="alert" className="mt-3 text-sm text-amber-300">{cameraError}</p>}
-            {scannerOpen && !Capacitor.isNativePlatform() && <div className="mt-3 max-w-xl space-y-2"><video ref={videoRef} autoPlay muted playsInline className="aspect-[4/3] w-full rounded-xl bg-zinc-900 object-cover"/><button type="button" onClick={captureFrame} className="w-full rounded-xl bg-emerald-400 px-4 py-3 font-black text-black">Capture Card {scanMode === "continuous" ? "• Keep Scanning" : ""}</button></div>}
-            {captures.length > 0 && <div className="mt-4"><p className="mb-2 text-xs font-bold text-zinc-400">Captured images ({captures.length}) • Tap one to review</p><div className="flex gap-2 overflow-x-auto pb-2">{captures.map(capture => <button key={capture.id} type="button" onClick={() => setSelectedCaptureId(capture.id)} className={`relative h-24 w-20 shrink-0 overflow-hidden rounded-lg border-2 ${selectedCaptureId === capture.id ? "border-emerald-400" : "border-zinc-800"}`}><img src={capture.image} alt="Captured card for manual identification" className="h-full w-full object-cover"/>{capture.matched && <span className="absolute bottom-0 inset-x-0 bg-emerald-500 text-[9px] font-black text-black">Added</span>}</button>)}</div></div>}
-            {selectedCapture && <div className="mt-3 rounded-xl border border-zinc-800 p-3"><div className="flex items-center justify-between gap-2"><p className="text-sm font-black">Review captured card</p><button type="button" onClick={() => { setCaptures(current => current.filter(c => c.id !== selectedCapture.id)); setSelectedCaptureId(null); }} className={buttonClass}>Discard Image</button></div><p className="mt-1 text-xs text-amber-300">This image has not been automatically identified. Search the catalog in an empty card row below, then confirm the exact printing.</p><button type="button" onClick={() => { addRow(); setSelectedCaptureId(null); }} className={`${buttonClass} mt-2`}>Add Empty Row to Identify</button></div>}
+            {scannerOpen && !Capacitor.isNativePlatform() && <video ref={videoRef} autoPlay muted playsInline className="mt-3 aspect-[4/3] w-full max-w-xl rounded-xl bg-zinc-900 object-cover"/>}
+            {captures.length > 0 && <div className="mt-4"><p className="mb-2 text-xs font-bold text-zinc-400">Scans ({captures.length}) · Tap to review</p><div className="flex gap-2 overflow-x-auto pb-2">{captures.map(capture => <button key={capture.id} type="button" onClick={() => setSelectedCaptureId(capture.id)} className={`relative h-24 w-20 shrink-0 overflow-hidden rounded-lg border-2 ${selectedCaptureId === capture.id ? "border-emerald-400" : "border-zinc-800"}`}><img src={capture.image} alt="Scanned card" className="h-full w-full object-cover"/>{capture.matched && <span className="absolute inset-x-0 bottom-0 bg-emerald-400 text-[9px] font-black text-black">Added</span>}{capture.status === "error" && <span className="absolute inset-x-0 bottom-0 bg-amber-400 text-[9px] font-black text-black">Retry</span>}</button>)}</div></div>}
+            {selectedCapture && <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950 p-4">
+              <div className="flex items-center justify-between gap-2"><p className="text-sm font-black">{selectedCapture.status === "identifying" ? "Identifying your card..." : selectedCapture.matched ? "Card added to deal" : "Review Card Match"}</p><button type="button" onClick={() => { setCaptures(current => current.filter(c => c.id !== selectedCapture.id)); setSelectedCaptureId(null); }} className={buttonClass}>Dismiss</button></div>
+              {selectedCapture.status === "identifying" && <p className="mt-3 text-sm text-emerald-300">Checking card identity and current market pricing...</p>}
+              {selectedCapture.error && <p role="alert" className="mt-3 text-sm text-amber-300">{selectedCapture.error}</p>}
+              {selectedCapture.result?.data?.status === "ambiguous" && <p className="mt-2 text-xs text-amber-300">Multiple possible matches. Verify the exact printing before confirming.</p>}
+              {(selectedCapture.result?.data?.candidates?.length ?? 0) > 1 && !selectedCapture.matched && <div className="mt-3 space-y-2">{selectedCapture.result?.data?.candidates?.map((candidate, index) => <button key={`${candidate.card_id ?? index}-${index}`} type="button" onClick={() => setCaptures(current => current.map(c => c.id === selectedCapture.id ? { ...c, selectedIndex: index } : c))} className={`block w-full rounded-lg border p-2 text-left text-xs ${selectedCapture.selectedIndex === index ? "border-emerald-400 text-emerald-200" : "border-zinc-800 text-zinc-400"}`}>{candidate.name} · {candidate.set?.name} · #{candidate.number}</button>)}</div>}
+              {selectedCandidate && <div className="mt-3 flex gap-4"><div className="h-36 w-24 shrink-0 overflow-hidden rounded-lg bg-black">{selectedCandidate.image_url ? <img src={selectedCandidate.image_url} alt={selectedCandidate.name ?? "Matched card"} className="h-full w-full object-contain"/> : <img src={selectedCapture.image} alt="Captured card" className="h-full w-full object-contain"/>}</div><div className="min-w-0 flex-1"><p className="font-black">{selectedCandidate.name}</p><p className="mt-1 text-xs text-zinc-400">{selectedCandidate.set?.name} · #{selectedCandidate.number}</p><p className="mt-1 text-xs text-zinc-500">{selectedCandidate.rarity} · {selectedPrice?.printing ?? selectedCandidate.suggested_printing ?? "Printing not specified"}</p><p className="mt-3 text-xs text-zinc-500">TCGplayer Market Price</p><p className="text-2xl font-black text-emerald-400">{typeof selectedPrice?.market_price === "number" ? money(selectedPrice.market_price) : "Not available"}</p><p className="mt-1 text-xs text-zinc-500">Offer at {defaultPercentage}%: {typeof selectedPrice?.market_price === "number" ? money(selectedPrice.market_price * defaultPercentage / 100) : "Enter market price manually"}</p></div></div>}
+              {typeof selectedCapture.result?.meta?.scans_remaining === "number" && <p className="mt-2 text-xs text-zinc-500">API test credits remaining: {selectedCapture.result.meta.scans_remaining}</p>}
+              {selectedCapture.status === "review" && <button type="button" disabled={!selectedCandidate?.name || !selectedCandidate.number} onClick={() => confirmScan(selectedCapture)} className="mt-4 w-full rounded-xl bg-emerald-400 px-4 py-3 font-black text-black disabled:opacity-40">Confirm Card · Add to Deal</button>}
+              <div className="mt-3 flex flex-wrap gap-2"><button type="button" disabled={identifying || nativeCameraBusy} onClick={() => void startCamera()} className={buttonClass}>{selectedCapture.matched || scanMode === "continuous" ? "Scan Next Card" : "Rescan Card"}</button><button type="button" onClick={() => { stopCamera(); setSelectedCaptureId(null); }} className={buttonClass}>Done Scanning</button></div>
+            </div>}
           </section>
 
           {mode === "trade" && <section className="rounded-2xl border border-zinc-800 bg-black p-4"><h3 className="text-lg font-black">Your Side of the Trade</h3><p className="mb-3 text-xs text-zinc-500">Choose the inventory item the customer wants. Your item remains at full asking value.</p>
