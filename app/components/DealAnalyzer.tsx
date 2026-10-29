@@ -1141,7 +1141,7 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     void startCamera();
     // Run only on entering the scanner view, not when camera state changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, view, scanMode]);
+  }, [open, view, scanMode, qrCandidate]);
 
   function changeScannerMode(next: ScanMode) {
     if (next === scanMode) return;
@@ -1237,25 +1237,45 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     const video = videoRef.current;
     video.srcObject = streamRef.current;
     void video.play().catch(() => setCameraError("Camera playback was blocked. Reopen the scanner."));
-    // BarcodeDetector is supported by recent Chromium browsers, but not every
-    // iOS WebView. When unavailable, the manual QR URL field remains usable.
-    type QRDetector = { detect: (source: HTMLVideoElement) => Promise<Array<{ rawValue: string }>> };
-    const detectorConstructor = (globalThis as typeof globalThis & {
-      BarcodeDetector?: new (options: { formats: string[] }) => QRDetector;
-    }).BarcodeDetector;
-    let detector: QRDetector | null = null;
-    if (scanMode === "qr" && detectorConstructor) {
-      try { detector = new detectorConstructor({ formats: ["qr_code"] }); } catch { /* manual fallback */ }
+    // Decode QR frames locally with jsQR, including iOS WebViews that lack BarcodeDetector.
+    // A QR scan never calls the paid card-recognition endpoint.
+    let cancelled = false;
+    let qrDecoder: typeof import("jsqr").default | null = null;
+    let qrLoading = false;
+    const qrCanvas = document.createElement("canvas");
+    const qrContext = qrCanvas.getContext("2d", { willReadFrequently: true });
+    if (scanMode === "qr") {
+      qrLoading = true;
+      void import("jsqr").then(module => {
+        if (!cancelled) {
+          qrDecoder = module.default;
+          setQrScanMessage("");
+        }
+      }).catch(() => {
+        if (!cancelled) setQrScanMessage("QR reader could not load. Check that jsqr is installed, or paste the listing URL below.");
+      }).finally(() => { qrLoading = false; });
     }
-    if (scanMode === "qr" && !detector) setQrScanMessage("Live QR decoding is unavailable on this device. Paste the label URL below instead.");
     detectionTimerRef.current = setInterval(() => {
-      if (scanRequestRef.current || video.readyState < 2) return;
+      if (cancelled || scanRequestRef.current || video.readyState < 2) return;
       if (scanMode === "qr") {
-        if (!detector || qrBusyRef.current) return;
+        if (!qrDecoder || !qrContext || qrBusyRef.current || qrLoading || qrCandidate) return;
         qrBusyRef.current = true;
-        void detector.detect(video).then(codes => {
-          if (codes.length && codes[0].rawValue) reviewQrValue(codes[0].rawValue);
-        }).catch(() => setQrScanMessage("QR reading failed. Try again or paste the label URL below.")).finally(() => { qrBusyRef.current = false; });
+        try {
+          // Full frame rather than the card crop: QR labels may be anywhere in view.
+          const width = Math.min(800, video.videoWidth);
+          const height = Math.round(width * video.videoHeight / video.videoWidth);
+          if (width < 160 || height < 160) return;
+          if (qrCanvas.width !== width) qrCanvas.width = width;
+          if (qrCanvas.height !== height) qrCanvas.height = height;
+          qrContext.drawImage(video, 0, 0, width, height);
+          const frame = qrContext.getImageData(0, 0, width, height);
+          const code = qrDecoder(frame.data, width, height, { inversionAttempts: "attemptBoth" });
+          if (code?.data && !cancelled) reviewQrValue(code.data);
+        } catch (error) {
+          console.warn("QR frame decode failed:", error);
+        } finally {
+          qrBusyRef.current = false;
+        }
         return;
       }
       const present = cardPresent(video);
@@ -1272,7 +1292,7 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
         void addCapture(canvas.toDataURL("image/jpeg",0.82));
       }
     }, 350);
-    return () => { if (detectionTimerRef.current) clearInterval(detectionTimerRef.current); detectionTimerRef.current=null; };
+    return () => { cancelled = true; if (detectionTimerRef.current) clearInterval(detectionTimerRef.current); detectionTimerRef.current=null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scannerOpen, cameraBackend, selectedCaptureId, scanMode, qrCandidate]);
   useEffect(() => () => {
