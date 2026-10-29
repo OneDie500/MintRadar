@@ -2,6 +2,8 @@
 
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
+import { supabase } from "../../lib/supabase";
+import { decodeListingId } from "../../lib/listing-short-code";
 
 type CatalogType =
   | "Pokemon"
@@ -977,7 +979,7 @@ function clampPercentage(value: number) {
   return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
 }
 
-export default function DealAnalyzer({ inventory }: { inventory: VendorInventorySearchItem[] }) {
+export default function DealAnalyzer({ inventory, vendorId }: { inventory: VendorInventorySearchItem[]; vendorId: string | null }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<DealMode>("buy");
   const [view, setView] = useState<"scanner" | "summary">("scanner");
@@ -997,6 +999,7 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
   const [qrCandidate, setQrCandidate] = useState<VendorInventorySearchItem | null>(null);
   const [qrScanMessage, setQrScanMessage] = useState("");
   const qrBusyRef = useRef(false);
+  const qrLookupRef = useRef(false);
   const [scannerOpen, setScannerOpen] = useState(false);
   const [cameraBackend, setCameraBackend] = useState<"web" | "native" | null>(null);
   const [cameraError, setCameraError] = useState("");
@@ -1153,46 +1156,91 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     setScanMode(next);
   }
 
-  // Existing MintRadar labels use /listing/<uuid>. Only current-vendor inventory
-  // is accepted; the QR is a locator, never proof of ownership or authorization.
-  function resolveQrListing(value: string): VendorInventorySearchItem | null {
-    let id = value.trim();
+  // MintRadar prints /l/<Base62> labels; older labels may use /listing/<UUID>.
+  // A QR is a locator, not authorization. All database lookups are vendor-scoped.
+  function listingIdFromQr(value: string): string | null {
+    let candidate = value.trim();
     try {
-      const url = new URL(id);
-      if (!(["https:", "http:"].includes(url.protocol))) return null;
+      const url = new URL(candidate);
+      if (url.protocol !== "https:" && url.protocol !== "http:") return null;
       const segments = url.pathname.split("/").filter(Boolean);
-      if (segments.length !== 2 || segments[0] !== "listing") return null;
-      id = segments[1];
-    } catch { /* UUID-only labels are also accepted. */ }
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return null;
-    return inventory.find(item => item.id.toLowerCase() === id.toLowerCase()) ?? null;
+      if (segments.length !== 2) return null;
+      if (segments[0] === "listing") candidate = segments[1];
+      else if (segments[0] === "l") candidate = decodeListingId(segments[1]) ?? "";
+      else return null;
+    } catch {
+      // Plain UUIDs and short codes can also be pasted directly.
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(candidate)) {
+        candidate = decodeListingId(candidate) ?? "";
+      }
+    }
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(candidate)
+      ? candidate.toLowerCase() : null;
   }
 
-  function reviewQrValue(value: string) {
-    const item = resolveQrListing(value);
-    if (!item) { setQrScanMessage("This QR does not match a listing in the current vendor inventory."); return; }
-    if (Number(item.quantity ?? 0) <= 0 || item.price == null) {
-      setQrScanMessage("This listing is out of stock or missing an asking price."); return;
-    }
-    if (vendorItems.some(entry => entry.id === item.id)) {
-      setQrScanMessage("This listing is already in the current transaction."); return;
-    }
-    stopCamera();
-    setQrScanMessage("");
-    setQrCandidate(item);
+  async function fetchVendorListing(id: string): Promise<VendorInventorySearchItem | null> {
+    if (!vendorId) throw new Error("Select an active vendor before scanning inventory.");
+    const { data, error } = await supabase.from("inventory")
+      .select(`id, vendor_id, card_id, listing_type, condition, grading_company, grade, cert_number, price, quantity,
+        cards (id, external_id, name, set_name, card_number, image_url, category, rarity, edition, finish)`)
+      .eq("id", id).eq("vendor_id", vendorId).maybeSingle();
+    if (error) throw error;
+    return data as unknown as VendorInventorySearchItem | null;
   }
 
-  function confirmQrCandidate() {
-    if (!qrCandidate) return;
-    const currentItem = inventory.find(item => item.id === qrCandidate.id);
-    if (!currentItem || Number(currentItem.quantity ?? 0) <= 0 || currentItem.price == null || vendorItems.some(item => item.id === qrCandidate.id)) {
-      setQrCandidate(null);
-      setQrScanMessage("Listing is no longer available or is already in this transaction.");
+  async function reviewQrValue(value: string) {
+    if (qrLookupRef.current) return;
+    const id = listingIdFromQr(value);
+    if (!id) {
+      setQrScanMessage("This is not a recognized MintRadar listing QR or ID.");
       return;
     }
-    setVendorItems(current => [...current, currentItem]);
-    setAddedNotice(`${inventoryTitle(currentItem)} added to vendor side`);
-    setQrCandidate(null);
+    if (vendorItems.some(entry => entry.id.toLowerCase() === id)) {
+      setQrScanMessage("This listing is already in the current transaction.");
+      return;
+    }
+    qrLookupRef.current = true;
+    setQrScanMessage("Looking up listing…");
+    try {
+      // Do not trust a possibly truncated or stale dashboard inventory array.
+      const item = await fetchVendorListing(id);
+      if (!item) {
+        setQrScanMessage("Listing not found for the active vendor. Check that this label belongs to the selected vendor.");
+        return;
+      }
+      if (Number(item.quantity ?? 0) <= 0 || item.price == null) {
+        setQrScanMessage("This listing is out of stock or missing an asking price.");
+        return;
+      }
+      stopCamera();
+      setQrScanMessage("");
+      setQrCandidate(item);
+    } catch (error) {
+      setQrScanMessage(error instanceof Error ? error.message : "Could not look up this listing.");
+    } finally {
+      qrLookupRef.current = false;
+    }
+  }
+
+  async function confirmQrCandidate() {
+    if (!qrCandidate || qrLookupRef.current) return;
+    qrLookupRef.current = true;
+    try {
+      const currentItem = await fetchVendorListing(qrCandidate.id);
+      if (!currentItem || Number(currentItem.quantity ?? 0) <= 0 || currentItem.price == null ||
+          vendorItems.some(item => item.id === qrCandidate.id)) {
+        setQrCandidate(null);
+        setQrScanMessage("Listing is no longer available or is already in this transaction.");
+        return;
+      }
+      setVendorItems(current => current.some(item => item.id === currentItem.id) ? current : [...current, currentItem]);
+      setAddedNotice(`${inventoryTitle(currentItem)} added to vendor side`);
+      setQrCandidate(null);
+    } catch (error) {
+      setQrScanMessage(error instanceof Error ? error.message : "Could not verify this listing.");
+    } finally {
+      qrLookupRef.current = false;
+    }
   }
 
   // Conservative, on-device card-shape screening. This does not call the paid API.
@@ -1270,7 +1318,7 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
           qrContext.drawImage(video, 0, 0, width, height);
           const frame = qrContext.getImageData(0, 0, width, height);
           const code = qrDecoder(frame.data, width, height, { inversionAttempts: "attemptBoth" });
-          if (code?.data && !cancelled) reviewQrValue(code.data);
+          if (code?.data && !cancelled && !qrLookupRef.current) void reviewQrValue(code.data);
         } catch (error) {
           console.warn("QR frame decode failed:", error);
         } finally {
@@ -1370,20 +1418,24 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     setAddedNotice(`${candidate.name} added to your deal`);
   }
 
-  function addVendorListing(value: string) {
+  async function addVendorListing(value: string) {
     setQrError("");
-    let listingId = value.trim();
+    const id = listingIdFromQr(value);
+    if (!id) { setQrError("Paste a MintRadar /l/ URL, /listing/ URL, or listing UUID."); return; }
+    if (vendorItems.some(entry => entry.id.toLowerCase() === id)) {
+      setQrError("This listing is already in the trade."); return;
+    }
     try {
-      const parsed = new URL(listingId);
-      const parts = parsed.pathname.split("/").filter(Boolean);
-      if (parts[0] === "listing" && parts[1]) listingId = parts[1];
-    } catch { /* A plain listing ID is also valid. */ }
-    const item = inventory.find(entry => entry.id.toLowerCase() === listingId.toLowerCase());
-    if (!item) { setQrError("Listing not found in the loaded vendor inventory. Paste its full listing URL or UUID."); return; }
-    if (Number(item.quantity ?? 0) <= 0 || item.price == null) { setQrError("This listing is unavailable or has no asking price."); return; }
-    if (vendorItems.some(entry => entry.id === item.id)) { setQrError("This listing is already in the trade."); return; }
-    setVendorItems(current => [...current, item]);
-    setQrText("");
+      const item = await fetchVendorListing(id);
+      if (!item) { setQrError("Listing not found for the active vendor."); return; }
+      if (Number(item.quantity ?? 0) <= 0 || item.price == null) {
+        setQrError("This listing is unavailable or has no asking price."); return;
+      }
+      setVendorItems(current => current.some(entry => entry.id === item.id) ? current : [...current, item]);
+      setQrText("");
+    } catch (error) {
+      setQrError(error instanceof Error ? error.message : "Could not look up this listing.");
+    }
   }
 
   function captureFrame() {
@@ -1432,7 +1484,7 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
               <div className="mt-4 flex justify-between border-t border-zinc-800 pt-4"><span className="font-bold">Total Market Value</span><strong className="text-2xl text-emerald-400">{money(totals.market)}</strong></div>
             </section>
             <section className="rounded-2xl border border-zinc-800 bg-black p-4"><h3 className="text-lg font-black">Offer Preview</h3><div className="mt-4 grid gap-4 sm:grid-cols-2">{([{ title: "Cash Offer", value: cashRate, change: setCashRate, presets: [60,65,70,75,80], amount: cashOffer, label: "Pay Customer" }, { title: "Trade Credit", value: tradeRate, change: setTradeRate, presets: [70,75,80,85,90], amount: tradeCredit, label: "Available Trade Credit" }] as const).map(option => <div key={option.title} className="rounded-xl border border-zinc-800 bg-zinc-950 p-4"><label className="text-sm font-black">{option.title} (%)<input type="number" min="0" max="100" step="any" value={option.value} onChange={e => option.change(clampPercentage(Number(e.target.value)))} className={`${inputClass} mt-2`}/></label><div className="mt-3 flex flex-wrap gap-2">{option.presets.map(rate => <button type="button" key={rate} onClick={() => option.change(rate)} className={buttonClass}>{rate}%</button>)}</div><p className="mt-4 text-xs text-zinc-400">{option.label}</p><p className="text-3xl font-black text-emerald-400">{money(option.amount)}</p></div>)}</div></section>
-            <section className="rounded-2xl border border-zinc-800 bg-black p-4"><h3 className="text-lg font-black">Vendor Inventory · Trade</h3><p className="mt-1 text-xs text-zinc-400">Add a published listing by its MintRadar QR destination URL or listing ID. Only listings loaded for this vendor can be added.</p><div className="mt-3 flex gap-2"><input value={qrText} onChange={e => setQrText(e.target.value)} placeholder="Paste /listing/ URL or listing ID" className={inputClass}/><button type="button" onClick={() => addVendorListing(qrText)} className="rounded-xl bg-emerald-400 px-4 font-black text-black">Add</button></div>{qrError && <p role="alert" className="mt-2 text-xs text-amber-300">{qrError}</p>}<div className="mt-3 max-h-44 space-y-2 overflow-y-auto">{inventory.filter(item => Number(item.quantity ?? 0) > 0 && item.price != null).slice(0, 30).map(item => <button key={item.id} type="button" onClick={() => addVendorListing(item.id)} className="flex w-full justify-between rounded-lg border border-zinc-800 px-3 py-2 text-left text-xs hover:border-emerald-400"><span>{inventoryTitle(item)} · {inventorySubtitle(item)}</span><strong>{money(Number(item.price))} +</strong></button>)}</div>{vendorItems.map(item => <div key={item.id} className="mt-2 flex items-center justify-between rounded-lg bg-zinc-950 p-3 text-sm"><span>{inventoryTitle(item)} · {money(Number(item.price))}</span><button type="button" onClick={() => setVendorItems(current => current.filter(entry => entry.id !== item.id))} className="text-red-300">Remove</button></div>)}<div className="mt-4 space-y-2 border-t border-zinc-800 pt-4"><div className="flex justify-between"><span>Vendor Asking Total</span><strong>{money(vendorTotal)}</strong></div><div className="flex justify-between"><span>Customer Trade Credit</span><strong>{money(tradeCredit)}</strong></div><div className="flex justify-between text-lg font-black"><span>{tradeDifference >= 0 ? "Customer Owes" : "Credit Remaining"}</span><strong className="text-emerald-400">{money(Math.abs(tradeDifference))}</strong></div></div></section>
+            <section className="rounded-2xl border border-zinc-800 bg-black p-4"><h3 className="text-lg font-black">Vendor Inventory · Trade</h3><p className="mt-1 text-xs text-zinc-400">Add a published listing by its MintRadar QR destination URL or listing ID. Listings are verified against the active vendor in Supabase.</p><div className="mt-3 flex gap-2"><input value={qrText} onChange={e => setQrText(e.target.value)} placeholder="Paste /l/ URL, /listing/ URL or UUID" className={inputClass}/><button type="button" onClick={() => addVendorListing(qrText)} className="rounded-xl bg-emerald-400 px-4 font-black text-black">Add</button></div>{qrError && <p role="alert" className="mt-2 text-xs text-amber-300">{qrError}</p>}<div className="mt-3 max-h-44 space-y-2 overflow-y-auto">{inventory.filter(item => Number(item.quantity ?? 0) > 0 && item.price != null).slice(0, 30).map(item => <button key={item.id} type="button" onClick={() => addVendorListing(item.id)} className="flex w-full justify-between rounded-lg border border-zinc-800 px-3 py-2 text-left text-xs hover:border-emerald-400"><span>{inventoryTitle(item)} · {inventorySubtitle(item)}</span><strong>{money(Number(item.price))} +</strong></button>)}</div>{vendorItems.map(item => <div key={item.id} className="mt-2 flex items-center justify-between rounded-lg bg-zinc-950 p-3 text-sm"><span>{inventoryTitle(item)} · {money(Number(item.price))}</span><button type="button" onClick={() => setVendorItems(current => current.filter(entry => entry.id !== item.id))} className="text-red-300">Remove</button></div>)}<div className="mt-4 space-y-2 border-t border-zinc-800 pt-4"><div className="flex justify-between"><span>Vendor Asking Total</span><strong>{money(vendorTotal)}</strong></div><div className="flex justify-between"><span>Customer Trade Credit</span><strong>{money(tradeCredit)}</strong></div><div className="flex justify-between text-lg font-black"><span>{tradeDifference >= 0 ? "Customer Owes" : "Credit Remaining"}</span><strong className="text-emerald-400">{money(Math.abs(tradeDifference))}</strong></div></div></section>
             <p className="text-xs text-zinc-500">Estimate only. No payment, inventory update, or sale is recorded. Verify card identities, prices, and condition before completing a deal.</p>
           </div>}
           {view === "scanner" && <div className="flex min-h-full flex-col">
@@ -1470,7 +1522,7 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
                 </div>
               </div>
               {scanMode === "qr" && qrScanMessage && <p role="status" className="mt-3 text-sm text-amber-300">{qrScanMessage}</p>}
-              {scanMode === "qr" && <div className="mt-3 flex gap-2"><input aria-label="MintRadar listing URL or UUID" value={qrText} onChange={e => setQrText(e.target.value)} placeholder="Paste QR listing URL or UUID" className={inputClass}/><button type="button" onClick={() => { reviewQrValue(qrText); setQrText(""); }} className="rounded-xl bg-sky-500 px-4 font-black text-white">Find</button></div>}
+              {scanMode === "qr" && <div className="mt-3 flex gap-2"><input aria-label="MintRadar listing URL or UUID" value={qrText} onChange={e => setQrText(e.target.value)} placeholder="Paste QR listing URL or UUID" className={inputClass}/><button type="button" onClick={() => { void reviewQrValue(qrText); setQrText(""); }} className="rounded-xl bg-sky-500 px-4 font-black text-white">Find</button></div>}
               {scanMode === "qr" && qrCandidate && <div className="mt-3 rounded-xl border border-emerald-400/40 bg-slate-950 p-4"><p className="text-xs font-black uppercase text-emerald-400">Inventory match · Review before adding</p><p className="mt-2 font-black">{inventoryTitle(qrCandidate)}</p><p className="text-sm text-slate-400">{inventorySubtitle(qrCandidate)}</p><p className="mt-2 text-xl font-black text-emerald-400">{money(Number(qrCandidate.price))}</p><div className="mt-3 grid grid-cols-2 gap-2"><button type="button" onClick={() => { setQrCandidate(null); void startCamera(); }} className={buttonClass}>Scan Again</button><button type="button" onClick={confirmQrCandidate} className="rounded-xl bg-emerald-400 px-3 py-3 font-black text-black">Add to Trade</button></div></div>}
               {cameraError && <p role="alert" className="mt-3 text-sm text-amber-300">{cameraError}</p>}
               {cameraError && <button type="button" onClick={() => void startCamera()} className="mt-3 w-full rounded-xl bg-sky-500 px-4 py-3 font-black text-white">Retry Camera</button>}

@@ -4408,7 +4408,7 @@ export default function VendorDashboardPage() {
 
               <BuyingAnalyzer />
 
-              <DealAnalyzer inventory={inventory} />
+              <DealAnalyzer inventory={inventory} vendorId={vendorId} />
 
               <Link
                 href="/vendor/orders"
