@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 
 type CatalogType =
   | "Pokemon"
@@ -969,6 +970,10 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const nativeCameraRef = useRef(false);
+  const nativeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const nativeBusyRef = useRef(false);
+  const [nativeCameraBusy, setNativeCameraBusy] = useState(false);
 
   const activeInventory = useMemo(() => {
     if (!open || mode !== "trade" || targetInventory) return [];
@@ -1015,13 +1020,72 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     stopCamera();
   }
   function stopCamera() {
+    if (nativeTimerRef.current) {
+      clearTimeout(nativeTimerRef.current);
+      nativeTimerRef.current = null;
+    }
     streamRef.current?.getTracks().forEach(track => track.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
+    if (nativeCameraRef.current) {
+      nativeCameraRef.current = false;
+      void import("@capacitor-community/camera-preview")
+        .then(({ CameraPreview }) => CameraPreview.stop())
+        .catch(error => console.warn("Native camera cleanup:", error));
+    }
+    nativeBusyRef.current = false;
+    setNativeCameraBusy(false);
     setScannerOpen(false);
   }
+
   async function startCamera() {
     setCameraError("");
+    if (nativeBusyRef.current) return;
+
+    if (Capacitor.isNativePlatform()) {
+      // Phase 1 native smoke test: the native preview sits above the WebView.
+      // Capture automatically after a short countdown so no hidden WebView
+      // button is required. This is NOT card recognition or continuous scanning.
+      nativeBusyRef.current = true;
+      setNativeCameraBusy(true);
+      try {
+        const { CameraPreview } = await import("@capacitor-community/camera-preview");
+        await CameraPreview.start({
+          position: "rear",
+          toBack: false,
+          disableAudio: true,
+          width: Math.round(window.innerWidth),
+          height: Math.round(window.innerHeight),
+          x: 0,
+          y: 0,
+        });
+        nativeCameraRef.current = true;
+        setScannerOpen(true);
+        nativeTimerRef.current = setTimeout(() => {
+          nativeTimerRef.current = null;
+          void (async () => {
+            try {
+              const result = await CameraPreview.capture({ quality: 85 });
+              if (!result?.value) throw new Error("Native camera returned no image.");
+              const image = result.value.startsWith("data:")
+                ? result.value
+                : `data:image/jpeg;base64,${result.value}`;
+              // Stop before revealing the review UI, even in continuous mode.
+              stopCamera();
+              addCapture(image);
+            } catch (error) {
+              stopCamera();
+              setCameraError(error instanceof Error ? error.message : "Native capture failed.");
+            }
+          })();
+        }, 4000);
+      } catch (error) {
+        stopCamera();
+        setCameraError(error instanceof Error ? error.message : "Could not start native camera.");
+      }
+      return;
+    }
+
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraError("Live camera is unavailable here. Use Take Photo / Upload instead.");
       return;
@@ -1042,7 +1106,13 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     }
   }, [scannerOpen]);
   useEffect(() => () => {
+    if (nativeTimerRef.current) clearTimeout(nativeTimerRef.current);
     streamRef.current?.getTracks().forEach(track => track.stop());
+    if (nativeCameraRef.current) {
+      void import("@capacitor-community/camera-preview")
+        .then(({ CameraPreview }) => CameraPreview.stop())
+        .catch(() => {});
+    }
   }, []);
 
   function addCapture(image: string) {
@@ -1050,7 +1120,7 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     setCaptures(current => [...current, { id, image, matched: false }]);
     setSelectedCaptureId(id);
     // Continuous mode keeps the camera running for the next capture.
-    if (scanMode === "single") stopCamera();
+    if (scanMode === "single" && !Capacitor.isNativePlatform()) stopCamera();
   }
   function captureFrame() {
     const video = videoRef.current;
@@ -1106,10 +1176,11 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
           </section>
 
           <section className="rounded-2xl border border-zinc-800 bg-black p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-lg font-black">Camera Intake</h3><p className="text-xs text-zinc-500">Capture images, then confirm exact card identities through catalog search. Recognition is not connected yet.</p></div><div className="flex gap-2"><button type="button" onClick={() => { setScanMode("single"); stopCamera(); }} className={`${buttonClass} ${scanMode === "single" ? "!border-emerald-400 !text-emerald-300" : ""}`}>Single</button><button type="button" onClick={() => { setScanMode("continuous"); stopCamera(); }} className={`${buttonClass} ${scanMode === "continuous" ? "!border-emerald-400 !text-emerald-300" : ""}`}>Continuous</button></div></div>
-            <div className="mt-3 flex flex-wrap gap-2"><button type="button" className={buttonClass} onClick={() => { if (scannerOpen) stopCamera(); else void startCamera(); }}>{scannerOpen ? "Stop Camera" : "Open Camera"}</button><button type="button" className={buttonClass} onClick={() => fileRef.current?.click()}>Take Photo / Upload</button><input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { handleFile(e.target.files?.[0]); e.target.value = ""; }}/></div>
+            <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-lg font-black">Camera Intake</h3><p className="text-xs text-zinc-500">Native iPhone preview test: opens the camera, waits four seconds, then captures automatically. Recognition is not connected yet.</p></div><div className="flex gap-2"><button type="button" onClick={() => { setScanMode("single"); stopCamera(); }} className={`${buttonClass} ${scanMode === "single" ? "!border-emerald-400 !text-emerald-300" : ""}`}>Single</button><button type="button" onClick={() => { setScanMode("continuous"); stopCamera(); }} className={`${buttonClass} ${scanMode === "continuous" ? "!border-emerald-400 !text-emerald-300" : ""}`}>Continuous</button></div></div>
+            <div className="mt-3 flex flex-wrap gap-2"><button type="button" className={buttonClass} disabled={nativeCameraBusy} onClick={() => { if (scannerOpen) stopCamera(); else void startCamera(); }}>{nativeCameraBusy ? "Native Camera Active (4s Auto Capture)" : scannerOpen ? "Stop Camera" : "Open Camera"}</button><button type="button" className={buttonClass} onClick={() => fileRef.current?.click()}>Take Photo / Upload</button><input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={e => { handleFile(e.target.files?.[0]); e.target.value = ""; }}/></div>
+            {Capacitor.isNativePlatform() && <p className="mt-2 text-xs text-zinc-500">Native camera preview will temporarily cover the app and automatically capture after 4 seconds. Keep the card centered. This is a camera connectivity test, not the finished continuous scanner.</p>}
             {cameraError && <p role="alert" className="mt-3 text-sm text-amber-300">{cameraError}</p>}
-            {scannerOpen && <div className="mt-3 max-w-xl space-y-2"><video ref={videoRef} autoPlay muted playsInline className="aspect-[4/3] w-full rounded-xl bg-zinc-900 object-cover"/><button type="button" onClick={captureFrame} className="w-full rounded-xl bg-emerald-400 px-4 py-3 font-black text-black">Capture Card {scanMode === "continuous" ? "• Keep Scanning" : ""}</button></div>}
+            {scannerOpen && !Capacitor.isNativePlatform() && <div className="mt-3 max-w-xl space-y-2"><video ref={videoRef} autoPlay muted playsInline className="aspect-[4/3] w-full rounded-xl bg-zinc-900 object-cover"/><button type="button" onClick={captureFrame} className="w-full rounded-xl bg-emerald-400 px-4 py-3 font-black text-black">Capture Card {scanMode === "continuous" ? "• Keep Scanning" : ""}</button></div>}
             {captures.length > 0 && <div className="mt-4"><p className="mb-2 text-xs font-bold text-zinc-400">Captured images ({captures.length}) • Tap one to review</p><div className="flex gap-2 overflow-x-auto pb-2">{captures.map(capture => <button key={capture.id} type="button" onClick={() => setSelectedCaptureId(capture.id)} className={`relative h-24 w-20 shrink-0 overflow-hidden rounded-lg border-2 ${selectedCaptureId === capture.id ? "border-emerald-400" : "border-zinc-800"}`}><img src={capture.image} alt="Captured card for manual identification" className="h-full w-full object-cover"/>{capture.matched && <span className="absolute bottom-0 inset-x-0 bg-emerald-500 text-[9px] font-black text-black">Added</span>}</button>)}</div></div>}
             {selectedCapture && <div className="mt-3 rounded-xl border border-zinc-800 p-3"><div className="flex items-center justify-between gap-2"><p className="text-sm font-black">Review captured card</p><button type="button" onClick={() => { setCaptures(current => current.filter(c => c.id !== selectedCapture.id)); setSelectedCaptureId(null); }} className={buttonClass}>Discard Image</button></div><p className="mt-1 text-xs text-amber-300">This image has not been automatically identified. Search the catalog in an empty card row below, then confirm the exact printing.</p><button type="button" onClick={() => { addRow(); setSelectedCaptureId(null); }} className={`${buttonClass} mt-2`}>Add Empty Row to Identify</button></div>}
           </section>
