@@ -995,6 +995,7 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
   const [targetPrice, setTargetPrice] = useState("");
   const [scanMode, setScanMode] = useState<ScanMode>("single");
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [cameraBackend, setCameraBackend] = useState<"web" | "native" | null>(null);
   const [cameraError, setCameraError] = useState("");
   const [captures, setCaptures] = useState<ScanCapture[]>([]);
   const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
@@ -1080,68 +1081,85 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     nativeBusyRef.current = false;
     setNativeCameraBusy(false);
     setScannerOpen(false);
+    setCameraBackend(null);
   }
 
   async function startCamera() {
     setCameraError("");
     if (nativeBusyRef.current || scanRequestRef.current) return;
+    stopCamera();
 
-    if (Capacitor.isNativePlatform()) {
-      // Native preview sits above the WebView; capture after a brief alignment window.
-      // Stop the preview before showing the identification/confirmation UI.
-      nativeBusyRef.current = true;
-      setNativeCameraBusy(true);
+    // Prefer the WebView camera: it renders INSIDE the scanner frame, so the
+    // alignment guides and capture control remain visible on an iPhone.
+    if (navigator.mediaDevices?.getUserMedia) {
       try {
-        const { CameraPreview } = await import("@capacitor-community/camera-preview");
-        await CameraPreview.start({
-          position: "rear",
-          toBack: false,
-          disableAudio: true,
-          width: Math.round(window.innerWidth),
-          height: Math.round(window.innerHeight),
-          x: 0,
-          y: 0,
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 1920 } },
+          audio: false,
         });
-        nativeCameraRef.current = true;
+        streamRef.current = stream;
+        setCameraBackend("web");
         setScannerOpen(true);
-        nativeTimerRef.current = setTimeout(() => {
-          nativeTimerRef.current = null;
-          void (async () => {
-            try {
-              const result = await CameraPreview.capture({ quality: 85 });
-              if (!result?.value) throw new Error("Native camera returned no image.");
-              const image = result.value.startsWith("data:")
-                ? result.value
-                : `data:image/jpeg;base64,${result.value}`;
-              // Stop before revealing the review UI, even in continuous mode.
-              stopCamera();
-              addCapture(image);
-            } catch (error) {
-              stopCamera();
-              setCameraError(error instanceof Error ? error.message : "Native capture failed.");
-            }
-          })();
-        }, 4000);
+        return;
       } catch (error) {
-        stopCamera();
-        setCameraError(error instanceof Error ? error.message : "Could not start native camera.");
+        if (!Capacitor.isNativePlatform()) {
+          setCameraError(error instanceof Error ? error.message : "Camera permission denied.");
+          return;
+        }
+        console.warn("Embedded camera unavailable; trying native preview", error);
       }
-      return;
     }
 
-    if (!navigator.mediaDevices?.getUserMedia) {
+    if (!Capacitor.isNativePlatform()) {
       setCameraError("Live camera is unavailable on this device or browser.");
       return;
     }
+
+    // Native plugin fallback: its preview is ABOVE the WebView. The embedded
+    // guides cannot overlay it, so capture automatically and return to review.
+    nativeBusyRef.current = true;
+    setNativeCameraBusy(true);
     try {
-      stopCamera();
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
-      streamRef.current = stream;
+      const { CameraPreview } = await import("@capacitor-community/camera-preview");
+      await CameraPreview.start({
+        position: "rear", toBack: false, disableAudio: true,
+        width: Math.round(window.innerWidth), height: Math.round(window.innerHeight),
+        x: 0, y: 0,
+      });
+      nativeCameraRef.current = true;
+      setCameraBackend("native");
       setScannerOpen(true);
+      nativeTimerRef.current = setTimeout(() => {
+        nativeTimerRef.current = null;
+        void (async () => {
+          try {
+            const result = await CameraPreview.capture({ quality: 85 });
+            if (!result?.value) throw new Error("Native camera returned no image.");
+            const image = result.value.startsWith("data:")
+              ? result.value : `data:image/jpeg;base64,${result.value}`;
+            stopCamera();
+            void addCapture(image);
+          } catch (error) {
+            stopCamera();
+            setCameraError(error instanceof Error ? error.message : "Native capture failed.");
+          }
+        })();
+      }, 2600);
     } catch (error) {
-      setCameraError(error instanceof Error ? error.message : "Could not open the camera.");
+      stopCamera();
+      setCameraError(error instanceof Error ? error.message : "Could not start camera.");
     }
   }
+
+  // Start on entry to the Scanner tab; a manual start control remains available
+  // for iOS permission prompts that require a direct user gesture.
+  useEffect(() => {
+    if (!open || view !== "scanner" || scannerOpen || identifying || selectedCaptureId) return;
+    void startCamera();
+    // Run only on entering the scanner view, not when camera state changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, view]);
+
   useEffect(() => {
     if (scannerOpen && videoRef.current && streamRef.current) {
       videoRef.current.srcObject = streamRef.current;
@@ -1168,7 +1186,7 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     setCaptures(current => [...current, { id, image, matched: false, status: "identifying", selectedIndex: 0 }]);
     setSelectedCaptureId(id);
     // A live browser camera may remain open, but we never send overlapping recognition requests.
-    if (!Capacitor.isNativePlatform()) stopCamera();
+    if (cameraBackend === "web") stopCamera();
     try {
       const file = dataUrlToFile(image);
       if (file.size > 8 * 1024 * 1024) throw new Error("Captured image is too large (8 MB maximum).");
@@ -1292,16 +1310,41 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
               <div><h3 className="text-lg font-black">MintRadar Live Scanner</h3><p className="text-xs text-zinc-500">Scan directly with your camera. Identify the card and check its price. Cards are only added when you tap Add Card.</p></div>
 
             </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button type="button" disabled={nativeCameraBusy || identifying} onClick={() => { if (scannerOpen) stopCamera(); else void startCamera(); }} className="rounded-xl bg-emerald-400 px-5 py-3 text-sm font-black text-black disabled:opacity-50">
-                {identifying ? "Identifying Card..." : nativeCameraBusy ? "Camera Active · Align Card" : scannerOpen ? "Stop Camera" : "Open Live Camera"}
-              </button>
-              {scannerOpen && !Capacitor.isNativePlatform() && <button type="button" disabled={identifying} onClick={captureFrame} className={buttonClass}>Scan Card</button>}
+            <div className="mt-4 mx-auto w-full max-w-md">
+              <div className="relative aspect-[3/4] overflow-hidden rounded-2xl border border-sky-500/50 bg-[#0a1424] shadow-[0_0_0_1px_rgba(56,189,248,0.12)]">
+                {scannerOpen && cameraBackend === "web" && (
+                  <video ref={videoRef} autoPlay muted playsInline className="absolute inset-0 h-full w-full object-cover" />
+                )}
+                {!scannerOpen && !selectedCapture && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center text-slate-400">
+                    <span className="text-4xl">▣</span>
+                    <span className="text-sm font-semibold">Ready to scan a card</span>
+                  </div>
+                )}
+                {!scannerOpen && selectedCapture && (
+                  <img src={selectedCapture.image} alt="Most recent card scan" className="absolute inset-0 h-full w-full object-contain opacity-80" />
+                )}
+                <div className="pointer-events-none absolute inset-x-[12%] inset-y-[9%] rounded-lg border border-white/25">
+                  <span className="absolute -left-0.5 -top-0.5 h-9 w-9 rounded-tl-lg border-l-4 border-t-4 border-sky-400" />
+                  <span className="absolute -right-0.5 -top-0.5 h-9 w-9 rounded-tr-lg border-r-4 border-t-4 border-sky-400" />
+                  <span className="absolute -bottom-0.5 -left-0.5 h-9 w-9 rounded-bl-lg border-b-4 border-l-4 border-sky-400" />
+                  <span className="absolute -bottom-0.5 -right-0.5 h-9 w-9 rounded-br-lg border-b-4 border-r-4 border-sky-400" />
+                </div>
+                <div className="pointer-events-none absolute inset-x-0 bottom-5 text-center text-xs font-bold text-white drop-shadow-lg">
+                  {identifying ? "Identifying card…" : scannerOpen ? "Center your card inside the corners" : "Scan a card to review it"}
+                </div>
+              </div>
+              {cameraError && <p role="alert" className="mt-3 text-sm text-amber-300">{cameraError}</p>}
+              {!selectedCapture && (
+                <div className="mt-4 flex justify-center gap-3">
+                  <button type="button" disabled={identifying || nativeCameraBusy} onClick={() => { if (scannerOpen) stopCamera(); else void startCamera(); }} className={buttonClass}>
+                    {scannerOpen ? "Stop Camera" : "Start Scanner"}
+                  </button>
+                  {scannerOpen && cameraBackend === "web" && <button type="button" disabled={identifying} onClick={captureFrame} className="rounded-xl bg-sky-500 px-7 py-3 text-sm font-black text-white disabled:opacity-50">Scan Card</button>}
+                </div>
+              )}
+              {scannerOpen && cameraBackend === "native" && <p className="mt-2 text-center text-xs text-slate-400">Native camera fallback: capturing automatically. Framing guides are available in embedded-camera mode.</p>}
             </div>
-            {Capacitor.isNativePlatform() && <p className="mt-2 text-xs text-zinc-500">iPhone camera: hold the card centered for approximately 4 seconds. The camera captures automatically, then opens the match review. This is timed capture, not yet motion-based card detection.</p>}
-            {cameraError && <p role="alert" className="mt-3 text-sm text-amber-300">{cameraError}</p>}
-            {scannerOpen && !Capacitor.isNativePlatform() && <video ref={videoRef} autoPlay muted playsInline className="mt-3 aspect-[4/3] w-full max-w-xl rounded-xl bg-zinc-900 object-cover"/>}
-            {captures.length > 0 && <div className="mt-4"><p className="mb-2 text-xs font-bold text-zinc-400">Scans ({captures.length}) · Tap to review</p><div className="flex gap-2 overflow-x-auto pb-2">{captures.map(capture => <button key={capture.id} type="button" onClick={() => setSelectedCaptureId(capture.id)} className={`relative h-24 w-20 shrink-0 overflow-hidden rounded-lg border-2 ${selectedCaptureId === capture.id ? "border-emerald-400" : "border-zinc-800"}`}><img src={capture.image} alt="Scanned card" className="h-full w-full object-cover"/>{capture.matched && <span className="absolute inset-x-0 bottom-0 bg-emerald-400 text-[9px] font-black text-black">Added</span>}{capture.status === "error" && <span className="absolute inset-x-0 bottom-0 bg-amber-400 text-[9px] font-black text-black">Retry</span>}</button>)}</div></div>}
             {selectedCapture && <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950 p-4">
               <div className="flex items-center justify-between gap-2"><p className="text-sm font-black">{selectedCapture.status === "identifying" ? "Identifying your card..." : selectedCapture.matched ? "Card added to deal" : "Review Card Match"}</p><button type="button" onClick={() => { setCaptures(current => current.filter(c => c.id !== selectedCapture.id)); setSelectedCaptureId(null); }} className={buttonClass}>Dismiss</button></div>
               {selectedCapture.status === "identifying" && <p className="mt-3 text-sm text-emerald-300">Checking card identity and current market pricing...</p>}
@@ -1311,29 +1354,12 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
               {selectedCandidate && <div className="mt-3 flex gap-4"><div className="h-36 w-24 shrink-0 overflow-hidden rounded-lg bg-black">{selectedCandidate.image_url ? <img src={selectedCandidate.image_url} alt={selectedCandidate.name ?? "Matched card"} className="h-full w-full object-contain"/> : <img src={selectedCapture.image} alt="Captured card" className="h-full w-full object-contain"/>}</div><div className="min-w-0 flex-1"><p className="font-black">{selectedCandidate.name}</p><p className="mt-1 text-xs text-zinc-400">{selectedCandidate.set?.name} · #{selectedCandidate.number}</p><p className="mt-1 text-xs text-zinc-500">{selectedCandidate.rarity} · {selectedPrice?.printing ?? selectedCandidate.suggested_printing ?? "Printing not specified"}</p><p className="mt-3 text-xs text-zinc-500">TCGplayer Market Price</p><p className="text-2xl font-black text-emerald-400">{typeof selectedPrice?.market_price === "number" ? money(selectedPrice.market_price) : "Not available"}</p><p className="mt-1 text-xs text-zinc-500">Offer at {defaultPercentage}%: {typeof selectedPrice?.market_price === "number" ? money(selectedPrice.market_price * defaultPercentage / 100) : "Enter market price manually"}</p></div></div>}
               {typeof selectedCapture.result?.meta?.scans_remaining === "number" && <p className="mt-2 text-xs text-zinc-500">API test credits remaining: {selectedCapture.result.meta.scans_remaining}</p>}
               <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
-                <button type="button" disabled={identifying || nativeCameraBusy} onClick={() => { setAddedNotice(""); void startCamera(); }} className={buttonClass}>Scan More</button>
-                <button type="button" disabled={selectedCapture.status !== "review" || !selectedCandidate?.name || !selectedCandidate.number} onClick={() => confirmScan(selectedCapture)} className="rounded-xl bg-emerald-400 px-6 py-3 font-black text-black disabled:opacity-40">{selectedCapture.matched ? "✓ Card Added" : "Add Card"}</button>
+                <button type="button" disabled={identifying || nativeCameraBusy} onClick={() => { setAddedNotice(""); setSelectedCaptureId(null); void startCamera(); }} className={buttonClass}>Scan More</button>
+                <button type="button" disabled={selectedCapture.status !== "review" || !selectedCandidate?.name || !selectedCandidate.number} onClick={() => confirmScan(selectedCapture)} className="rounded-xl bg-sky-500 px-6 py-3 font-black text-white disabled:opacity-40">{selectedCapture.matched ? "✓ Card Added" : "Add Card"}</button>
               </div>
             </div>}
           </section>
 
-          {false && <section><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-xl font-black">Customer Cards</h3><p className="text-xs text-zinc-500">{rows.length} row(s) • Search, verify printing, then enter market value.</p></div><button type="button" onClick={() => addRow()} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-black text-black">+ Add Card</button></div>
-            <div className="space-y-4">{rows.map((row, index) => <article key={row.localId} className="rounded-2xl border border-zinc-800 bg-black p-4"><div className="mb-3 flex items-center justify-between"><p className="text-xs font-black uppercase tracking-wider text-emerald-400">Card {index + 1}</p><button type="button" onClick={() => removeRow(row.localId)} className={buttonClass}>Remove</button></div>
-              <CatalogCardSearch catalogType={row.catalogType} selectedCard={row.card} onCatalogTypeChange={catalogType => updateRow(row.localId, { catalogType, card: null })} onSelect={card => updateRow(row.localId, { card })} onClear={() => updateRow(row.localId, { card: null })}/>
-              <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4"><label className="text-xs font-black text-zinc-400">Type<select value={row.itemType} onChange={e => updateRow(row.localId, { itemType: e.target.value as AnalyzerCardRow["itemType"] })} className={`${inputClass} mt-1`}><option value="raw">Raw</option><option value="slab">Graded</option><option value="sealed">Sealed</option></select></label>
-              {row.itemType === "raw" && <label className="text-xs font-black text-zinc-400">Condition<select value={row.condition} onChange={e => updateRow(row.localId, { condition: e.target.value })} className={`${inputClass} mt-1`}>{TCG_CONDITIONS.map(c => <option key={c}>{c}</option>)}</select></label>}
-              {row.itemType === "slab" && <><label className="text-xs font-black text-zinc-400">Grader<select value={row.gradingCompany} onChange={e => updateRow(row.localId, { gradingCompany: e.target.value })} className={`${inputClass} mt-1`}><option value="">Select...</option>{GRADING_COMPANIES.map(c => <option key={c}>{c}</option>)}</select></label><label className="text-xs font-black text-zinc-400">Grade<input value={row.grade} onChange={e => updateRow(row.localId, { grade: e.target.value })} className={`${inputClass} mt-1`}/></label><label className="text-xs font-black text-zinc-400">Cert #<input value={row.certNumber} onChange={e => updateRow(row.localId, { certNumber: e.target.value })} className={`${inputClass} mt-1`}/></label></>}
-              {row.itemType === "sealed" && <label className="text-xs font-black text-zinc-400">Sealed Condition<select value={row.sealedCondition} onChange={e => updateRow(row.localId, { sealedCondition: e.target.value })} className={`${inputClass} mt-1`}>{SEALED_CONDITIONS.map(c => <option key={c}>{c}</option>)}</select></label>}
-              <label className="text-xs font-black text-zinc-400">Market Value ($)<input type="number" min="0" step="0.01" value={row.marketValue} onChange={e => updateRow(row.localId, { marketValue: e.target.value })} className={`${inputClass} mt-1`}/></label><label className="text-xs font-black text-zinc-400">Offer %<input type="number" min="0" max="100" step="1" value={row.percentage} onChange={e => updateRow(row.localId, { percentage: clampPercentage(Number(e.target.value)) })} className={`${inputClass} mt-1`}/></label></div>
-              <div className="mt-3 flex items-center justify-between rounded-xl bg-zinc-950 px-4 py-3"><span className="text-xs font-bold text-zinc-500">Customer offer for this card</span><strong className="text-lg text-emerald-400">{money(Math.max(0, numericValue(row.marketValue)) * row.percentage / 100)}</strong></div>
-            </article>)}</div>
-          </section>}
-
-          {false && <section className="rounded-2xl border border-emerald-400/30 bg-emerald-400/[0.05] p-5"><h3 className="text-lg font-black">Deal Summary</h3><div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-4"><div><p className="text-xs text-zinc-500">Customer Market Value</p><p className="text-xl font-black">{money(totals.market)}</p></div><div><p className="text-xs text-zinc-500">Cash Offer</p><p className="text-xl font-black text-emerald-400">{money(totals.cash)}</p></div><div><p className="text-xs text-zinc-500">Effective Rate</p><p className="text-xl font-black">{totals.market > 0 ? (totals.cash / totals.market * 100).toFixed(1) : "0.0"}%</p></div><div><p className="text-xs text-zinc-500">Identified Cards</p><p className="text-xl font-black">{totals.identified}/{rows.length}</p></div></div>
-            <label className="mt-4 block max-w-xs text-xs font-black text-zinc-400">Trade Credit Bonus (%)<input type="number" min="0" max="100" value={creditBonus} onChange={e => setCreditBonus(clampPercentage(Number(e.target.value)))} className={`${inputClass} mt-1`}/></label><div className="mt-3 flex items-center justify-between border-t border-zinc-800 pt-3"><span className="font-bold">Customer Trade Credit</span><strong className="text-xl text-emerald-300">{money(tradeCredit)}</strong></div>
-            {mode === "trade" && <div className="mt-3 space-y-2 border-t border-zinc-800 pt-3"><div className="flex justify-between text-sm"><span>Your Item Value</span><strong>{money(targetValue)}</strong></div><div className="flex justify-between text-lg font-black"><span>{tradeDifference >= 0 ? "Cash Customer Owes" : "Credit Above Item Value"}</span><span className="text-emerald-300">{money(Math.abs(tradeDifference))}</span></div></div>}
-            <p className="mt-4 text-xs leading-5 text-zinc-500">Estimate only. This version does not charge customers, change inventory, record sales, or submit trade offers. Verify identities and prices before completing a deal.</p>
-          </section>}
           </div>}
         </div>
       </div>
