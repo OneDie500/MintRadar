@@ -980,6 +980,13 @@ function clampPercentage(value: number) {
 export default function DealAnalyzer({ inventory }: { inventory: VendorInventorySearchItem[] }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<DealMode>("buy");
+  const [view, setView] = useState<"scanner" | "summary">("scanner");
+  const [cashRate, setCashRate] = useState(70);
+  const [tradeRate, setTradeRate] = useState(80);
+  const [addedNotice, setAddedNotice] = useState("");
+  const [vendorItems, setVendorItems] = useState<VendorInventorySearchItem[]>([]);
+  const [qrText, setQrText] = useState("");
+  const [qrError, setQrError] = useState("");
   const [rows, setRows] = useState<AnalyzerCardRow[]>(() => [newRow()]);
   const [defaultPercentage, setDefaultPercentage] = useState(70);
   const [creditBonus, setCreditBonus] = useState(0);
@@ -1016,9 +1023,12 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     };
   }, { market: 0, cash: 0, identified: 0 }), [rows]);
 
-  const tradeCredit = totals.cash * (1 + creditBonus / 100);
+  const cashOffer = totals.market * cashRate / 100;
+  const tradeCredit = totals.market * tradeRate / 100;
+  const vendorTotal = vendorItems.reduce((sum, item) => sum + Math.max(0, Number(item.price ?? 0)), 0);
   const targetValue = Math.max(0, numericValue(targetPrice));
-  const tradeDifference = targetValue - tradeCredit;
+  const tradeDifference = vendorTotal - tradeCredit;
+  const dealCards = rows.filter(row => row.card);
 
   function updateRow(id: string, patch: Partial<AnalyzerCardRow>) {
     setRows(current => current.map(row => row.localId === id ? { ...row, ...patch } : row));
@@ -1036,6 +1046,13 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
   }
   function resetDeal() {
     setRows([{ ...newRow(), percentage: 70 }]);
+    setView("scanner");
+    setAddedNotice("");
+    setVendorItems([]);
+    setQrText("");
+    setQrError("");
+    setCashRate(70);
+    setTradeRate(80);
     setDefaultPercentage(70);
     setCreditBonus(0);
     setTargetInventory(null);
@@ -1202,6 +1219,23 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
       return current.map((item, index) => index === firstEmpty ? { ...row, localId: item.localId } : item);
     });
     setCaptures(current => current.map(item => item.id === capture.id ? { ...item, matched: true, status: "added" } : item));
+    setAddedNotice(`${candidate.name} added to your deal`);
+  }
+
+  function addVendorListing(value: string) {
+    setQrError("");
+    let listingId = value.trim();
+    try {
+      const parsed = new URL(listingId);
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      if (parts[0] === "listing" && parts[1]) listingId = parts[1];
+    } catch { /* A plain listing ID is also valid. */ }
+    const item = inventory.find(entry => entry.id.toLowerCase() === listingId.toLowerCase());
+    if (!item) { setQrError("Listing not found in the loaded vendor inventory. Paste its full listing URL or UUID."); return; }
+    if (Number(item.quantity ?? 0) <= 0 || item.price == null) { setQrError("This listing is unavailable or has no asking price."); return; }
+    if (vendorItems.some(entry => entry.id === item.id)) { setQrError("This listing is already in the trade."); return; }
+    setVendorItems(current => [...current, item]);
+    setQrText("");
   }
 
   function captureFrame() {
@@ -1229,32 +1263,34 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
 
   return <>
     <button type="button" onClick={() => setOpen(true)} className="rounded-xl border border-emerald-400/30 bg-zinc-950 px-6 py-4 text-center font-black text-emerald-300 transition hover:bg-zinc-900">
-      Deal Analyzer V2
+      Scanner
     </button>
     {open && <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/85 p-0 sm:items-center sm:p-5" onMouseDown={event => { if (event.target === event.currentTarget) { stopCamera(); setOpen(false); } }}>
       <div role="dialog" aria-modal="true" aria-label="MintRadar Deal Analyzer V2" className="max-h-[96vh] w-full max-w-6xl overflow-y-auto rounded-t-3xl border border-zinc-800 bg-zinc-950 text-white shadow-2xl sm:rounded-3xl">
         <header className="sticky top-0 z-20 flex items-start justify-between gap-4 border-b border-zinc-800 bg-zinc-950 p-5 sm:p-6">
-          <div><p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400">MintRadar • Vendor Tools</p><h2 className="mt-1 text-2xl font-black sm:text-3xl">Deal Analyzer V2</h2><p className="mt-1 text-sm text-zinc-500">Build a buy or trade deal with the same card list.</p></div>
+          <div><p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400">MintRadar • Vendor Tools</p><h2 className="mt-1 text-2xl font-black sm:text-3xl">MintRadar Scanner</h2><p className="mt-1 text-sm text-zinc-500">Scan customer cards, add them intentionally, then review the deal.</p></div>
           <button type="button" aria-label="Close Deal Analyzer" onClick={() => { stopCamera(); setOpen(false); }} className="rounded-full border border-zinc-800 px-3 py-1.5 text-xl text-zinc-400">×</button>
         </header>
         <div className="space-y-5 p-4 sm:p-6">
-          <div className="flex flex-wrap items-center gap-2">
-            {(["buy", "trade"] as const).map(value => <button key={value} type="button" onClick={() => setMode(value)} className={`rounded-xl px-6 py-3 text-sm font-black uppercase ${mode === value ? "bg-emerald-400 text-black" : "border border-zinc-800 bg-black text-zinc-400"}`}>{value === "buy" ? "Buy from Customer" : "Trade with Customer"}</button>)}
-            <button type="button" onClick={() => { if (window.confirm("Clear this deal and start over?")) resetDeal(); }} className={`${buttonClass} ml-auto`}>Reset Deal</button>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex gap-2"><button type="button" onClick={() => { setView("scanner"); }} className={`rounded-xl px-4 py-3 text-sm font-black ${view === "scanner" ? "bg-emerald-400 text-black" : "border border-zinc-800 text-zinc-300"}`}>Scan Customer Card</button><button type="button" onClick={() => { stopCamera(); setView("summary"); }} className={`relative rounded-xl px-4 py-3 text-sm font-black ${view === "summary" ? "bg-emerald-400 text-black" : "border border-zinc-800 text-zinc-300"}`}>Summary <span className="ml-1 rounded-full bg-white px-2 py-0.5 text-xs text-black">{dealCards.length}</span>{addedNotice && view === "scanner" && <span className="absolute -right-1 -top-1 h-3 w-3 rounded-full bg-emerald-400 ring-2 ring-black"/>}</button></div>
+            <button type="button" onClick={() => { if (window.confirm("Clear this deal and start over?")) resetDeal(); }} className={buttonClass}>Reset Deal</button>
           </div>
-
-          <section className="rounded-2xl border border-emerald-400/20 bg-emerald-400/[0.04] p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-black">Default Offer Rate</h3><p className="text-xs text-zinc-500">Applying a new default updates all cards. Individual rows can still be adjusted.</p></div><div className="flex items-center gap-2"><input aria-label="Default percentage" type="number" min="0" max="100" value={defaultPercentage} onChange={e => applyDefault(Number(e.target.value))} className="w-20 rounded-lg border border-zinc-800 bg-black px-2 py-2 text-center font-black"/><span>%</span></div></div>
-            <div className="mt-3 flex flex-wrap gap-2">{QUICK_PERCENTAGES.map(rate => <button key={rate} type="button" onClick={() => applyDefault(rate)} className={`rounded-lg px-3 py-2 text-xs font-black ${defaultPercentage === rate ? "bg-emerald-400 text-black" : "border border-zinc-800 bg-black text-zinc-400"}`}>{rate}%</button>)}</div>
-          </section>
-
+          {addedNotice && view === "scanner" && <div role="status" className="rounded-xl border border-emerald-400/40 bg-emerald-400/10 px-4 py-3 text-sm font-black text-emerald-300">✓ Card Added! {addedNotice} · Summary ({dealCards.length})</div>}
+          {view === "summary" && <div className="space-y-5">
+            <section className="rounded-2xl border border-zinc-800 bg-black p-4"><div className="flex items-center justify-between"><h3 className="text-xl font-black">Customer Cards <span className="text-emerald-400">({dealCards.length})</span></h3><button type="button" onClick={() => setView("scanner")} className={buttonClass}>Scan More</button></div>
+              {dealCards.length === 0 ? <p className="mt-4 text-sm text-zinc-500">No cards added yet. Scan a card and tap Add Card.</p> : <div className="mt-4 space-y-3">{dealCards.map(row => <div key={row.localId} className="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-950 p-3"><div className="h-24 w-16 shrink-0 overflow-hidden rounded-lg bg-black"><ResilientCardImage src={row.card?.image_url} name={row.card?.name} setName={row.card?.set_name} cardNumber={row.card?.card_number} category={row.card?.category} dataSource={row.card?.data_source} externalId={row.card?.external_id}/></div><div className="min-w-0 flex-1"><p className="font-black">{row.card?.name}</p><p className="text-xs text-zinc-400">{row.card?.set_name} · #{row.card?.card_number} · {row.card?.finish || "Raw"}</p><label className="mt-2 block text-xs text-zinc-400">Market price ($)<input type="number" min="0" step="0.01" value={row.marketValue} onChange={e => updateRow(row.localId, { marketValue: e.target.value })} className={`${inputClass} mt-1 max-w-36`}/></label></div><div className="text-right"><strong className="text-lg text-emerald-400">{money(Math.max(0, numericValue(row.marketValue)))}</strong><button type="button" onClick={() => removeRow(row.localId)} className="mt-3 block text-xs text-red-300">Remove</button></div></div>)}</div>}
+              <div className="mt-4 flex justify-between border-t border-zinc-800 pt-4"><span className="font-bold">Total Market Value</span><strong className="text-2xl text-emerald-400">{money(totals.market)}</strong></div>
+            </section>
+            <section className="rounded-2xl border border-zinc-800 bg-black p-4"><h3 className="text-lg font-black">Offer Preview</h3><div className="mt-4 grid gap-4 sm:grid-cols-2">{([{ title: "Cash Offer", value: cashRate, change: setCashRate, presets: [60,65,70,75,80], amount: cashOffer, label: "Pay Customer" }, { title: "Trade Credit", value: tradeRate, change: setTradeRate, presets: [70,75,80,85,90], amount: tradeCredit, label: "Available Trade Credit" }] as const).map(option => <div key={option.title} className="rounded-xl border border-zinc-800 bg-zinc-950 p-4"><label className="text-sm font-black">{option.title} (%)<input type="number" min="0" max="100" step="any" value={option.value} onChange={e => option.change(clampPercentage(Number(e.target.value)))} className={`${inputClass} mt-2`}/></label><div className="mt-3 flex flex-wrap gap-2">{option.presets.map(rate => <button type="button" key={rate} onClick={() => option.change(rate)} className={buttonClass}>{rate}%</button>)}</div><p className="mt-4 text-xs text-zinc-400">{option.label}</p><p className="text-3xl font-black text-emerald-400">{money(option.amount)}</p></div>)}</div></section>
+            <section className="rounded-2xl border border-zinc-800 bg-black p-4"><h3 className="text-lg font-black">Vendor Inventory · Trade</h3><p className="mt-1 text-xs text-zinc-400">Add a published listing by its MintRadar QR destination URL or listing ID. Only listings loaded for this vendor can be added.</p><div className="mt-3 flex gap-2"><input value={qrText} onChange={e => setQrText(e.target.value)} placeholder="Paste /listing/ URL or listing ID" className={inputClass}/><button type="button" onClick={() => addVendorListing(qrText)} className="rounded-xl bg-emerald-400 px-4 font-black text-black">Add</button></div>{qrError && <p role="alert" className="mt-2 text-xs text-amber-300">{qrError}</p>}<div className="mt-3 max-h-44 space-y-2 overflow-y-auto">{inventory.filter(item => Number(item.quantity ?? 0) > 0 && item.price != null).slice(0, 30).map(item => <button key={item.id} type="button" onClick={() => addVendorListing(item.id)} className="flex w-full justify-between rounded-lg border border-zinc-800 px-3 py-2 text-left text-xs hover:border-emerald-400"><span>{inventoryTitle(item)} · {inventorySubtitle(item)}</span><strong>{money(Number(item.price))} +</strong></button>)}</div>{vendorItems.map(item => <div key={item.id} className="mt-2 flex items-center justify-between rounded-lg bg-zinc-950 p-3 text-sm"><span>{inventoryTitle(item)} · {money(Number(item.price))}</span><button type="button" onClick={() => setVendorItems(current => current.filter(entry => entry.id !== item.id))} className="text-red-300">Remove</button></div>)}<div className="mt-4 space-y-2 border-t border-zinc-800 pt-4"><div className="flex justify-between"><span>Vendor Asking Total</span><strong>{money(vendorTotal)}</strong></div><div className="flex justify-between"><span>Customer Trade Credit</span><strong>{money(tradeCredit)}</strong></div><div className="flex justify-between text-lg font-black"><span>{tradeDifference >= 0 ? "Customer Owes" : "Credit Remaining"}</span><strong className="text-emerald-400">{money(Math.abs(tradeDifference))}</strong></div></div></section>
+            <p className="text-xs text-zinc-500">Estimate only. No payment, inventory update, or sale is recorded. Verify card identities, prices, and condition before completing a deal.</p>
+          </div>}
+          {view === "scanner" && <div className="space-y-5">
           <section className="rounded-2xl border border-emerald-400/25 bg-black p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div><h3 className="text-lg font-black">MintRadar Live Scanner</h3><p className="text-xs text-zinc-500">Scan directly with your camera. Recognized cards flow into the deal automatically after confirmation.</p></div>
-              <div className="flex gap-2">
-                <button type="button" onClick={() => { setScanMode("single"); stopCamera(); }} className={`${buttonClass} ${scanMode === "single" ? "!border-emerald-400 !text-emerald-300" : ""}`}>Single</button>
-                <button type="button" onClick={() => { setScanMode("continuous"); stopCamera(); }} className={`${buttonClass} ${scanMode === "continuous" ? "!border-emerald-400 !text-emerald-300" : ""}`}>Scan More</button>
-              </div>
+              <div><h3 className="text-lg font-black">MintRadar Live Scanner</h3><p className="text-xs text-zinc-500">Scan directly with your camera. Identify the card and check its price. Cards are only added when you tap Add Card.</p></div>
+
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
               <button type="button" disabled={nativeCameraBusy || identifying} onClick={() => { if (scannerOpen) stopCamera(); else void startCamera(); }} className="rounded-xl bg-emerald-400 px-5 py-3 text-sm font-black text-black disabled:opacity-50">
@@ -1274,17 +1310,14 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
               {(selectedCapture.result?.data?.candidates?.length ?? 0) > 1 && !selectedCapture.matched && <div className="mt-3 space-y-2">{selectedCapture.result?.data?.candidates?.map((candidate, index) => <button key={`${candidate.card_id ?? index}-${index}`} type="button" onClick={() => setCaptures(current => current.map(c => c.id === selectedCapture.id ? { ...c, selectedIndex: index } : c))} className={`block w-full rounded-lg border p-2 text-left text-xs ${selectedCapture.selectedIndex === index ? "border-emerald-400 text-emerald-200" : "border-zinc-800 text-zinc-400"}`}>{candidate.name} · {candidate.set?.name} · #{candidate.number}</button>)}</div>}
               {selectedCandidate && <div className="mt-3 flex gap-4"><div className="h-36 w-24 shrink-0 overflow-hidden rounded-lg bg-black">{selectedCandidate.image_url ? <img src={selectedCandidate.image_url} alt={selectedCandidate.name ?? "Matched card"} className="h-full w-full object-contain"/> : <img src={selectedCapture.image} alt="Captured card" className="h-full w-full object-contain"/>}</div><div className="min-w-0 flex-1"><p className="font-black">{selectedCandidate.name}</p><p className="mt-1 text-xs text-zinc-400">{selectedCandidate.set?.name} · #{selectedCandidate.number}</p><p className="mt-1 text-xs text-zinc-500">{selectedCandidate.rarity} · {selectedPrice?.printing ?? selectedCandidate.suggested_printing ?? "Printing not specified"}</p><p className="mt-3 text-xs text-zinc-500">TCGplayer Market Price</p><p className="text-2xl font-black text-emerald-400">{typeof selectedPrice?.market_price === "number" ? money(selectedPrice.market_price) : "Not available"}</p><p className="mt-1 text-xs text-zinc-500">Offer at {defaultPercentage}%: {typeof selectedPrice?.market_price === "number" ? money(selectedPrice.market_price * defaultPercentage / 100) : "Enter market price manually"}</p></div></div>}
               {typeof selectedCapture.result?.meta?.scans_remaining === "number" && <p className="mt-2 text-xs text-zinc-500">API test credits remaining: {selectedCapture.result.meta.scans_remaining}</p>}
-              {selectedCapture.status === "review" && <button type="button" disabled={!selectedCandidate?.name || !selectedCandidate.number} onClick={() => confirmScan(selectedCapture)} className="mt-4 w-full rounded-xl bg-emerald-400 px-4 py-3 font-black text-black disabled:opacity-40">Confirm Card · Add to Deal</button>}
-              <div className="mt-3 flex flex-wrap gap-2"><button type="button" disabled={identifying || nativeCameraBusy} onClick={() => void startCamera()} className={buttonClass}>{selectedCapture.matched || scanMode === "continuous" ? "Scan Next Card" : "Rescan Card"}</button><button type="button" onClick={() => { stopCamera(); setSelectedCaptureId(null); }} className={buttonClass}>Done Scanning</button></div>
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+                <button type="button" disabled={identifying || nativeCameraBusy} onClick={() => { setAddedNotice(""); void startCamera(); }} className={buttonClass}>Scan More</button>
+                <button type="button" disabled={selectedCapture.status !== "review" || !selectedCandidate?.name || !selectedCandidate.number} onClick={() => confirmScan(selectedCapture)} className="rounded-xl bg-emerald-400 px-6 py-3 font-black text-black disabled:opacity-40">{selectedCapture.matched ? "✓ Card Added" : "Add Card"}</button>
+              </div>
             </div>}
           </section>
 
-          {mode === "trade" && <section className="rounded-2xl border border-zinc-800 bg-black p-4"><h3 className="text-lg font-black">Your Side of the Trade</h3><p className="mb-3 text-xs text-zinc-500">Choose the inventory item the customer wants. Your item remains at full asking value.</p>
-            {targetInventory ? <div className="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-950 p-3"><div className="h-24 w-16 shrink-0 overflow-hidden rounded-lg bg-black"><ResilientCardImage src={targetInventory.cards?.image_url} name={targetInventory.cards?.name} setName={targetInventory.cards?.set_name} cardNumber={targetInventory.cards?.card_number} category={targetInventory.cards?.category} externalId={targetInventory.cards?.external_id}/></div><div className="min-w-0 flex-1"><p className="font-black">{inventoryTitle(targetInventory)}</p><p className="text-xs text-zinc-500">{inventorySubtitle(targetInventory)} • {inventoryOwnership(targetInventory)}</p><p className="text-xs text-zinc-500">Available: {targetInventory.quantity ?? 0}</p></div><button type="button" onClick={() => { setTargetInventory(null); setTargetPrice(""); }} className={buttonClass}>Change</button></div> : <><input value={inventorySearch} onChange={e => setInventorySearch(e.target.value)} placeholder="Search available vendor inventory..." className={inputClass}/><div className="mt-2 max-h-56 space-y-1 overflow-y-auto">{activeInventory.map(item => <button type="button" key={item.id} onClick={() => { setTargetInventory(item); setTargetPrice(item.price != null ? String(item.price) : ""); setInventorySearch(""); }} className="flex w-full items-center justify-between rounded-lg border border-zinc-900 p-3 text-left hover:border-emerald-400/40"><span><strong>{inventoryTitle(item)}</strong><span className="ml-2 text-xs text-zinc-500">{inventorySubtitle(item)}</span></span><span className="text-sm font-black text-emerald-300">{money(Number(item.price ?? 0))}</span></button>)}{activeInventory.length === 0 && <p className="p-3 text-xs text-zinc-500">No available inventory matches.</p>}</div></>}
-            <label className="mt-3 block text-xs font-black text-zinc-400">Your Item Value ($)<input type="number" min="0" step="0.01" value={targetPrice} onChange={e => setTargetPrice(e.target.value)} className={`${inputClass} mt-1`}/></label>
-          </section>}
-
-          <section><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-xl font-black">Customer Cards</h3><p className="text-xs text-zinc-500">{rows.length} row(s) • Search, verify printing, then enter market value.</p></div><button type="button" onClick={() => addRow()} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-black text-black">+ Add Card</button></div>
+          {false && <section><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-xl font-black">Customer Cards</h3><p className="text-xs text-zinc-500">{rows.length} row(s) • Search, verify printing, then enter market value.</p></div><button type="button" onClick={() => addRow()} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-black text-black">+ Add Card</button></div>
             <div className="space-y-4">{rows.map((row, index) => <article key={row.localId} className="rounded-2xl border border-zinc-800 bg-black p-4"><div className="mb-3 flex items-center justify-between"><p className="text-xs font-black uppercase tracking-wider text-emerald-400">Card {index + 1}</p><button type="button" onClick={() => removeRow(row.localId)} className={buttonClass}>Remove</button></div>
               <CatalogCardSearch catalogType={row.catalogType} selectedCard={row.card} onCatalogTypeChange={catalogType => updateRow(row.localId, { catalogType, card: null })} onSelect={card => updateRow(row.localId, { card })} onClear={() => updateRow(row.localId, { card: null })}/>
               <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4"><label className="text-xs font-black text-zinc-400">Type<select value={row.itemType} onChange={e => updateRow(row.localId, { itemType: e.target.value as AnalyzerCardRow["itemType"] })} className={`${inputClass} mt-1`}><option value="raw">Raw</option><option value="slab">Graded</option><option value="sealed">Sealed</option></select></label>
@@ -1294,13 +1327,14 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
               <label className="text-xs font-black text-zinc-400">Market Value ($)<input type="number" min="0" step="0.01" value={row.marketValue} onChange={e => updateRow(row.localId, { marketValue: e.target.value })} className={`${inputClass} mt-1`}/></label><label className="text-xs font-black text-zinc-400">Offer %<input type="number" min="0" max="100" step="1" value={row.percentage} onChange={e => updateRow(row.localId, { percentage: clampPercentage(Number(e.target.value)) })} className={`${inputClass} mt-1`}/></label></div>
               <div className="mt-3 flex items-center justify-between rounded-xl bg-zinc-950 px-4 py-3"><span className="text-xs font-bold text-zinc-500">Customer offer for this card</span><strong className="text-lg text-emerald-400">{money(Math.max(0, numericValue(row.marketValue)) * row.percentage / 100)}</strong></div>
             </article>)}</div>
-          </section>
+          </section>}
 
-          <section className="rounded-2xl border border-emerald-400/30 bg-emerald-400/[0.05] p-5"><h3 className="text-lg font-black">Deal Summary</h3><div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-4"><div><p className="text-xs text-zinc-500">Customer Market Value</p><p className="text-xl font-black">{money(totals.market)}</p></div><div><p className="text-xs text-zinc-500">Cash Offer</p><p className="text-xl font-black text-emerald-400">{money(totals.cash)}</p></div><div><p className="text-xs text-zinc-500">Effective Rate</p><p className="text-xl font-black">{totals.market > 0 ? (totals.cash / totals.market * 100).toFixed(1) : "0.0"}%</p></div><div><p className="text-xs text-zinc-500">Identified Cards</p><p className="text-xl font-black">{totals.identified}/{rows.length}</p></div></div>
+          {false && <section className="rounded-2xl border border-emerald-400/30 bg-emerald-400/[0.05] p-5"><h3 className="text-lg font-black">Deal Summary</h3><div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-4"><div><p className="text-xs text-zinc-500">Customer Market Value</p><p className="text-xl font-black">{money(totals.market)}</p></div><div><p className="text-xs text-zinc-500">Cash Offer</p><p className="text-xl font-black text-emerald-400">{money(totals.cash)}</p></div><div><p className="text-xs text-zinc-500">Effective Rate</p><p className="text-xl font-black">{totals.market > 0 ? (totals.cash / totals.market * 100).toFixed(1) : "0.0"}%</p></div><div><p className="text-xs text-zinc-500">Identified Cards</p><p className="text-xl font-black">{totals.identified}/{rows.length}</p></div></div>
             <label className="mt-4 block max-w-xs text-xs font-black text-zinc-400">Trade Credit Bonus (%)<input type="number" min="0" max="100" value={creditBonus} onChange={e => setCreditBonus(clampPercentage(Number(e.target.value)))} className={`${inputClass} mt-1`}/></label><div className="mt-3 flex items-center justify-between border-t border-zinc-800 pt-3"><span className="font-bold">Customer Trade Credit</span><strong className="text-xl text-emerald-300">{money(tradeCredit)}</strong></div>
             {mode === "trade" && <div className="mt-3 space-y-2 border-t border-zinc-800 pt-3"><div className="flex justify-between text-sm"><span>Your Item Value</span><strong>{money(targetValue)}</strong></div><div className="flex justify-between text-lg font-black"><span>{tradeDifference >= 0 ? "Cash Customer Owes" : "Credit Above Item Value"}</span><span className="text-emerald-300">{money(Math.abs(tradeDifference))}</span></div></div>}
             <p className="mt-4 text-xs leading-5 text-zinc-500">Estimate only. This version does not charge customers, change inventory, record sales, or submit trade offers. Verify identities and prices before completing a deal.</p>
-          </section>
+          </section>}
+          </div>}
         </div>
       </div>
     </div>}
