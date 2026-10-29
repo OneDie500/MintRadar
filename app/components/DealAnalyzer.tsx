@@ -132,25 +132,6 @@ function newRow(): AnalyzerCardRow {
   };
 }
 
-function catalogEndpoint(
-  catalogType: CatalogType
-) {
-  switch (catalogType) {
-    case "Magic: The Gathering":
-      return "/api/catalog/mtg";
-    case "Yu-Gi-Oh!":
-      return "/api/catalog/yugioh";
-    case "Lorcana":
-      return "/api/catalog/lorcana";
-    case "One Piece":
-      return "/api/catalog/onepiece";
-    case "Sports":
-      return "/api/catalog/sports";
-    default:
-      return "/api/catalog/search";
-  }
-}
-
 function numericValue(
   value: string | number | null | undefined
 ) {
@@ -230,25 +211,6 @@ function isSportsCard(
   ].some((term) =>
     value.includes(term)
   );
-}
-
-function inventorySearchText(
-  item: VendorInventorySearchItem
-) {
-  return [
-    item.cards?.name,
-    item.cards?.set_name,
-    item.cards?.card_number,
-    item.cards?.finish,
-    item.cards?.edition,
-    item.condition,
-    item.grading_company,
-    item.grade,
-    item.cert_number,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
 }
 
 function inventoryTitle(
@@ -641,312 +603,6 @@ function TradeCompButtons({
   );
 }
 
-function CatalogCardSearch({
-  catalogType,
-  selectedCard,
-  onCatalogTypeChange,
-  onSelect,
-  onClear,
-}: {
-  catalogType: CatalogType;
-  selectedCard: CatalogCard | null;
-  onCatalogTypeChange: (
-    value: CatalogType
-  ) => void;
-  onSelect: (
-    card: CatalogCard
-  ) => void;
-  onClear: () => void;
-}) {
-  const [query, setQuery] =
-    useState("");
-
-  const [results, setResults] =
-    useState<CatalogCard[]>([]);
-
-  const [loading, setLoading] =
-    useState(false);
-
-  const [error, setError] =
-    useState("");
-
-  useEffect(() => {
-    const cleanQuery =
-      query.trim();
-
-    if (
-      selectedCard ||
-      cleanQuery.length < 2
-    ) {
-      setResults([]);
-      setLoading(false);
-      setError("");
-      return;
-    }
-
-    const controller =
-      new AbortController();
-
-    const timer =
-      window.setTimeout(
-        async () => {
-          try {
-            setLoading(true);
-            setError("");
-
-            const response =
-              await fetch(
-                `${catalogEndpoint(
-                  catalogType
-                )}?q=${encodeURIComponent(
-                  cleanQuery
-                )}&page=1`,
-                {
-                  signal:
-                    controller.signal,
-                }
-              );
-
-            const data =
-              await response.json();
-
-            if (!response.ok) {
-              throw new Error(
-                data?.error ||
-                  "Catalog search failed."
-              );
-            }
-
-            setResults(
-              Array.isArray(
-                data?.results
-              )
-                ? data.results
-                : []
-            );
-          } catch (err) {
-            if (
-              err instanceof Error &&
-              err.name ===
-                "AbortError"
-            ) {
-              return;
-            }
-
-            console.error(
-              "Trade analyzer catalog search error:",
-              err
-            );
-
-            setError(
-              err instanceof Error
-                ? err.message
-                : "Something went wrong while searching."
-            );
-
-            setResults([]);
-          } finally {
-            if (
-              !controller
-                .signal.aborted
-            ) {
-              setLoading(false);
-            }
-          }
-        },
-        350
-      );
-
-    return () => {
-      window.clearTimeout(
-        timer
-      );
-      controller.abort();
-    };
-  }, [
-    query,
-    catalogType,
-    selectedCard,
-  ]);
-
-  if (selectedCard) {
-    return (
-      <div className="rounded-2xl border border-zinc-900 bg-black p-4">
-        <div className="flex gap-4">
-          <div className="flex h-28 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950">
-            <ResilientCardImage
-              src={selectedCard.image_url}
-              name={selectedCard.name}
-              setName={selectedCard.set_name}
-              cardNumber={selectedCard.card_number}
-              category={selectedCard.category}
-              dataSource={selectedCard.data_source}
-              externalId={selectedCard.external_id}
-            />
-          </div>
-
-          <div className="min-w-0 flex-1">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="truncate text-lg font-black text-white">
-                  {selectedCard.name ||
-                    "Unknown Card"}
-                </p>
-
-                <p className="mt-1 text-xs text-zinc-500">
-                  {cardSecondaryLine(
-                    selectedCard
-                  )}
-                </p>
-
-                <p className="mt-1 text-xs text-zinc-700">
-                  {cardDetailLine(
-                    selectedCard
-                  )}
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  onClear();
-                  setQuery("");
-                  setResults([]);
-                }}
-                className="shrink-0 text-xs font-black uppercase tracking-wider text-zinc-600 transition hover:text-white"
-              >
-                Change
-              </button>
-            </div>
-
-            <TradeCompButtons
-              card={selectedCard}
-            />
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="rounded-2xl border border-zinc-900 bg-black p-4">
-      <div className="flex flex-wrap gap-2">
-        {CATALOG_TYPES.map(
-          (type) => (
-            <button
-              key={type}
-              type="button"
-              onClick={() => {
-                onCatalogTypeChange(
-                  type
-                );
-                setQuery("");
-                setResults([]);
-              }}
-              className={`rounded-full border px-3 py-2 text-[10px] font-black uppercase tracking-wider transition ${
-                catalogType === type
-                  ? "border-emerald-400 bg-emerald-400 text-black"
-                  : "border-zinc-800 bg-zinc-950 text-zinc-500 hover:text-white"
-              }`}
-            >
-              {type ===
-              "Magic: The Gathering"
-                ? "MTG"
-                : type}
-            </button>
-          )
-        )}
-      </div>
-
-      <input
-        type="text"
-        value={query}
-        onChange={(event) =>
-          setQuery(
-            event.target.value
-          )
-        }
-        placeholder="Search card name, set, number, parallel..."
-        className="mt-3 w-full rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm font-bold text-white outline-none placeholder:text-zinc-700 focus:border-emerald-400/50"
-      />
-
-      {loading && (
-        <p className="mt-3 text-sm font-bold text-emerald-400">
-          Searching catalog...
-        </p>
-      )}
-
-      {error && (
-        <p className="mt-3 text-sm font-bold text-red-300">
-          {error}
-        </p>
-      )}
-
-      {!loading &&
-        query.trim().length >= 2 &&
-        !error &&
-        results.length === 0 && (
-          <p className="mt-3 text-sm text-zinc-600">
-            No matching cards found.
-          </p>
-        )}
-
-      {results.length > 0 && (
-        <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
-          {results
-            .slice(0, 30)
-            .map(
-              (card, index) => (
-                <button
-                  key={`${card.data_source}-${card.external_id}-${index}`}
-                  type="button"
-                  onClick={() => {
-                    onSelect(card);
-                    setQuery("");
-                    setResults([]);
-                  }}
-                  className="flex w-full items-center gap-3 rounded-xl border border-zinc-900 bg-zinc-950 p-3 text-left transition hover:border-emerald-400/30 hover:bg-zinc-900"
-                >
-                  <div className="flex h-20 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-zinc-900 bg-black">
-                    <ResilientCardImage
-                      src={card.image_url}
-                      name={card.name}
-                      setName={card.set_name}
-                      cardNumber={card.card_number}
-                      category={card.category}
-                      dataSource={card.data_source}
-                      externalId={card.external_id}
-                    />
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-black text-white">
-                      {card.name ||
-                        "Unknown Card"}
-                    </p>
-
-                    <p className="mt-1 text-xs text-zinc-500">
-                      {cardSecondaryLine(
-                        card
-                      )}
-                    </p>
-
-                    <p className="mt-1 text-xs text-zinc-700">
-                      {cardDetailLine(
-                        card
-                      )}
-                    </p>
-                  </div>
-                </button>
-              )
-            )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-
 type DealMode = "buy" | "trade";
 type ScanMode = "cards" | "qr";
 type ScanPrice = { printing?: string; market_price?: number | null; low_price?: number | null; median_price?: number | null; last_updated_at?: string | null };
@@ -987,13 +643,10 @@ export default function DealAnalyzer({ inventory, vendorId }: { inventory: Vendo
   const [tradeRate, setTradeRate] = useState(80);
   const [addedNotice, setAddedNotice] = useState("");
   const [vendorItems, setVendorItems] = useState<VendorInventorySearchItem[]>([]);
-  const [qrText, setQrText] = useState("");
-  const [qrError, setQrError] = useState("");
   const [rows, setRows] = useState<AnalyzerCardRow[]>(() => [newRow()]);
   const [defaultPercentage, setDefaultPercentage] = useState(70);
   const [creditBonus, setCreditBonus] = useState(0);
   const [targetInventory, setTargetInventory] = useState<VendorInventorySearchItem | null>(null);
-  const [inventorySearch, setInventorySearch] = useState("");
   const [targetPrice, setTargetPrice] = useState("");
   const [scanMode, setScanMode] = useState<ScanMode>("cards");
   const [qrCandidate, setQrCandidate] = useState<VendorInventorySearchItem | null>(null);
@@ -1017,12 +670,6 @@ export default function DealAnalyzer({ inventory, vendorId }: { inventory: Vendo
   const [identifying, setIdentifying] = useState(false);
   const scanRequestRef = useRef(false);
   const scanSessionRef = useRef(0);
-
-  const activeInventory = useMemo(() => {
-    if (!open || mode !== "trade" || targetInventory) return [];
-    const query = inventorySearch.trim().toLowerCase();
-    return inventory.filter(item => Number(item.quantity ?? 0) > 0 && (!query || inventorySearchText(item).includes(query))).slice(0, 40);
-  }, [inventory, inventorySearch, open, mode, targetInventory]);
 
   const totals = useMemo(() => rows.reduce((sum, row) => {
     const value = Math.max(0, numericValue(row.marketValue));
@@ -1059,8 +706,6 @@ export default function DealAnalyzer({ inventory, vendorId }: { inventory: Vendo
     setView("scanner");
     setAddedNotice("");
     setVendorItems([]);
-    setQrText("");
-    setQrError("");
     setQrCandidate(null);
     setQrScanMessage("");
     setScanMode("cards");
@@ -1070,7 +715,6 @@ export default function DealAnalyzer({ inventory, vendorId }: { inventory: Vendo
     setCreditBonus(0);
     setTargetInventory(null);
     setTargetPrice("");
-    setInventorySearch("");
     stopCamera();
     scanSessionRef.current += 1;
     setCaptures([]);
@@ -1300,7 +944,7 @@ export default function DealAnalyzer({ inventory, vendorId }: { inventory: Vendo
           setQrScanMessage("");
         }
       }).catch(() => {
-        if (!cancelled) setQrScanMessage("QR reader could not load. Check that jsqr is installed, or paste the listing URL below.");
+        if (!cancelled) setQrScanMessage("QR reader could not load. Check that jsqr is installed and retry the scanner.");
       }).finally(() => { qrLoading = false; });
     }
     detectionTimerRef.current = setInterval(() => {
@@ -1418,26 +1062,6 @@ export default function DealAnalyzer({ inventory, vendorId }: { inventory: Vendo
     setAddedNotice(`${candidate.name} added to your deal`);
   }
 
-  async function addVendorListing(value: string) {
-    setQrError("");
-    const id = listingIdFromQr(value);
-    if (!id) { setQrError("Paste a MintRadar /l/ URL, /listing/ URL, or listing UUID."); return; }
-    if (vendorItems.some(entry => entry.id.toLowerCase() === id)) {
-      setQrError("This listing is already in the trade."); return;
-    }
-    try {
-      const item = await fetchVendorListing(id);
-      if (!item) { setQrError("Listing not found for the active vendor."); return; }
-      if (Number(item.quantity ?? 0) <= 0 || item.price == null) {
-        setQrError("This listing is unavailable or has no asking price."); return;
-      }
-      setVendorItems(current => current.some(entry => entry.id === item.id) ? current : [...current, item]);
-      setQrText("");
-    } catch (error) {
-      setQrError(error instanceof Error ? error.message : "Could not look up this listing.");
-    }
-  }
-
   function captureFrame() {
     if (scanMode !== "cards") return;
     const video = videoRef.current;
@@ -1484,7 +1108,12 @@ export default function DealAnalyzer({ inventory, vendorId }: { inventory: Vendo
               <div className="mt-4 flex justify-between border-t border-zinc-800 pt-4"><span className="font-bold">Total Market Value</span><strong className="text-2xl text-emerald-400">{money(totals.market)}</strong></div>
             </section>
             <section className="rounded-2xl border border-zinc-800 bg-black p-4"><h3 className="text-lg font-black">Offer Preview</h3><div className="mt-4 grid gap-4 sm:grid-cols-2">{([{ title: "Cash Offer", value: cashRate, change: setCashRate, presets: [60,65,70,75,80], amount: cashOffer, label: "Pay Customer" }, { title: "Trade Credit", value: tradeRate, change: setTradeRate, presets: [70,75,80,85,90], amount: tradeCredit, label: "Available Trade Credit" }] as const).map(option => <div key={option.title} className="rounded-xl border border-zinc-800 bg-zinc-950 p-4"><label className="text-sm font-black">{option.title} (%)<input type="number" min="0" max="100" step="any" value={option.value} onChange={e => option.change(clampPercentage(Number(e.target.value)))} className={`${inputClass} mt-2`}/></label><div className="mt-3 flex flex-wrap gap-2">{option.presets.map(rate => <button type="button" key={rate} onClick={() => option.change(rate)} className={buttonClass}>{rate}%</button>)}</div><p className="mt-4 text-xs text-zinc-400">{option.label}</p><p className="text-3xl font-black text-emerald-400">{money(option.amount)}</p></div>)}</div></section>
-            <section className="rounded-2xl border border-zinc-800 bg-black p-4"><h3 className="text-lg font-black">Vendor Inventory · Trade</h3><p className="mt-1 text-xs text-zinc-400">Add a published listing by its MintRadar QR destination URL or listing ID. Listings are verified against the active vendor in Supabase.</p><div className="mt-3 flex gap-2"><input value={qrText} onChange={e => setQrText(e.target.value)} placeholder="Paste /l/ URL, /listing/ URL or UUID" className={inputClass}/><button type="button" onClick={() => addVendorListing(qrText)} className="rounded-xl bg-emerald-400 px-4 font-black text-black">Add</button></div>{qrError && <p role="alert" className="mt-2 text-xs text-amber-300">{qrError}</p>}<div className="mt-3 max-h-44 space-y-2 overflow-y-auto">{inventory.filter(item => Number(item.quantity ?? 0) > 0 && item.price != null).slice(0, 30).map(item => <button key={item.id} type="button" onClick={() => addVendorListing(item.id)} className="flex w-full justify-between rounded-lg border border-zinc-800 px-3 py-2 text-left text-xs hover:border-emerald-400"><span>{inventoryTitle(item)} · {inventorySubtitle(item)}</span><strong>{money(Number(item.price))} +</strong></button>)}</div>{vendorItems.map(item => <div key={item.id} className="mt-2 flex items-center justify-between rounded-lg bg-zinc-950 p-3 text-sm"><span>{inventoryTitle(item)} · {money(Number(item.price))}</span><button type="button" onClick={() => setVendorItems(current => current.filter(entry => entry.id !== item.id))} className="text-red-300">Remove</button></div>)}<div className="mt-4 space-y-2 border-t border-zinc-800 pt-4"><div className="flex justify-between"><span>Vendor Asking Total</span><strong>{money(vendorTotal)}</strong></div><div className="flex justify-between"><span>Customer Trade Credit</span><strong>{money(tradeCredit)}</strong></div><div className="flex justify-between text-lg font-black"><span>{tradeDifference >= 0 ? "Customer Owes" : "Credit Remaining"}</span><strong className="text-emerald-400">{money(Math.abs(tradeDifference))}</strong></div></div></section>
+            <section className="rounded-2xl border border-zinc-800 bg-black p-4">
+              <div className="flex items-center justify-between gap-3"><h3 className="text-lg font-black">Vendor Inventory · Trade</h3><button type="button" onClick={() => { setScanMode("qr"); setView("scanner"); }} className={buttonClass}>Scan Vendor QR</button></div>
+              <p className="mt-2 text-xs text-zinc-400">Scan MintRadar inventory labels to add vendor cards to this transaction.</p>
+              {vendorItems.length === 0 ? <p className="mt-4 text-sm text-zinc-500">No vendor cards added yet.</p> : vendorItems.map(item => <div key={item.id} className="mt-3 flex items-center gap-3 rounded-lg bg-zinc-950 p-3 text-sm"><div className="h-20 w-14 shrink-0 overflow-hidden rounded-lg bg-black"><ResilientCardImage src={item.cards?.image_url} name={item.cards?.name} setName={item.cards?.set_name} cardNumber={item.cards?.card_number} category={item.cards?.category} externalId={item.cards?.external_id}/></div><div className="min-w-0 flex-1"><p className="font-black">{inventoryTitle(item)}</p><p className="text-xs text-zinc-400">{inventorySubtitle(item)}</p><p className="text-sm font-black text-emerald-400">{money(Number(item.price))}</p></div><button type="button" onClick={() => setVendorItems(current => current.filter(entry => entry.id !== item.id))} className="text-xs text-red-300">Remove</button></div>)}
+              <div className="mt-4 space-y-2 border-t border-zinc-800 pt-4"><div className="flex justify-between"><span>Vendor Asking Total</span><strong>{money(vendorTotal)}</strong></div><div className="flex justify-between"><span>Customer Trade Credit</span><strong>{money(tradeCredit)}</strong></div><div className="flex justify-between text-lg font-black"><span>{tradeDifference >= 0 ? "Customer Owes" : "Credit Remaining"}</span><strong className="text-emerald-400">{money(Math.abs(tradeDifference))}</strong></div></div>
+            </section>
             <p className="text-xs text-zinc-500">Estimate only. No payment, inventory update, or sale is recorded. Verify card identities, prices, and condition before completing a deal.</p>
           </div>}
           {view === "scanner" && <div className="flex min-h-full flex-col">
@@ -1522,7 +1151,6 @@ export default function DealAnalyzer({ inventory, vendorId }: { inventory: Vendo
                 </div>
               </div>
               {scanMode === "qr" && qrScanMessage && <p role="status" className="mt-3 text-sm text-amber-300">{qrScanMessage}</p>}
-              {scanMode === "qr" && <div className="mt-3 flex gap-2"><input aria-label="MintRadar listing URL or UUID" value={qrText} onChange={e => setQrText(e.target.value)} placeholder="Paste QR listing URL or UUID" className={inputClass}/><button type="button" onClick={() => { void reviewQrValue(qrText); setQrText(""); }} className="rounded-xl bg-sky-500 px-4 font-black text-white">Find</button></div>}
               {scanMode === "qr" && qrCandidate && <div className="mt-3 rounded-xl border border-emerald-400/40 bg-slate-950 p-4"><p className="text-xs font-black uppercase text-emerald-400">Inventory match · Review before adding</p><div className="mt-3 flex items-start gap-4"><div className="h-36 w-24 shrink-0 overflow-hidden rounded-lg bg-black"><ResilientCardImage src={qrCandidate.cards?.image_url} name={qrCandidate.cards?.name} setName={qrCandidate.cards?.set_name} cardNumber={qrCandidate.cards?.card_number} category={qrCandidate.cards?.category} externalId={qrCandidate.cards?.external_id}/></div><div className="min-w-0 flex-1"><p className="font-black">{inventoryTitle(qrCandidate)}</p><p className="mt-1 text-sm text-slate-400">{inventorySubtitle(qrCandidate)}</p><p className="mt-3 text-xs text-slate-500">Listing price</p><p className="text-xl font-black text-emerald-400">{money(Number(qrCandidate.price))}</p></div></div><div className="mt-3 grid grid-cols-2 gap-2"><button type="button" onClick={() => { setQrCandidate(null); void startCamera(); }} className={buttonClass}>Scan Again</button><button type="button" onClick={confirmQrCandidate} className="rounded-xl bg-emerald-400 px-3 py-3 font-black text-black">Add to Trade</button></div></div>}
               {cameraError && <p role="alert" className="mt-3 text-sm text-amber-300">{cameraError}</p>}
               {cameraError && <button type="button" onClick={() => void startCamera()} className="mt-3 w-full rounded-xl bg-sky-500 px-4 py-3 font-black text-white">Retry Camera</button>}
