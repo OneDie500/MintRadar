@@ -653,6 +653,8 @@ export default function DealAnalyzer({ inventory, vendorId }: { inventory: Vendo
   const [qrScanMessage, setQrScanMessage] = useState("");
   const qrBusyRef = useRef(false);
   const qrLookupRef = useRef(false);
+  const [qrRestartPending, setQrRestartPending] = useState(false);
+  const [cameraGeneration, setCameraGeneration] = useState(0);
   const [scannerOpen, setScannerOpen] = useState(false);
   const [cameraBackend, setCameraBackend] = useState<"web" | "native" | null>(null);
   const [cameraError, setCameraError] = useState("");
@@ -707,6 +709,7 @@ export default function DealAnalyzer({ inventory, vendorId }: { inventory: Vendo
     setAddedNotice("");
     setVendorItems([]);
     setQrCandidate(null);
+    setQrRestartPending(false);
     setQrScanMessage("");
     setScanMode("cards");
     setCashRate(70);
@@ -758,6 +761,7 @@ export default function DealAnalyzer({ inventory, vendorId }: { inventory: Vendo
           audio: false,
         });
         streamRef.current = stream;
+        setCameraGeneration(current => current + 1);
         setCameraBackend("web");
         setScannerOpen(true);
         return;
@@ -784,7 +788,7 @@ export default function DealAnalyzer({ inventory, vendorId }: { inventory: Vendo
   // Start on entry to the Scanner tab; a manual start control remains available
   // for iOS permission prompts that require a direct user gesture.
   useEffect(() => {
-    if (!open || view !== "scanner" || scannerOpen || identifying || selectedCaptureId || qrCandidate) return;
+    if (!open || view !== "scanner" || scannerOpen || identifying || selectedCaptureId || qrCandidate || qrRestartPending || qrLookupRef.current) return;
     void startCamera();
     // Run only on entering the scanner view, not when camera state changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -795,6 +799,7 @@ export default function DealAnalyzer({ inventory, vendorId }: { inventory: Vendo
     stopCamera();
     setSelectedCaptureId(null);
     setQrCandidate(null);
+    setQrRestartPending(false);
     setQrScanMessage("");
     setCameraError("");
     setScanMode(next);
@@ -879,6 +884,7 @@ export default function DealAnalyzer({ inventory, vendorId }: { inventory: Vendo
       }
       setVendorItems(current => current.some(item => item.id === currentItem.id) ? current : [...current, currentItem]);
       setAddedNotice(`${inventoryTitle(currentItem)} added to vendor side`);
+      setQrRestartPending(true);
       setQrCandidate(null);
     } catch (error) {
       setQrScanMessage(error instanceof Error ? error.message : "Could not verify this listing.");
@@ -886,6 +892,15 @@ export default function DealAnalyzer({ inventory, vendorId }: { inventory: Vendo
       qrLookupRef.current = false;
     }
   }
+
+  // Restart only after the listing verification has released its lookup lock.
+  // This prevents a second QR session from mounting with the previous scan still busy.
+  useEffect(() => {
+    if (!qrRestartPending || qrLookupRef.current || !open || view !== "scanner" || scanMode !== "qr") return;
+    setQrRestartPending(false);
+    void startCamera();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qrRestartPending, open, view, scanMode]);
 
   // Conservative, on-device card-shape screening. This does not call the paid API.
   // We require a lit, detailed frame with a strong rectangular boundary in the
@@ -1129,7 +1144,7 @@ export default function DealAnalyzer({ inventory, vendorId }: { inventory: Vendo
             <div className="mt-3 mx-auto w-full max-w-lg">
               <div className="relative h-[min(56dvh,650px)] overflow-hidden rounded-2xl border border-sky-500/50 bg-[#0a1424]">
                 {scannerOpen && cameraBackend === "web" && (
-                  <video ref={videoRef} autoPlay muted playsInline className="absolute inset-0 h-full w-full object-cover" />
+                  <video key={cameraGeneration} ref={videoRef} autoPlay muted playsInline className="absolute inset-0 h-full w-full object-cover" />
                 )}
                 {!scannerOpen && !selectedCapture && !qrCandidate && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center text-slate-400">
