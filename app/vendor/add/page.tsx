@@ -25,6 +25,7 @@ type CatalogCard = {
   data_source: string;
   language?: string | null;
   canonical_name?: string | null;
+  variant?: string | null;
 
   name?: string | null;
   set_name?: string | null;
@@ -66,6 +67,18 @@ type PendingListingPhoto = {
   file: File;
   imageType: ListingPhotoType;
 };
+
+function normalizedCardLanguage(value?: string | null): string {
+  const language = (value || "EN").trim().toUpperCase();
+  if (["JP", "JPN", "JA", "JAPANESE"].includes(language)) return "JP";
+  if (["EN", "ENG", "ENGLISH"].includes(language)) return "EN";
+  return language;
+}
+
+function cleanCatalogImageUrl(value?: string | null): string | null {
+  const url = value?.trim() || "";
+  return /^(https?:\/\/|\/api\/|\/storage\/|\/images\/)/i.test(url) ? url : null;
+}
 
 function catalogCardKey(card: CatalogCard): string {
   return [card.data_source, card.language || "", card.external_id].join(":");
@@ -184,15 +197,24 @@ function buildPokemonFallbackKey({
   name,
   setName,
   cardNumber,
+  setId,
+  language,
+  variant,
 }: {
   name?: string | null;
   setName?: string | null;
   cardNumber?: string | null;
+  setId?: string | null;
+  language?: string | null;
+  variant?: string | null;
 }) {
   return [
     normalizeFallbackKeyPart(name),
     normalizeFallbackKeyPart(setName),
     normalizeFallbackKeyPart(cardNumber),
+    normalizeFallbackKeyPart(setId),
+    normalizedCardLanguage(language),
+    normalizeFallbackKeyPart(variant),
   ].join("|");
 }
 
@@ -200,15 +222,24 @@ async function requestPokemonFallbackImage({
   name,
   setName,
   cardNumber,
+  setId,
+  language,
+  variant,
 }: {
   name?: string | null;
   setName?: string | null;
   cardNumber?: string | null;
+  setId?: string | null;
+  language?: string | null;
+  variant?: string | null;
 }) {
   const key = buildPokemonFallbackKey({
     name,
     setName,
     cardNumber,
+    setId,
+    language,
+    variant,
   });
 
   if (!name?.trim()) {
@@ -239,6 +270,10 @@ async function requestPokemonFallbackImage({
         params.set("cardNumber", cardNumber.trim());
       }
 
+      if (setId?.trim()) params.set("setId", setId.trim());
+      params.set("language", normalizedCardLanguage(language));
+      if (variant?.trim()) params.set("variant", variant.trim());
+
       const response = await fetch(
         `/api/catalog/pokemon-image-fallback?${params.toString()}`,
         {
@@ -256,7 +291,7 @@ async function requestPokemonFallbackImage({
 
       const imageUrl =
         payload.ok && payload.imageUrl
-          ? payload.imageUrl
+          ? cleanCatalogImageUrl(payload.imageUrl)
           : null;
 
       if (imageUrl) {
@@ -306,7 +341,7 @@ function CatalogCardImage({
   className?: string;
 }) {
   const [currentSrc, setCurrentSrc] =
-    useState<string | null>(card.image_url || null);
+    useState<string | null>(cleanCatalogImageUrl(card.image_url));
 
   const [pokemonFallbackAttempted, setPokemonFallbackAttempted] =
     useState(false);
@@ -327,7 +362,7 @@ function CatalogCardImage({
     normalizedCategory === "sports";
 
   useEffect(() => {
-    setCurrentSrc(card.image_url || null);
+    setCurrentSrc(cleanCatalogImageUrl(card.image_url));
     setPokemonFallbackAttempted(false);
     setSportsFallbackAttempted(false);
     setImageFailed(false);
@@ -338,6 +373,9 @@ function CatalogCardImage({
     card.category,
     card.set_name,
     card.card_number,
+    card.set_id,
+    card.language,
+    card.variant,
   ]);
 
   async function tryPokemonFallback() {
@@ -356,6 +394,9 @@ function CatalogCardImage({
         name: card.name,
         setName: card.set_name,
         cardNumber: card.card_number,
+        setId: card.set_id,
+        language: card.language,
+        variant: card.variant || card.finish,
       });
 
     if (!fallbackImage) {
@@ -495,6 +536,8 @@ export default function AddInventoryPage() {
   const [searchTerm, setSearchTerm] =
     useState("");
 
+  const [languageFilter, setLanguageFilter] = useState<"All" | "EN" | "JP">("All");
+
   const [results, setResults] =
     useState<CatalogCard[]>([]);
 
@@ -633,6 +676,7 @@ export default function AddInventoryPage() {
         const payload = JSON.parse(event.newValue) as { card?: CatalogCard; category?: CatalogType };
         if (!payload.card?.external_id || !payload.card?.data_source) return;
         if (payload.category) setCatalogType(payload.category);
+        if (payload.card.language && ["EN", "JP"].includes(normalizedCardLanguage(payload.card.language))) setLanguageFilter(normalizedCardLanguage(payload.card.language) as "EN" | "JP");
         setSelectedCard(payload.card);
         setEdition(payload.card.edition || "");
         setFinish(payload.card.category === "Sports" ? payload.card.parallel_name || payload.card.finish || "" : payload.card.finish || "");
@@ -803,7 +847,7 @@ export default function AddInventoryPage() {
             await fetch(
               `${endpoint}?q=${encodeURIComponent(
                 query
-              )}&page=1`,
+              )}&page=1${catalogType === "Pokemon" && languageFilter !== "All" ? `&language=${languageFilter}` : ""}`,
               {
                 signal:
                   controller.signal,
@@ -868,6 +912,7 @@ export default function AddInventoryPage() {
     searchTerm,
     listingType,
     catalogType,
+    languageFilter,
   ]);
 
   // -----------------------------------------
@@ -918,7 +963,7 @@ export default function AddInventoryPage() {
         await fetch(
           `${endpoint}?q=${encodeURIComponent(
             query
-          )}&page=${nextPage}`
+          )}&page=${nextPage}${catalogType === "Pokemon" && languageFilter !== "All" ? `&language=${languageFilter}` : ""}`
         );
 
       const data =
@@ -988,6 +1033,7 @@ export default function AddInventoryPage() {
 
   function resetSearch() {
     setSearchTerm("");
+    setLanguageFilter("All");
     setResults([]);
     setSelectedCard(null);
 
@@ -1204,7 +1250,7 @@ export default function AddInventoryPage() {
         existingCardError,
     } = await supabase
       .from("cards")
-      .select("id")
+      .select("id, image_url, language")
       .eq(
         "external_id",
         selectedCard.external_id
@@ -1220,6 +1266,14 @@ export default function AddInventoryPage() {
     }
 
     if (existingCard?.id) {
+      const image = cleanCatalogImageUrl(selectedCard.image_url);
+      const updates: Record<string, string> = {};
+      if (!cleanCatalogImageUrl(existingCard.image_url) && image) updates.image_url = image;
+      if (!existingCard.language?.trim() && selectedCard.language?.trim()) updates.language = normalizedCardLanguage(selectedCard.language);
+      if (Object.keys(updates).length) {
+        const { error: updateError } = await supabase.from("cards").update(updates).eq("id", existingCard.id);
+        if (updateError) console.warn("Could not enrich existing catalog card metadata:", updateError.message);
+      }
       return existingCard.id;
     }
 
@@ -1242,8 +1296,11 @@ export default function AddInventoryPage() {
           null,
 
         image_url:
-          selectedCard.image_url ||
-          null,
+          cleanCatalogImageUrl(selectedCard.image_url),
+
+        language: normalizedCardLanguage(selectedCard.language),
+        set_id: selectedCard.set_id || null,
+        variant: selectedCard.variant || null,
 
         category:
           selectedCard.category ||
@@ -1852,6 +1909,8 @@ export default function AddInventoryPage() {
     catalogType === "One Piece" ||
     catalogType === "Sports";
 
+  const displayedResults = languageFilter === "All" ? results : results.filter(card => normalizedCardLanguage(card.language) === languageFilter);
+
   const liveCatalogName =
     catalogType === "Magic: The Gathering"
       ? "Magic: The Gathering"
@@ -2157,6 +2216,15 @@ export default function AddInventoryPage() {
               className="w-full mt-6 bg-black border border-zinc-800 rounded-2xl px-5 py-4 text-lg outline-none focus:border-emerald-400 transition"
             />
 
+            {(catalogType === "Pokemon" || catalogType === "One Piece") && (
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <label htmlFor="add-inventory-language" className="text-sm font-semibold text-zinc-400">Language</label>
+                <select id="add-inventory-language" value={languageFilter} onChange={event => { setLanguageFilter(event.target.value as "All" | "EN" | "JP"); setSelectedCard(null); }} className="rounded-xl border border-zinc-800 bg-black px-4 py-3 text-sm text-white focus:border-emerald-400 outline-none">
+                  <option value="All">All languages</option><option value="EN">English (EN)</option><option value="JP">Japanese (JP)</option>
+                </select>
+                <span className="text-xs text-zinc-600">Filters loaded search results</span>
+              </div>
+            )}
             {searching && (
               <p className="text-emerald-400 mt-5">
                 Searching...
@@ -2173,7 +2241,7 @@ export default function AddInventoryPage() {
               searchTerm.trim().length >=
                 2 &&
               !searchError &&
-              results.length ===
+              displayedResults.length ===
                 0 && (
                 <p className="text-zinc-600 mt-5">
                   No matching cards found.
@@ -2181,21 +2249,21 @@ export default function AddInventoryPage() {
               )}
 
             {!searching &&
-              results.length >
+              displayedResults.length >
                 0 && (
                 <div className="mt-7">
 
                   <p className="text-zinc-500 mb-4">
                     Showing{" "}
                     {
-                      results.length
+                      displayedResults.length
                     }{" "}
                     results
                   </p>
 
                   <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
 
-                    {results.slice(0, 20).map(
+                    {displayedResults.map(
                       (
                         card
                       ) => (
@@ -2236,6 +2304,8 @@ export default function AddInventoryPage() {
                           </p>
 
                           <div className="flex flex-wrap gap-2 mt-3">
+                            <span className="text-xs bg-emerald-400/10 border border-emerald-400/20 rounded-lg px-2 py-1 text-emerald-300">{normalizedCardLanguage(card.language)}</span>
+                            {card.variant && <span className="text-xs bg-zinc-950 border border-zinc-900 rounded-lg px-2 py-1 text-zinc-400">{card.variant}</span>}
 
                             {card.rarity && (
                               <span className="text-xs bg-zinc-950 border border-zinc-900 rounded-lg px-2 py-1 text-zinc-500">
@@ -2316,7 +2386,7 @@ export default function AddInventoryPage() {
                        <p className="text-xs text-zinc-500 mt-2">Opens in a new tab so your listing details and photos stay here.</p>
                      </div>
                    )}
-                   {false && hasMore && (
+                   {hasMore && (
                     <div className="text-center mt-6">
 
                       <button

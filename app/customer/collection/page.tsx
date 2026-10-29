@@ -344,6 +344,90 @@ function CollectionCompButtons({
   );
 }
 
+
+// Shared Pokémon artwork resolution for catalog results and saved collection snapshots.
+// The API itself enforces local-only vintage staging and artwork rights restrictions.
+type CollectionCardArtworkProps = {
+  src?: string | null;
+  name?: string | null;
+  setName?: string | null;
+  setId?: string | null;
+  cardNumber?: string | null;
+  category?: string | null;
+  dataSource?: string | null;
+  externalId?: string | null;
+};
+
+function CollectionCardArtwork({
+  src, name, setName, setId, cardNumber, category, dataSource, externalId,
+}: CollectionCardArtworkProps) {
+  const [resolved, setResolved] = useState(src || "");
+  const [failed, setFailed] = useState(false);
+  const [attempted, setAttempted] = useState(false);
+  const isPokemon = (category || "").toLowerCase() === "pokemon" ||
+    (dataSource || "").toLowerCase().includes("tcgdex") ||
+    /^(neo[1-4]|vs1|pmcg\d+|pcg\d+|e[1-5])[-_]/i.test(externalId || "");
+
+  useEffect(() => {
+    let cancelled = false;
+    setResolved(src || "");
+    setFailed(false);
+    setAttempted(false);
+    if (!isPokemon || !name?.trim()) return () => { cancelled = true; };
+    // Re-resolve missing or broken images without changing stored snapshots.
+    if (src?.trim()) return () => { cancelled = true; };
+    const params = new URLSearchParams({ name: name.trim() });
+    if (setName?.trim()) params.set("setName", setName.trim());
+    const regionalSetId = setId?.trim() ||
+      (externalId?.match(/^([^-]+)-/)?.[1] ?? "");
+    if (regionalSetId) params.set("setId", regionalSetId);
+    if (cardNumber?.trim()) params.set("cardNumber", cardNumber.trim());
+    setAttempted(true);
+    fetch(`/api/catalog/pokemon-image-fallback?${params}`, { cache: "no-store" })
+      .then((response) => response.ok ? response.json() : null)
+      .then((payload) => {
+        if (!cancelled) {
+          if (payload?.ok && payload.imageUrl) setResolved(payload.imageUrl);
+          else setFailed(true);
+        }
+      })
+      .catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, [src, name, setName, setId, cardNumber, category, dataSource, externalId, isPokemon]);
+
+  async function onBrokenImage() {
+    if (!isPokemon || attempted || !name?.trim()) {
+      setFailed(true);
+      return;
+    }
+    setAttempted(true);
+    const params = new URLSearchParams({ name: name.trim() });
+    if (setName?.trim()) params.set("setName", setName.trim());
+    const regionalSetId = setId?.trim() || (externalId?.match(/^([^-]+)-/)?.[1] ?? "");
+    if (regionalSetId) params.set("setId", regionalSetId);
+    if (cardNumber?.trim()) params.set("cardNumber", cardNumber.trim());
+    try {
+      const response = await fetch(`/api/catalog/pokemon-image-fallback?${params}`, { cache: "no-store" });
+      const payload = response.ok ? await response.json() : null;
+      if (payload?.ok && payload.imageUrl && payload.imageUrl !== resolved) {
+        setResolved(payload.imageUrl);
+        setFailed(false);
+        return;
+      }
+    } catch { /* Display the standard missing-artwork placeholder. */ }
+    setFailed(true);
+  }
+
+  return resolved && !failed ? (
+    <img src={resolved} alt={name || "Trading card"}
+      className="h-full w-full object-contain" onError={() => { void onBrokenImage(); }} />
+  ) : (
+    <span className="px-2 text-center text-[9px] font-black uppercase tracking-wider text-zinc-700">
+      {isPokemon && attempted && !failed ? "Loading..." : "No image"}
+    </span>
+  );
+}
+
 function itemToCatalogCard(
   item: CollectionItem
 ): CatalogCard {
@@ -967,9 +1051,13 @@ export default function CustomerCollectionPage() {
           selectedCard.card_number ||
           null,
 
+        // Never persist development-only recovered Neo/VS artwork into snapshots.
+        // The display component resolves it locally through the guarded API.
         image_url:
-          selectedCard.image_url ||
-          null,
+          /^(neo[1-4]|vs1)-/i.test(selectedCard.external_id) &&
+          /^https:\/\/pcg-search\.com\/img\/(neo|vs)\//i.test(selectedCard.image_url || "")
+            ? null
+            : selectedCard.image_url || null,
 
         category:
           selectedCard.category ||
@@ -1718,22 +1806,7 @@ export default function CustomerCollectionPage() {
                               className="flex gap-3 rounded-2xl border border-zinc-900 bg-black p-3 text-left transition hover:border-emerald-400/40"
                             >
                               <div className="flex h-24 w-16 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-zinc-900 bg-zinc-950">
-                                {card.image_url ? (
-                                  <img
-                                    src={
-                                      card.image_url
-                                    }
-                                    alt={
-                                      card.name ||
-                                      "Catalog card"
-                                    }
-                                    className="h-full w-full object-contain"
-                                  />
-                                ) : (
-                                  <span className="px-2 text-center text-[9px] font-black uppercase tracking-wider text-zinc-700">
-                                    No image
-                                  </span>
-                                )}
+                                <CollectionCardArtwork src={card.image_url} name={card.name} setName={card.set_name} setId={card.set_id} cardNumber={card.card_number} category={card.category} dataSource={card.data_source} externalId={card.external_id} />
                               </div>
 
                               <div className="min-w-0">
@@ -1774,22 +1847,7 @@ export default function CustomerCollectionPage() {
                   <div className="rounded-2xl border border-emerald-400/20 bg-black p-4">
                     <div className="flex gap-4">
                       <div className="flex h-36 w-24 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-zinc-900 bg-zinc-950">
-                        {selectedCard.image_url ? (
-                          <img
-                            src={
-                              selectedCard.image_url
-                            }
-                            alt={
-                              selectedCard.name ||
-                              "Selected card"
-                            }
-                            className="h-full w-full object-contain"
-                          />
-                        ) : (
-                          <span className="px-2 text-center text-[9px] font-black uppercase tracking-wider text-zinc-700">
-                            No image
-                          </span>
-                        )}
+                        <CollectionCardArtwork src={selectedCard.image_url} name={selectedCard.name} setName={selectedCard.set_name} setId={selectedCard.set_id} cardNumber={selectedCard.card_number} category={selectedCard.category} dataSource={selectedCard.data_source} externalId={selectedCard.external_id} />
                       </div>
 
                       <div className="min-w-0 flex-1">
@@ -2276,22 +2334,7 @@ export default function CustomerCollectionPage() {
                     >
                       <div className="flex gap-4 p-4">
                         <div className="flex h-32 w-24 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-zinc-900 bg-black">
-                          {item.image_url ? (
-                            <img
-                              src={
-                                item.image_url
-                              }
-                              alt={
-                                item.card_name ||
-                                "Collection card"
-                              }
-                              className="h-full w-full object-contain"
-                            />
-                          ) : (
-                            <span className="px-2 text-center text-[9px] font-black uppercase tracking-wider text-zinc-700">
-                              No image
-                            </span>
-                          )}
+                          <CollectionCardArtwork src={card.image_url} name={card.name} setName={card.set_name} setId={card.set_id} cardNumber={card.card_number} category={card.category} dataSource={card.data_source} externalId={card.external_id} />
                         </div>
 
                         <div className="min-w-0 flex-1">

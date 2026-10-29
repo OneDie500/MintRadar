@@ -190,6 +190,7 @@ type InventoryTradeItem = {
     data_source?: string | null;
     name?: string | null;
     set_name?: string | null;
+    set_id?: string | null;
     card_number?: string | null;
     image_url?: string | null;
     rarity?: string | null;
@@ -410,6 +411,7 @@ type ResilientCardImageProps = {
   src?: string | null;
   name?: string | null;
   setName?: string | null;
+  setId?: string | null;
   cardNumber?: string | null;
   category?: string | null;
   dataSource?: string | null;
@@ -422,6 +424,7 @@ function ResilientCardImage({
   src,
   name,
   setName,
+  setId,
   cardNumber,
   category,
   dataSource,
@@ -480,6 +483,7 @@ function ResilientCardImage({
     src,
     name,
     setName,
+    setId,
     cardNumber,
     category,
     dataSource,
@@ -508,6 +512,9 @@ function ResilientCardImage({
           setName.trim()
         );
       }
+
+      const regionalSetId = setId?.trim() || (externalId?.match(/^([^-]+)-/)?.[1] ?? "");
+      if (regionalSetId) params.set("setId", regionalSetId);
 
       if (cardNumber?.trim()) {
         params.set(
@@ -1598,6 +1605,7 @@ function TradeOfferCatalogCardEditor({
                         <div className="flex h-20 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-zinc-900 bg-zinc-950">
                           <ResilientCardImage
                             src={card.image_url}
+                            setId={card.set_id}
                             name={card.name}
                             setName={card.set_name}
                             cardNumber={card.card_number}
@@ -1707,6 +1715,7 @@ function TradeOfferCatalogCardEditor({
                       <div className="flex h-20 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-zinc-900 bg-zinc-950">
                         <ResilientCardImage
                           src={collectionItem.image_url}
+                          setId={typeof collectionItem.snapshot?.set_id === "string" ? collectionItem.snapshot.set_id : null}
                           name={collectionItem.card_name}
                           setName={collectionItem.set_name}
                           cardNumber={collectionItem.card_number}
@@ -1871,6 +1880,7 @@ function TradeOfferCatalogCardEditor({
                             <div className="flex h-20 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-zinc-900 bg-zinc-950">
                               <ResilientCardImage
                                 src={card?.image_url}
+                                setId={card?.set_id || (/^(neo[1-4]|VS1)-/i.exec(card?.external_id || "")?.[1] ?? null)}
                                 name={card?.name}
                                 setName={card?.set_name}
                                 cardNumber={card?.card_number}
@@ -1946,6 +1956,7 @@ function TradeOfferCatalogCardEditor({
               <div className="flex h-28 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-zinc-900 bg-zinc-950">
                 <ResilientCardImage
                   src={selectedCard.image_url}
+                  setId={selectedCard.set_id}
                   name={selectedCard.name}
                   setName={selectedCard.set_name}
                   cardNumber={selectedCard.card_number}

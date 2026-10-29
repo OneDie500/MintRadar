@@ -3075,17 +3075,27 @@ function bestConfidentImportCandidate(
 
 // Pokémon printings are distinct catalog identities. A source that explicitly
 // identifies Holofoil must never be linked to a Non-Holo catalog record.
+function normalizedPokemonFinish(value: unknown) {
+  const finish = normalizeKey(String(value ?? ""));
+  if (finish === "holo" || finish === "holofoil") return "holofoil";
+  if (finish === "reverseholo" || finish === "reverseholofoil") return "reverseholofoil";
+  if (finish === "nonholo" || finish === "nonholofoil") return "nonholo";
+  return finish;
+}
+
 function pokemonPrintingCompatible(row: NormalizedRow, candidate: any) {
   const norm = (value: unknown) => normalizeKey(String(value ?? ""));
-  const expectedFinish = norm(row.finish);
-  const actualFinish = norm(candidate?.finish);
+  const expectedFinish = normalizedPokemonFinish(row.finish);
+  const actualFinish = normalizedPokemonFinish(candidate?.finish);
   const expectedEdition = norm(row.edition);
   const actualEdition = norm(candidate?.edition);
   const expectedVariant = norm(row.variant);
   const actualVariant = norm(candidate?.variant);
 
-  // A missing catalog printing is unknown, not proof of a match.
-  if (expectedFinish !== actualFinish) return false;
+  // Catalog sources such as TCGdex often do not specify a finish. Unknown
+  // finish can be used only for an otherwise exact identity; never treat an
+  // explicit, conflicting printing as interchangeable.
+  if (actualFinish && expectedFinish !== actualFinish) return false;
   if (expectedEdition !== actualEdition) return false;
   if (expectedVariant !== actualVariant) return false;
   return true;
@@ -3097,10 +3107,10 @@ function pokemonCatalogIdentityCompatible(row: NormalizedRow, candidate: any) {
   if (!pokemonPrintingCompatible(row, candidate)) return false;
   const expectedNumber = compactImportCardNumber(row.cardNumber);
   const actualNumber = compactImportCardNumber(candidateCardNumber(candidate));
-  if (expectedNumber && expectedNumber !== actualNumber) return false;
-  if (!expectedNumber && actualNumber) return false;
-  // Avoid merging unrelated sets on a name/number coincidence.
-  if (row.setName.trim() && setSimilarityScore(row.setName, candidateSetName(candidate)) < 300) return false;
+  if (!expectedNumber || !actualNumber || expectedNumber !== actualNumber) return false;
+  // Require the SAME normalized set. Fuzzy similarity is not sufficient for
+  // linking catalog identities or crossing regional printings.
+  if (!row.setName.trim() || normalizeKey(row.setName) !== normalizeKey(candidateSetName(candidate))) return false;
   return true;
 }
 
@@ -3142,14 +3152,16 @@ async function findExistingCard(
     const compatible = (Array.isArray(data) ? data : [])
       .filter((candidate: any) => pokemonCatalogIdentityCompatible(row, candidate));
 
-    // Multiple equally valid catalog identities may exist from older imports.
-    // Reuse only when the printing and collector identity are unambiguous.
+    // Prefer an existing provider-backed catalog identity over CSV-generated
+    // duplicates, but never choose between multiple distinct provider cards.
     if (compatible.length === 1) return compatible[0];
     if (compatible.length > 1) {
-      const exactSet = compatible.filter((candidate: any) =>
-        normalizeKey(String(candidate.set_name || "")) === normalizeKey(row.setName)
+      const providerCards = compatible.filter((candidate: any) =>
+        !String(candidate.external_id || "").startsWith("canonical:") &&
+        !String(candidate.external_id || "").startsWith("pokemon-import:") &&
+        !String(candidate.data_source || "").includes("_import")
       );
-      if (exactSet.length === 1) return exactSet[0];
+      if (providerCards.length === 1) return providerCards[0];
     }
     return null;
   }
@@ -3392,11 +3404,79 @@ async function requestPokemonFallbackImage(
   return null;
 }
 
+// Reject empty, relative, and non-image destinations before rendering.
+function safePreviewArtworkUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const raw = value.trim();
+  if (!/^https?:\/\//i.test(raw)) return null;
+  try {
+    const url = new URL(raw);
+    if (!url.hostname || url.pathname === "/vendor/import") return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+// Read-only preview artwork lookup. Keep this separate from the import-time
+// card identity matcher so diagnostics never alter catalog writes.
+async function lookupPreviewCatalogArtwork(row: NormalizedRow): Promise<{
+  url: string | null;
+  detail: string;
+}> {
+  if ((row.category || "").trim().toLowerCase() !== "pokemon") {
+    return { url: null, detail: "Not a Pokémon row" };
+  }
+  const numbers = importCardNumberVariants(row.cardNumber);
+  if (!row.name.trim() || !row.setName.trim() || !numbers.length) {
+    return { url: null, detail: "Missing name, set, or card number" };
+  }
+  const { data, error } = await supabase
+    .from("cards")
+    .select("id,name,set_name,card_number,language,image_url,external_id,variant,finish,edition")
+    .ilike("name", row.name.trim())
+    .ilike("set_name", row.setName.trim())
+    .in("card_number", numbers)
+    .limit(100);
+  if (error) return { url: null, detail: `Catalog query: ${error.message}` };
+  const matches = (data || []).filter((card: any) =>
+    normalizeKey(card.name) === normalizeKey(row.name) &&
+    normalizeKey(card.set_name) === normalizeKey(row.setName) &&
+    normalizeCardLanguage(String(card.language || "EN")) === normalizeCardLanguage(row.language) &&
+    pokemonPrintingCompatible(row, card)
+  );
+  const providers = matches.filter((card: any) =>
+    card.image_url && !String(card.external_id || "").startsWith("canonical:") &&
+    !String(card.external_id || "").startsWith("pokemon-import:")
+  );
+  if (providers.length === 1) {
+    return { url: String(providers[0].image_url), detail: "Provider-backed catalog" };
+  }
+  if (providers.length > 1) {
+    return { url: null, detail: "Multiple provider printings matched" };
+  }
+  return { url: null, detail: `${data?.length || 0} catalog rows; ${matches.length} printing-compatible; ${providers.length} provider images` };
+}
+
 async function resolveImportImage(
   row: NormalizedRow
 ): Promise<string | null> {
-  if (row.imageUrl) {
-    return row.imageUrl;
+  // A whitespace-only CSV image field must not block catalog artwork lookup.
+  const suppliedImageUrl = String(row.imageUrl || "").trim();
+  if (suppliedImageUrl) {
+    return suppliedImageUrl;
+  }
+
+  // Preview and import both benefit from an existing, strictly matched card.
+  // This is a read-only lookup; it does not insert or update anything.
+  // The existing matcher checks Pokemon set, number, language and printing.
+  try {
+    const existing = await findExistingCard(row);
+    if (existing?.image_url) {
+      return String(existing.image_url);
+    }
+  } catch (error) {
+    console.warn(`Existing card artwork lookup skipped for ${row.name}:`, error);
   }
 
   const category =
@@ -3673,13 +3753,11 @@ async function getOrCreateCard(
           ).trim();
 
         const setWasRepaired =
-          !expectedSet ||
-          expectedSet === actualSet;
+          normalizeKey(expectedSet) === normalizeKey(actualSet);
 
         const numberWasRepaired =
-          !expectedNumber ||
-          expectedNumber ===
-            actualNumber;
+          compactImportCardNumber(expectedNumber) ===
+            compactImportCardNumber(actualNumber);
 
         const expectedLanguage =
           row.language.trim() ||
@@ -3805,7 +3883,10 @@ function sameVendorImportListing(row: NormalizedRow, item: ExistingVendorListing
   if (normalizeVendorDuplicateName(card.name) !== normalizeVendorDuplicateName(row.name)) return false;
   if (norm(card.language || "EN") !== norm(row.language || "EN")) return false;
   if (norm(card.edition) !== norm(row.edition)) return false;
-  if (norm(card.finish) !== norm(row.finish)) return false;
+  if (norm(card.category) === "pokemon") {
+    if (normalizedPokemonFinish(card.finish) &&
+        normalizedPokemonFinish(row.finish) !== normalizedPokemonFinish(card.finish)) return false;
+  } else if (norm(card.finish) !== norm(row.finish)) return false;
   if (normalizeVendorDuplicateVariant(card.variant) !== normalizeVendorDuplicateVariant(row.variant)) return false;
   if (compactImportCardNumber(String(card.card_number || "")) !== compactImportCardNumber(row.cardNumber)) return false;
   // Do not consider similarly named cards from unrelated sets duplicates.
@@ -4177,6 +4258,79 @@ export default function VendorImportPage() {
         preset,
       ]
     );
+
+  // Thumbnail lookup is preview-only. It never inserts or updates records.
+  // Cache by card identity and resolve at most three rows concurrently.
+  const [previewImages, setPreviewImages] = useState<Record<string, string | null>>({});
+  const [previewImageLoading, setPreviewImageLoading] = useState<Record<string, boolean>>({});
+  const [previewImageDetails, setPreviewImageDetails] = useState<Record<string, string>>({});
+  const previewImageCache = useRef<Map<string, string | null>>(new Map());
+  const previewRows = useMemo(() => normalizedRows.slice(0, 50), [normalizedRows]);
+
+  useEffect(() => {
+    let canceled = false;
+    const entries = previewRows.map((row) => ({
+      row,
+      key: [row.category, row.setName, row.name, row.cardNumber, row.language, row.variant, row.finish, row.imageUrl]
+        .map((part) => String(part || "").trim().toLowerCase()).join("|"),
+    }));
+    const unique = Array.from(new Map(entries.map((entry) => [entry.key, entry.row])).entries());
+    const initial: Record<string, string | null> = {};
+    const pending: Record<string, boolean> = {};
+    const work: Array<[string, NormalizedRow]> = [];
+    for (const [key, row] of unique) {
+      if (safePreviewArtworkUrl(row.imageUrl)) {
+        initial[key] = safePreviewArtworkUrl(row.imageUrl);
+        previewImageCache.current.set(key, initial[key]);
+      } else if (safePreviewArtworkUrl(previewImageCache.current.get(key))) {
+        initial[key] = safePreviewArtworkUrl(previewImageCache.current.get(key));
+      } else if (row.errors.length === 0) {
+        pending[key] = true;
+        work.push([key, row]);
+      }
+    }
+    setPreviewImages(initial);
+    setPreviewImageLoading(pending);
+    let next = 0;
+    const worker = async () => {
+      while (!canceled && next < work.length) {
+        const [key, row] = work[next++];
+        let url: string | null = null;
+        let detail = "No artwork returned";
+        try {
+          const catalog = await lookupPreviewCatalogArtwork(row);
+          url = safePreviewArtworkUrl(catalog.url);
+          detail = catalog.detail;
+          if (!url) {
+            // Ignore whitespace-only CSV image cells when invoking the existing
+            // resolver. This is preview-only and does not change the CSV data.
+            const fallback = await resolveImportImage({
+              ...row,
+              imageUrl: String(row.imageUrl || "").trim(),
+            });
+            url = safePreviewArtworkUrl(fallback);
+            if (url) detail = "Existing resolver";
+            else if (fallback?.trim()) detail = `Rejected non-image URL: ${JSON.stringify(fallback)}`;
+            else detail = `${catalog.detail}; fallback returned no image`;
+          }
+        } catch (error) {
+          detail = error instanceof Error ? error.message : String(error);
+          console.warn(`Preview image lookup skipped for ${row.name}:`, error);
+        }
+        if (canceled) return;
+        setPreviewImageDetails((current) => ({ ...current, [key]: detail }));
+        previewImageCache.current.set(key, url);
+        setPreviewImages((current) => ({ ...current, [key]: url }));
+        setPreviewImageLoading((current) => ({ ...current, [key]: false }));
+      }
+    };
+    for (let index = 0; index < Math.min(3, work.length); index += 1) void worker();
+    return () => { canceled = true; };
+  }, [previewRows]);
+
+  const previewImageKey = (row: NormalizedRow) =>
+    [row.category, row.setName, row.name, row.cardNumber, row.language, row.variant, row.finish, row.imageUrl]
+      .map((part) => String(part || "").trim().toLowerCase()).join("|");
 
   const validRows =
     useMemo(
@@ -5210,27 +5364,50 @@ export default function VendorImportPage() {
                             </td>
 
                             <td className="px-4 py-4">
-                              <p className="font-black text-white">
-                                {row.name ||
-                                  "Missing name"}
-                              </p>
-
-                              <p className="mt-1 text-xs text-zinc-600">
-                                {[
-                                  row.category,
-                                  row.setName,
-                                  row.cardNumber
-                                    ? `#${row.cardNumber}`
-                                    : null,
-                                  row.finish,
-                                ]
-                                  .filter(
-                                    Boolean
-                                  )
-                                  .join(
-                                    " • "
+                              <div className="flex min-w-[280px] items-start gap-3">
+                                <div className="relative flex h-[88px] w-[64px] shrink-0 items-center justify-center overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900 text-center">
+                                  {safePreviewArtworkUrl(previewImages[previewImageKey(row)]) ? (
+                                    <img
+                                      src={safePreviewArtworkUrl(previewImages[previewImageKey(row)])!}
+                                      alt={`${row.name} card preview`}
+                                      loading="eager"
+                                      className="absolute inset-0 h-full w-full object-contain"
+                                      onError={(event) => {
+                                        const key = previewImageKey(row);
+                                        const failedUrl = String(previewImages[key] || "");
+                                        const browserUrl = event.currentTarget.currentSrc || event.currentTarget.src || "";
+                                        // Some imported catalog records carry a .png URL while
+                                        // the provider actually serves the card as .webp.
+                                        // Retry only that same provider/card path; never guess
+                                        // a different card or set.
+                                        if (/^https:\/\/assets\.tcgdex\.net\//i.test(failedUrl) && /\/high\.png(?:[?#].*)?$/i.test(failedUrl)) {
+                                          const webpUrl = failedUrl.replace(/\/high\.png(?=([?#]|$))/i, "/high.webp");
+                                          setPreviewImageDetails((current) => ({ ...current, [key]: `PNG failed; retrying WebP: ${webpUrl}` }));
+                                          setPreviewImages((current) => ({ ...current, [key]: webpUrl }));
+                                          previewImageCache.current.set(key, webpUrl);
+                                          return;
+                                        }
+                                        previewImageCache.current.delete(key);
+                                        setPreviewImages((current) => ({ ...current, [key]: null }));
+                                        setPreviewImageDetails((current) => ({ ...current, [key]: `Image failed to load: ${JSON.stringify(failedUrl)} (browser resolved: ${browserUrl || "none"})` }));
+                                      }}
+                                    />
+                                  ) : (
+                                    <span className="px-1 text-[10px] leading-tight text-zinc-500">
+                                      {previewImageLoading[previewImageKey(row)] ? "Finding image…" : "No image"}
+                                    </span>
                                   )}
-                              </p>
+                                </div>
+                                <div className="min-w-0 pt-1">
+                                  <p className="font-black text-white">
+                                    {row.name || "Missing name"}
+                                  </p>
+                                  <p className="mt-1 text-xs text-zinc-600">
+                                    {[row.category, row.setName, row.cardNumber ? `#${row.cardNumber}` : null, row.finish]
+                                      .filter(Boolean).join(" • ")}
+                                  </p>
+                                </div>
+                              </div>
                             </td>
 
                             <td className="px-4 py-4">

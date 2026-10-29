@@ -67,6 +67,79 @@ const KNOWN_IMAGE_OVERRIDES: KnownImageOverride[] = [
   },
 ];
 
+// Validate a complete high-resolution JPEG or PNG before exposing a dev-only URL.
+// No redirects: avoids a supplied public URL bouncing to a private endpoint.
+async function inspectDevelopmentPromoScan(rawUrl: string): Promise<{
+  url: string | null;
+  diagnostics: { status: string; width?: number; height?: number };
+}> {
+  try {
+    const url = new URL(rawUrl);
+    const host = url.hostname.toLowerCase();
+    const forbidden = host === "localhost" || host.endsWith(".localhost") ||
+      host.endsWith(".local") || host.endsWith(".internal") ||
+      host === "::1" || host.includes(":") ||
+      /^(127\.|10\.|192\.168\.|169\.254\.|0\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(host);
+    if (url.protocol !== "https:" || forbidden || url.username || url.password) {
+      return { url: null, diagnostics: { status: "invalid-public-https-url" } };
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6500);
+    try {
+      const response = await fetch(url.toString(), {
+        method: "GET", cache: "no-store", redirect: "error", signal: controller.signal,
+        headers: { Range: "bytes=0-262143" },
+      });
+      if (!response.ok) return { url: null, diagnostics: { status: `http-${response.status}` } };
+      const mime = (response.headers.get("content-type") || "").split(";")[0].toLowerCase();
+      if (mime !== "image/png" && mime !== "image/jpeg") {
+        await response.body?.cancel();
+        return { url: null, diagnostics: { status: "unsupported-image-type" } };
+      }
+      const reader = response.body?.getReader();
+      if (!reader) return { url: null, diagnostics: { status: "empty-response" } };
+      const chunks: Uint8Array[] = [];
+      let length = 0;
+      while (length < 262144) {
+        const part = await reader.read();
+        if (part.done) break;
+        const keep = part.value.subarray(0, 262144 - length);
+        chunks.push(keep);
+        length += keep.length;
+        if (keep.length !== part.value.length) break;
+      }
+      await reader.cancel();
+      const bytes = Buffer.concat(chunks);
+      let width = 0, height = 0;
+      if (mime === "image/png" && bytes.length >= 24 &&
+          bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) {
+        width = bytes.readUInt32BE(16); height = bytes.readUInt32BE(20);
+      } else if (mime === "image/jpeg" && bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+        let pos = 2;
+        while (pos + 9 < bytes.length) {
+          if (bytes[pos] !== 0xff) break;
+          const marker = bytes[pos + 1];
+          if (marker === 0xd8 || marker === 0xd9) { pos += 2; continue; }
+          const segment = bytes.readUInt16BE(pos + 2);
+          if (segment < 2 || pos + 2 + segment > bytes.length) break;
+          if ([0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf].includes(marker)) {
+            height = bytes.readUInt16BE(pos + 5);
+            width = bytes.readUInt16BE(pos + 7);
+            break;
+          }
+          pos += segment + 2;
+        }
+      }
+      if (Math.max(width, height) < 1000 || Math.min(width, height) < 650) {
+        return { url: null, diagnostics: { status: "insufficient-or-unreadable-resolution", width, height } };
+      }
+      return { url: url.toString(), diagnostics: { status: "high-resolution-dev-scan-verified", width, height } };
+    } finally { clearTimeout(timer); }
+  } catch {
+    return { url: null, diagnostics: { status: "scan-fetch-or-validation-failed" } };
+  }
+}
+
 function normalize(value?: string | null) {
   return (value || "")
     .trim()
@@ -754,6 +827,19 @@ type TcgdexJapaneseSetDetail = {
 
 const JP_SET_NAME_ALIASES: Record<string, string[]> = {
   "eevee heroes": ["イーブイヒーローズ"],
+  "hot air arena": ["熱風のアリーナ"],
+  "heat wave arena": ["熱風のアリーナ"],
+};
+
+// Exact Japanese expansion identity, not a card/artwork override.
+// SM12a is the official set code for TAG TEAM GX Tag All Stars.
+// This also supports marketplace labels that omit the Japanese product title.
+const VERIFIED_JP_MODERN_SET_IDS: Record<string, string> = {
+  "tag team gx all stars": "sm12a",
+  "tag team gx tag all stars": "sm12a",
+  // Heat Wave Arena / Hot Air Arena is the Japanese SV9a expansion.
+  "hot air arena": "SV9a",
+  "heat wave arena": "SV9a",
 };
 
 // Curated set identities, NOT card-number or artwork overrides.
@@ -766,6 +852,70 @@ const VERIFIED_JP_VINTAGE_SET_IDS: Record<string, string> = {
   "rocket gang japanese": "PMCG4",
   "rocket gang": "PMCG4",
 };
+
+// Historical Japanese set labels used by marketplace inventory.
+const VINTAGE_TEST_SET_IDS: Record<string, string> = {
+  "neo genesis japanese": "neo1",
+  "neo discovery japanese": "neo2",
+  "neo revelation japanese": "neo3",
+  "neo destiny japanese": "neo4",
+  "pokemon vs japanese": "VS1",
+  "pokemon vs": "VS1",
+};
+
+// Staged artwork is enabled ONLY in local development. Never in deployment.
+function privateVintageArtworkEnabled() {
+  return process.env.NODE_ENV === "development";
+}
+
+type StagedVintageArtwork = {
+  catalog_id: string;
+  set_id: string;
+  card_name: string | null;
+  image_url: string | null;
+  visual_approved: boolean | null;
+  identity_approved: boolean | null;
+  rights_cleared: boolean | null;
+};
+
+async function findPrivateStagedVintageArtwork(catalogId: string) {
+  if (!privateVintageArtworkEnabled()) return null;
+  if (!/^(?:PMCG[1-9]|PCG[1-9]|E[1-5]|NEO[1-4]|VS1)-[0-9A-Z]+$/i.test(catalogId)) {
+    return null;
+  }
+  const base = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!base || !key) return null;
+  const endpoint = new URL(`${base.replace(/\/$/, "")}/rest/v1/vintage_artwork_staging`);
+  endpoint.searchParams.set("select", "catalog_id,set_id,card_name,image_url,visual_approved,identity_approved,rights_cleared");
+  endpoint.searchParams.set("catalog_id", `ilike.${catalogId}`);
+  endpoint.searchParams.set("limit", "2");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4500);
+  try {
+    const response = await fetch(endpoint.toString(), {
+      headers: { apikey: key, Authorization: `Bearer ${key}` },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const rows = (await response.json()) as StagedVintageArtwork[];
+    if (!Array.isArray(rows) || rows.length !== 1) return null;
+    const row = rows[0];
+    if (row.catalog_id.toLowerCase() !== catalogId.toLowerCase()) return null;
+    const url = row.image_url?.trim();
+    if (!url) return null;
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" || parsed.hostname !== "pcg-search.com") return null;
+    return { imageUrl: url, provider: "private-vintage-staging-test",
+      match: { id: row.catalog_id, name: row.card_name, setId: row.set_id },
+      testingOnly: true, rightsCleared: row.rights_cleared === true };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // Resolve marketplace English-language labels against the provider's English
 // set index, then verify that the same provider ID exists in the JP index.
@@ -793,12 +943,16 @@ async function verifiedJapaneseSetId(setName?: string | null) {
 async function discoverJapaneseSetId(setName?: string | null) {
   const requested = (setName || "").trim();
   if (!requested) return null;
+  const modernSetId = VERIFIED_JP_MODERN_SET_IDS[normalizeMetadataText(requested)];
+  if (modernSetId) return modernSetId;
   // Exact, source-verified vintage expansion code. This does NOT convert
   // a Pokédex number (e.g. Dark Hypno 97) into a collector number (037).
   const vintageId = VERIFIED_JP_VINTAGE_SET_IDS[
     normalizeMetadataText(requested)
   ];
   if (vintageId) return vintageId;
+  const testVintageId = VINTAGE_TEST_SET_IDS[normalizeMetadataText(requested)];
+  if (testVintageId) return testVintageId;
   const verified = await verifiedJapaneseSetId(requested);
   if (verified) return verified;
   const aliases = JP_SET_NAME_ALIASES[normalizeMetadataText(requested)] || [];
@@ -864,6 +1018,20 @@ async function inspectJapaneseVintageIdentity({
       )
     : [];
   const numberCandidate = matchingCards.length === 1 ? matchingCards[0] : null;
+  // A localized Japanese name can be verified directly against the same
+  // TCGdex Japanese set and collector number. This avoids requiring an
+  // English/PokeAPI species translation for already-localized catalog rows.
+  // Require exactly one numbered candidate, exact set identity, and exact
+  // normalized Japanese name; a number match alone is never sufficient.
+  const normalizedJapaneseName = (value: string) =>
+    value.normalize("NFKC").replace(/\s+/g, "").trim();
+  const directJapaneseMatch = numberCandidate &&
+    japaneseSet.id?.toLowerCase() === setId.toLowerCase() &&
+    numberCandidate.id?.toLowerCase().startsWith(`${setId.toLowerCase()}-`) &&
+    normalizedJapaneseName(numberCandidate.name || "") === normalizedJapaneseName(name) &&
+    Boolean(normalizedJapaneseName(name))
+      ? numberCandidate
+      : null;
   const parts = vintageEnglishNameParts(name);
   let translatedJapaneseName: string | null = null;
   let speciesId: number | null = null;
@@ -888,7 +1056,107 @@ async function inspectJapaneseVintageIdentity({
         (card.name || "").normalize("NFKC").replace(/\s+/g, "") ===
         translatedJapaneseName.normalize("NFKC").replace(/\s+/g, ""))
     : [];
-  const verified = nameMatches.length === 1 ? nameMatches[0] : null;
+  // LOCAL TEST ONLY: one narrowly scoped historical bilingual alias candidate.
+  // The Japanese Neo Genesis index has been observed to label Slowking as
+  // スローキング rather than PokeAPI's ヤドキング. Do not generalize this to other
+  // cards or promote this to identity approval/rights clearance.
+  let historicalAliasCandidate = false;
+  let historicalAliasStatus = "not-applicable";
+  if (name.trim().toLowerCase() === "slowking" &&
+      setId.toLowerCase() === "neo1" &&
+      translatedJapaneseName === "ヤドキング" && speciesId === 199 &&
+      nameMatches.length === 0) {
+    const aliasMatches = cards.filter((card) =>
+      card.id?.toLowerCase() === "neo1-049" &&
+      card.localId === "049" &&
+      (card.name || "").normalize("NFKC").replace(/\s+/g, "") === "スローキング"
+    );
+    if (aliasMatches.length === 1 &&
+        (!numberCandidate || numberCandidate.id === aliasMatches[0].id ||
+         Number(suppliedNumber) === 199)) {
+      historicalAliasCandidate = true;
+      historicalAliasStatus = "single-japanese-catalog-alias-candidate-local-test-only";
+    } else {
+      historicalAliasStatus = "historical-alias-not-confirmed-in-current-catalog";
+    }
+  }
+  // If the JP set index omits a translated card name, cross-check the
+  // SAME provider card ID against the English index of this exact set.
+  // Never use a similar set or a number-only match as proof of identity.
+  let verified = directJapaneseMatch || (nameMatches.length === 1 ? nameMatches[0] : null);
+  let englishCatalogMatches = 0;
+  let englishCatalogStatus = "not-needed";
+  if (!verified && nameMatches.length === 0) {
+    const englishSet = await fetchJsonWithTimeout<TcgdexJapaneseSetDetail>(
+      `https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(setId)}`
+    );
+    if (Array.isArray(englishSet?.cards) && englishSet?.id?.toLowerCase() === setId.toLowerCase()) {
+      const englishMatches = englishSet.cards.filter((card) =>
+        Boolean(card.id && card.localId) &&
+        normalizeMetadataText(card.name || "") === normalizeMetadataText(name)
+      );
+      englishCatalogMatches = englishMatches.length;
+      if (englishMatches.length === 1) {
+        const corresponding = cards.filter((card) =>
+          card.id?.toLowerCase() === englishMatches[0].id?.toLowerCase() && Boolean(card.localId)
+        );
+        if (corresponding.length === 1) {
+          verified = corresponding[0];
+          englishCatalogStatus = "same-set-same-card-id-verified";
+        } else {
+          englishCatalogStatus = "english-card-id-absent-from-japanese-set";
+        }
+      } else {
+        englishCatalogStatus = englishMatches.length ? "ambiguous-english-name" : "english-name-not-found";
+      }
+    } else {
+      englishCatalogStatus = "english-set-unavailable";
+    }
+  }
+  // Historical Neo-era names differ from modern PokeAPI species translations.
+  // These are identity CANDIDATES, never artwork overrides. Verify each one
+  // against the live Japanese provider detail (set, localId, dexId, holo).
+  let neoHistoricalIdentityStatus = "not-applicable";
+  const neoHistoricalCandidates: Record<string, { id: string; localId: string; japaneseName: string; dexId: number }> = {
+    "neo2:wobbuffet": { id: "neo2-031", localId: "031", japaneseName: "ウォブバフェット", dexId: 202 },
+    "neo3:jumpluff": { id: "neo3-007", localId: "007", japaneseName: "ジャンプラフ", dexId: 189 },
+  };
+  const neoCandidate = neoHistoricalCandidates[`${setId.toLowerCase()}:${name.trim().toLowerCase()}`];
+  if (!verified && neoCandidate && speciesId === neoCandidate.dexId &&
+      /^\d+$/.test((suppliedNumber || "").trim()) &&
+      Number(suppliedNumber) === neoCandidate.dexId) {
+    const setEntry = cards.filter(card =>
+      card.id?.toLowerCase() === neoCandidate.id &&
+      card.localId === neoCandidate.localId &&
+      card.name === neoCandidate.japaneseName
+    );
+    if (setEntry.length === 1 && japaneseSet.id?.toLowerCase() === setId.toLowerCase()) {
+      const detail = await fetchJsonWithTimeout<TcgdexCardDetail & {
+        dexId?: number[];
+        rarity?: string;
+        variants?: { holo?: boolean };
+      }>(`https://api.tcgdex.net/v2/ja/cards/${encodeURIComponent(neoCandidate.id)}`);
+      if (detail?.id?.toLowerCase() === neoCandidate.id &&
+          detail.localId === neoCandidate.localId &&
+          detail.name === neoCandidate.japaneseName &&
+          detail.set?.id?.toLowerCase() === setId.toLowerCase() &&
+          detail.dexId?.includes(neoCandidate.dexId) &&
+          detail.variants?.holo === true && detail.rarity === "Holo Rare") {
+        verified = setEntry[0];
+        neoHistoricalIdentityStatus = "live-japanese-set-detail-dex-and-holo-verified";
+      } else {
+        neoHistoricalIdentityStatus = "live-detail-did-not-confirm-identity";
+      }
+    } else {
+      neoHistoricalIdentityStatus = "japanese-set-entry-not-confirmed";
+    }
+  }
+  // Only enable the historical alias for local image testing, with an exact
+  // provider ID + local ID + JP alias match in the current set index.
+  if (!verified && historicalAliasCandidate && privateVintageArtworkEnabled()) {
+    verified = cards.find((card) => card.id?.toLowerCase() === "neo1-049" &&
+      card.localId === "049" && card.name === "スローキング") || null;
+  }
   const numberMatchesVerified = Boolean(verified && numberCandidate && verified.id === numberCandidate.id);
   const suppliedNumberIsSpeciesId = Boolean(speciesId && /^\d+$/.test((suppliedNumber || "").trim()) &&
     Number(suppliedNumber) === speciesId);
@@ -897,7 +1165,9 @@ async function inspectJapaneseVintageIdentity({
   const identityVerified = Boolean(verified &&
     (!numberCandidate || numberMatchesVerified || suppliedNumberIsSpeciesId));
   const status = identityVerified
-    ? "cross-language-identity-verified"
+    ? (directJapaneseMatch ? "exact-japanese-set-number-name-verified" :
+       englishCatalogStatus === "same-set-same-card-id-verified"
+      ? "cross-language-provider-id-verified" : "cross-language-identity-verified")
     : verified ? "number-conflicts-with-translated-identity"
     : numberCandidate ? "collector-number-candidate-needs-name-verification"
     : "translation-source-required";
@@ -911,6 +1181,14 @@ async function inspectJapaneseVintageIdentity({
     translationSource,
     translatedJapaneseName,
     speciesPokedexNumber: speciesId,
+    japaneseExactNameMatches: nameMatches.length,
+    directJapaneseCatalogMatch: Boolean(directJapaneseMatch),
+    englishCatalogMatches,
+    englishCatalogStatus,
+    historicalAliasStatus,
+    neoHistoricalIdentityStatus,
+    historicalAliasCandidate,
+    historicalAliasRequiresManualReview: historicalAliasCandidate,
     ...(numberCandidate ? {
       numberCandidateProviderCardId: numberCandidate.id,
       numberCandidateJapaneseName: numberCandidate.name || null,
@@ -948,7 +1226,7 @@ async function resolveJapaneseSetScopedImage({
     JP_SET_NAME_ALIASES[normalizedSet] || [];
 
   let setId =
-    suppliedSetId?.trim() || null;
+    suppliedSetId?.trim() || VERIFIED_JP_MODERN_SET_IDS[normalizedSet] || null;
 
   let matchingSets: TcgdexSetBrief[] = [];
 
@@ -1085,6 +1363,21 @@ async function resolveJapaneseSetScopedImage({
     );
 
   if (!setMatches) {
+    return null;
+  }
+
+  // Cross-language names are not interchangeable. For known bilingual
+  // trainer identities, require the exact Japanese name in the verified set.
+  // Other cards retain the existing behavior; no artwork URL is fabricated.
+  const exactJapaneseTrainerNames: Record<string, string> = {
+    "sv9a:089:ethans adventure": "ヒビキの冒険",
+  };
+  const trainerKey = `${setId.toLowerCase()}:${normalize(matchedBrief.localId)}:${normalizeMetadataText(name).replace(/ /g, "")}`;
+  const expectedJapaneseName = exactJapaneseTrainerNames[trainerKey];
+  if (expectedJapaneseName &&
+      (card.name !== expectedJapaneseName ||
+       card.set?.id?.toLowerCase() !== setId.toLowerCase() ||
+       card.localId !== matchedBrief.localId)) {
     return null;
   }
 
@@ -1345,6 +1638,67 @@ async function fetchOfficialJapanDetail(
   }
 }
 
+// Independently verified Japanese promo detail records. These are card IDs,
+// NOT artwork URL overrides. Every response re-verifies the official page.
+// Add further promos only after verifying their exact official detail record.
+const VERIFIED_JP_PROMO_DETAILS: Record<string, { cardId: string; japaneseName: string; officialMark: string }> = {
+  "bw-p:220/bw-p:mew": { cardId: "28897", japaneseName: "ミュウ", officialMark: "BWP" },
+};
+
+async function resolveOfficialJapanesePromoDetail({
+  name, setId, setName, cardNumber,
+}: {
+  name: string;
+  setId?: string | null;
+  setName?: string | null;
+  cardNumber?: string | null;
+}) {
+  const normalizedNumber = normalizePrintedCollectorNumber(cardNumber).toLowerCase();
+  const normalizedSetId = (setId || "").trim().toLowerCase();
+  const normalizedSetName = normalizeMetadataText(setName);
+  // Do not let a generic promo name or unrelated set opt into this lookup.
+  const isBwPromo = normalizedSetId === "bw-p" ||
+    (!normalizedSetId && ["black and white promos jp", "black and white promos", "bw p promotional cards"].includes(normalizedSetName));
+  if (!isBwPromo || !/^\d+\/bw-p$/.test(normalizedNumber)) return null;
+  const key = `bw-p:${normalizedNumber}:${normalizeMetadataText(name)}`;
+  const record = VERIFIED_JP_PROMO_DETAILS[key];
+  if (!record) return null;
+
+  const html = await fetchOfficialJapanDetail(record.cardId);
+  if (!html) return null;
+  // The official page prints the expansion mark as BWP and the promo suffix
+  // as BW-P. Verify both, the complete promo number, and Japanese name.
+  if (!officialJapanDetailMatchesIdentity({
+    html, setId: record.officialMark, cardNumber: normalizedNumber,
+  })) return null;
+  if (!html.includes(record.japaneseName)) return null;
+
+  // Historical promo images may be stored under a folder that differs from
+  // the BWP expansion mark. Only extract an official large-card image from
+  // this already-verified official detail page; never construct an image URL.
+  const officialImageMatch = html.match(
+    /(?:https:\/\/www\.pokemon-card\.com)?\/assets\/images\/card_images\/large\/[^\/"'<>\s]+\/[^"'<>\s]+\.(?:jpg|jpeg|png|webp)/i
+  );
+  const imageUrl = officialImageMatch?.[0]
+    ? (officialImageMatch[0].startsWith("http")
+        ? officialImageMatch[0]
+        : `https://www.pokemon-card.com${officialImageMatch[0]}`)
+    : null;
+  if (!imageUrl) return null;
+  return {
+    imageUrl,
+    provider: "pokemon-japan-official-promo-detail-verified",
+    match: {
+      id: record.cardId,
+      name: record.japaneseName,
+      setName: setName || "BW-P Promotional cards",
+      setId: "BW-P",
+      cardNumber: cardNumber || null,
+      officialMark: record.officialMark,
+    },
+  };
+}
+
 async function resolveOfficialPokemonJapanImage({
   setId,
   cardNumber,
@@ -1461,13 +1815,16 @@ async function resolveOfficialPokemonJapanImage({
     diagnostics.providerSourceName = sourceCard?.name || null;
   }
 
-  const searchKeywords =
-    Array.from(
-      new Set([
-        (sourceCard?.name || "").trim(),
-        name.trim(),
-      ])
-    ).filter(Boolean);
+  // An official card can be absent from the name index while still being
+  // searchable by its printed collector number. Search that number inside
+  // the verified expansion, then verify the official detail identity.
+  // This is discovery only: a matching search result is NEVER proof of artwork.
+  const numericSearchKeyword = String(Number(numericMatch[1]));
+  const searchKeywords = Array.from(new Set([
+    (sourceCard?.name || "").trim(),
+    name.trim(),
+    numericSearchKeyword,
+  ])).filter(Boolean);
 
   const searchScopes = [
     {
@@ -1482,10 +1839,14 @@ async function resolveOfficialPokemonJapanImage({
 
   for (const searchKeyword of searchKeywords) {
     for (const searchScope of searchScopes) {
+      // Numeric searches are restricted to the exact expansion, and bounded
+      // to avoid broad, expensive searches of unrelated printings.
+      if (searchKeyword === numericSearchKeyword && !searchScope.pg) continue;
       let page = 1;
       let maxPage = 1;
+      const pageLimit = searchKeyword === numericSearchKeyword ? 3 : 20;
 
-      while (page <= maxPage && page <= 20) {
+      while (page <= maxPage && page <= pageLimit) {
         const url = new URL(
           "https://www.pokemon-card.com/card-search/resultAPI.php"
         );
@@ -1613,6 +1974,15 @@ async function resolveOfficialPokemonJapanImage({
           });
 
         if (!identityMatches) {
+          if (diagnostics) {
+            const rejected = (diagnostics.rejectedDetailSamples as Array<Record<string, unknown>> | undefined) || [];
+            if (rejected.length < 8) {
+              const setSeen = html.toUpperCase().includes(setId.trim().toUpperCase());
+              const numberSeen = new RegExp(`(?:^|[^0-9])0*${Number(requestedShort)}\\s*(?:<[^>]+>|&nbsp;|&#160;|\\s)*\\/`, "i").test(html);
+              rejected.push({ cardId, setSeen, numberSeen, htmlLength: html.length });
+              diagnostics.rejectedDetailSamples = rejected;
+            }
+          }
           continue;
         }
 
@@ -1678,6 +2048,49 @@ async function resolveOfficialPokemonJapanImage({
 
         page += 1;
       }
+    }
+  }
+
+  // Last-resort official search: query the verified expansion without a
+  // name keyword. This catches Japanese name-index gaps and alternate-art
+  // printings. Never trust a search result's position or thumbnail: the
+  // official detail page must still prove the exact set and printed number.
+  // Keep this bounded to avoid crawling an entire expansion per request.
+  if (setId && cardNumber) {
+    for (let page = 1; page <= 2; page++) {
+      const url = new URL("https://www.pokemon-card.com/card-search/resultAPI.php");
+      url.searchParams.set("keyword", "");
+      url.searchParams.set("se_ta", "");
+      url.searchParams.set("regulation_sidebar_form", "all");
+      url.searchParams.set("illust", "");
+      url.searchParams.set("sm_and_keyword", "true");
+      url.searchParams.set("pg", setId);
+      url.searchParams.set("page", String(page));
+      if (diagnostics) diagnostics.searchRequests = (diagnostics.searchRequests as number) + 1;
+      const payload = await fetchJsonWithTimeout<PokemonJapanSearchResponse>(url.toString(), 7000);
+      const results = Array.isArray(payload?.cardList) ? payload.cardList : [];
+      if (diagnostics) diagnostics.searchResults = (diagnostics.searchResults as number) + results.length;
+      if (!results.length) break;
+      for (const result of results.slice(0, 12)) {
+        if (result.cardID == null) continue;
+        const cardId = String(result.cardID);
+        const html = await fetchOfficialJapanDetail(cardId);
+        if (!html) continue;
+        if (diagnostics) diagnostics.detailPagesFetched = (diagnostics.detailPagesFetched as number) + 1;
+        if (!officialJapanDetailMatchesIdentity({ html, setId, cardNumber: printedNumber })) continue;
+        if (diagnostics) diagnostics.verifiedIdentities = (diagnostics.verifiedIdentities as number) + 1;
+        const imageUrl = extractOfficialJapanDetailImage(html, setId);
+        if (!imageUrl) continue;
+        if (diagnostics) diagnostics.imageCandidates = (diagnostics.imageCandidates as number) + 1;
+        return {
+          imageUrl,
+          provider: "pokemon-japan-official-set-browse-verified",
+          match: { id: cardId, name: result.cardNameAltText || name,
+            setName: setName || null, cardNumber, printedNumber, setId,
+            searchKeyword: null },
+        };
+      }
+      if (typeof payload?.maxPage === "number" && page >= payload.maxPage) break;
     }
   }
 
@@ -1795,6 +2208,48 @@ async function resolveLocalVintageJapaneseImage({
     }
   }
   return null;
+}
+
+// PCG Search: narrowly allowlisted, visually checked Japanese vintage printings.
+// This is intentionally NOT a universal generated-URL fallback. HTTP 200 alone
+// cannot prove the image belongs to the requested printing.
+// Enable only after confirming the intended use complies with source permissions:
+// ENABLE_PCG_SEARCH_VINTAGE_ARTWORK=true
+const VERIFIED_PCG_SEARCH_VINTAGE_ARTWORK: Record<string, string> = {
+  "E1-086": "https://pcg-search.com/img/e/e1086.png",
+  "E1-118": "https://pcg-search.com/img/e/e1118.png",
+  "PCG6-019": "https://pcg-search.com/img/pcg/pcg6019.png",
+};
+
+function resolveVerifiedPcgSearchVintageArtwork({
+  setId,
+  cardNumber,
+}: {
+  setId?: string | null;
+  cardNumber?: string | null;
+}) {
+  if (process.env.ENABLE_PCG_SEARCH_VINTAGE_ARTWORK !== "true") {
+    return null;
+  }
+
+  // Require a real source set code, never a guessed Pokédex number or a
+  // cross-language set-name approximation. Full printed numbers are not
+  // accepted until their denominators have been independently verified.
+  const exactSetId = (setId || "").trim().toUpperCase();
+  const rawNumber = normalizePrintedCollectorNumber(cardNumber);
+  if (!/^(?:E[1-5]|PCG[1-9])$/.test(exactSetId) ||
+      !/^\d{1,3}$/.test(rawNumber)) return null;
+
+  const localId = rawNumber.padStart(3, "0");
+  const providerCardId = `${exactSetId}-${localId}`;
+  const imageUrl = VERIFIED_PCG_SEARCH_VINTAGE_ARTWORK[providerCardId];
+  if (!imageUrl) return null;
+
+  return {
+    imageUrl,
+    provider: "pcg-search-jp-vintage-curated-exact",
+    match: { id: providerCardId, setId: exactSetId, cardNumber: localId },
+  };
 }
 
 // V7: Resolve artwork only AFTER cross-language identity has been verified.
@@ -2934,6 +3389,22 @@ async function resolveSimplifiedChineseImage({
   };
 }
 
+// Marketplace imports sometimes omit language even when their set label
+// explicitly identifies a Japanese printing. Explicit language always wins.
+function inferJapaneseLanguageFromSetLabel(setName?: string | null): "JP" | null {
+  const value = (setName || "").trim();
+  if (!value) return null;
+  if (/日本|日本語|ポケモン|[ぁ-んァ-ン一-龯]/u.test(value)) return "JP";
+  if (/(?:\(\s*(?:JP|Japanese)\s*\)|\bJapanese\b|\bJP\s+Promos?\b)/i.test(value)) return "JP";
+  // Explicit Japanese set codes embedded in marketplace set labels.
+  // Require a code followed by a colon: never confuse M6a with SM6a,
+  // and never infer JP from a bare free-text substring.
+  if (/^(?:M\d+[a-z]?|SV\d+[a-z]?|SM\d+[a-z]?|S\d+[a-z]?|BW\d+[a-z]?|XY\d+[a-z]?)\s*:/i.test(value)) return "JP";
+  // Common Japanese-only product label without an explicit locale suffix.
+  if (/^tag\s+team\s+gx\s+all\s+stars$/i.test(value)) return "JP";
+  return null;
+}
+
 function normalizeTcgdexLanguage(value?: string | null): TcgdexLanguage {
   const normalized = (value || "").trim().toLowerCase();
 
@@ -2957,13 +3428,14 @@ async function resolveExactRegionalTcgdexImage({
   setId,
   cardNumber,
   language,
+  diagnostics,
 }: {
   setId?: string | null;
   cardNumber?: string | null;
   language: TcgdexLanguage;
+  diagnostics?: Record<string, unknown>;
 }) {
   if (
-    language === "en" ||
     !setId?.trim() ||
     !cardNumber?.trim()
   ) {
@@ -2976,6 +3448,15 @@ async function resolveExactRegionalTcgdexImage({
       normalize(value)
     )
   );
+
+  if (diagnostics) {
+    diagnostics.requestedSetId = wantedSetId;
+    diagnostics.requestedNumber = cardNumber;
+    diagnostics.language = language;
+    diagnostics.candidateAttempts = [];
+    diagnostics.setLookup = { attempted: false };
+  }
+  const attempts = diagnostics?.candidateAttempts as Array<Record<string, unknown>> | undefined;
 
   const candidateIds = Array.from(
     new Set(
@@ -2997,7 +3478,17 @@ async function resolveExactRegionalTcgdexImage({
         )}`
       );
 
+    const attempt: Record<string, unknown> = {
+      candidateId,
+      found: Boolean(detail?.id),
+      returnedId: detail?.id || null,
+      returnedSetId: detail?.set?.id || null,
+      returnedNumber: detail?.localId || null,
+      hasImage: Boolean(detail?.image),
+    };
+    attempts?.push(attempt);
     if (!detail?.id || !detail.localId) {
+      attempt.outcome = "missing-card-or-number";
       continue;
     }
 
@@ -3008,6 +3499,7 @@ async function resolveExactRegionalTcgdexImage({
       actualSetId.toLowerCase() !==
       wantedSetId.toLowerCase()
     ) {
+      attempt.outcome = "set-id-mismatch";
       continue;
     }
 
@@ -3023,6 +3515,7 @@ async function resolveExactRegionalTcgdexImage({
       );
 
     if (!numberMatches) {
+      attempt.outcome = "collector-number-mismatch";
       continue;
     }
 
@@ -3030,8 +3523,10 @@ async function resolveExactRegionalTcgdexImage({
       tcgdexImageUrl(detail.image);
 
     if (!imageUrl) {
+      attempt.outcome = "exact-card-has-no-image";
       continue;
     }
+    attempt.outcome = "verified-image";
 
     return {
       imageUrl,
@@ -3049,6 +3544,7 @@ async function resolveExactRegionalTcgdexImage({
   // Some TCGdex catalogs do not expose the expected composite card ID.
   // In that case, inspect ONLY the explicitly supplied regional set and
   // accept a card only when the local collector number is unique in that set.
+  if (diagnostics) diagnostics.setLookup = { attempted: true, setId: wantedSetId };
   const setDetail =
     await fetchJsonWithTimeout<TcgdexJapaneseSetDetail>(
       `https://api.tcgdex.net/v2/${language}/sets/${encodeURIComponent(
@@ -3056,6 +3552,12 @@ async function resolveExactRegionalTcgdexImage({
       )}`
     );
 
+  const setLookup = diagnostics?.setLookup as Record<string, unknown> | undefined;
+  if (setLookup) {
+    setLookup.found = Boolean(setDetail?.id);
+    setLookup.returnedSetId = setDetail?.id || null;
+    setLookup.cardCount = Array.isArray(setDetail?.cards) ? setDetail.cards.length : null;
+  }
   if (
     !setDetail ||
     !Array.isArray(setDetail.cards)
@@ -3076,6 +3578,10 @@ async function resolveExactRegionalTcgdexImage({
       );
     });
 
+  if (setLookup) {
+    setLookup.numberMatchCount = exactMatches.length;
+    setLookup.numberMatches = exactMatches.slice(0, 5).map((c) => ({ id: c.id, localId: c.localId, hasImage: Boolean(c.image) }));
+  }
   if (
     exactMatches.length !== 1 ||
     !exactMatches[0]?.id
@@ -3085,6 +3591,7 @@ async function resolveExactRegionalTcgdexImage({
 
   const matchedBrief = exactMatches[0];
 
+  if (setLookup) setLookup.matchedCardId = matchedBrief.id || null;
   const detail =
     await fetchJsonWithTimeout<TcgdexCardDetail>(
       `https://api.tcgdex.net/v2/${language}/cards/${encodeURIComponent(
@@ -3092,6 +3599,12 @@ async function resolveExactRegionalTcgdexImage({
       )}`
     );
 
+  if (setLookup) {
+    setLookup.detailFound = Boolean(detail?.id);
+    setLookup.detailSetId = detail?.set?.id || null;
+    setLookup.detailNumber = detail?.localId || null;
+    setLookup.detailHasImage = Boolean(detail?.image || matchedBrief.image);
+  }
   if (!detail?.id || !detail.localId) {
     return null;
   }
@@ -3168,12 +3681,22 @@ async function verifiedEnglishPokemonCdnImage({
   const id = (tcgdexId || "").trim();
   const requested = normalizeCardNumber(requestedNumber).toUpperCase();
   const match = id.match(/^([a-z0-9]+)-([a-z0-9]+)$/i);
-  if (!match || !requested || match[2].toUpperCase() !== requested) {
+  if (!match || !requested) {
     return null;
   }
 
   const setId = match[1];
   const number = match[2];
+  // TCGdex stores Scarlet & Violet promos as svp-176, while imported
+  // inventory may label the same printed promo "SVP 176" or "SVP176".
+  // Strip the prefix ONLY when the independently verified provider set
+  // is svp; never strip a prefix from unrelated card numbers.
+  const comparableRequested = setId.toLowerCase() === "svp"
+    ? requested.replace(/^SVP[\s-]*/, "")
+    : requested;
+  if (number.toUpperCase() !== comparableRequested) {
+    return null;
+  }
   const urls = [
     `https://images.pokemontcg.io/${setId}/${number}_hires.png`,
     `https://images.pokemontcg.io/${setId}/${number}.png`,
@@ -3242,6 +3765,7 @@ async function resolveTcgdexImage({
       localizedNameCompatible?: boolean;
     }>;
     rejectionReason: string | null;
+    developmentPromoScan?: { status: string; width?: number; height?: number };
   } = {
     requestedName: name,
     requestedSet: setName || null,
@@ -3790,6 +4314,98 @@ async function resolveTcgdexImage({
       };
     }
 
+    // Local-development-only scan testing. The exact TCGdex identity has
+    // already been confirmed. URLs must be explicitly supplied by the developer;
+    // this never approves copyright or enables production display.
+    const devScanUrls: Record<string, string | undefined> = {
+      "svp-176": process.env.POKEMON_SVP_176_DEV_SCAN_URL,
+      "svp-211": process.env.POKEMON_SVP_211_DEV_SCAN_URL,
+    };
+    const devScanId = (best.card.id || "").toLowerCase();
+    const devScanUrl = devScanUrls[devScanId];
+    const expectedDevName = devScanId === "svp-176" ? "umbreon ex" :
+      devScanId === "svp-211" ? "gothitelle" : null;
+    if (process.env.NODE_ENV === "development" && language === "en" &&
+        expectedDevName && best.card.name?.trim().toLowerCase() === expectedDevName &&
+        devScanUrl) {
+      const devScan = await inspectDevelopmentPromoScan(devScanUrl);
+      diagnostics.developmentPromoScan = devScan.diagnostics;
+      if (devScan.url) {
+        diagnostics.rejectionReason = null;
+        return {
+          match: {
+            imageUrl: devScan.url,
+            provider: "private-svp-scan-test",
+            match: {
+              id: best.card.id || null,
+              name: best.card.name || null,
+              setName: best.card.set?.name || null,
+              cardNumber: best.card.localId || null,
+              score: best.score,
+            },
+          },
+          diagnostics,
+        };
+      }
+    }
+
+    // Exact SVP promo artwork may be supplied by a separately licensed source.
+    // An exact TCGdex name/set/number match was required above. Never substitute
+    // a different printing, and never treat a public image URL as usage rights.
+    const approvedPromoImages: Record<string, { name: string; url: string | undefined }> = {
+      "svp-176": { name: "Umbreon ex", url: process.env.POKEMON_SVP_176_APPROVED_IMAGE_URL },
+      "svp-211": { name: "Gothitelle", url: process.env.POKEMON_SVP_211_APPROVED_IMAGE_URL },
+    };
+    const exactPromo = approvedPromoImages[(best.card.id || "").toLowerCase()];
+    if (language === "en" && exactPromo &&
+        best.card.name?.trim().toLowerCase() === exactPromo.name.toLowerCase() &&
+        process.env.POKEMON_SVP_PROMO_IMAGE_RIGHTS_CLEARED === "true" &&
+        exactPromo.url) {
+      try {
+        const approvedUrl = new URL(exactPromo.url);
+        // HTTPS only; never accept local/private hosts or embedded credentials.
+        const hostname = approvedUrl.hostname.toLowerCase();
+        const isPublicHost = hostname !== "localhost" &&
+          !hostname.endsWith(".localhost") && !hostname.endsWith(".local") &&
+          !hostname.endsWith(".internal") &&
+          !/^(127\.|10\.|192\.168\.|169\.254\.|0\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(hostname) &&
+          hostname !== "::1";
+        if (approvedUrl.protocol === "https:" && isPublicHost &&
+            !approvedUrl.username && !approvedUrl.password) {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 4500);
+          try {
+            const response = await fetch(approvedUrl.toString(), {
+              method: "HEAD", cache: "no-store", signal: controller.signal,
+              redirect: "error",
+            });
+            if (response.ok &&
+                (response.headers.get("content-type") || "").toLowerCase().startsWith("image/")) {
+              diagnostics.rejectionReason = null;
+              return {
+                match: {
+                  imageUrl: approvedUrl.toString(),
+                  provider: "approved-exact-svp-promo-artwork",
+                  match: {
+                    id: best.card.id || null,
+                    name: best.card.name || null,
+                    setName: best.card.set?.name || null,
+                    cardNumber: best.card.localId || null,
+                    score: best.score,
+                  },
+                },
+                diagnostics,
+              };
+            }
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+      } catch {
+        // Invalid or unreachable approved source: leave the image unresolved.
+      }
+    }
+
     diagnostics.rejectionReason =
       "matched-card-has-no-image";
 
@@ -3970,6 +4586,68 @@ function dedupeCards(
   });
 }
 
+// Read-only catalog identity reconciliation. The source record must have an
+// exact provider ID, matching canonical English name, and matching local number.
+// A counterpart image is diagnostic evidence ONLY, not proof of the same art.
+async function inspectJapaneseCatalogIdentity(args: {
+  setId: string | null;
+  cardNumber: string | null;
+  englishName: string;
+}) {
+  const { setId, cardNumber, englishName } = args;
+  if (!setId || !cardNumber || !/^[a-z0-9-]{2,24}$/i.test(setId)) {
+    return { status: "insufficient-identity" };
+  }
+  const localNumber = shortCardNumber(cardNumber);
+  if (!/^[a-z0-9]{1,12}$/i.test(localNumber)) {
+    return { status: "unsupported-collector-number" };
+  }
+  const base = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!base || !key) return { status: "catalog-access-not-configured" };
+  const id = `${setId}-${localNumber}`;
+  const endpoint = new URL(`${base.replace(/\/$/, "")}/rest/v1/cards`);
+  endpoint.searchParams.set("select", "external_id,name,canonical_name,canonical_external_id,image_url,language,card_number");
+  endpoint.searchParams.set("external_id", `ilike.${id}`);
+  endpoint.searchParams.set("limit", "2");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4500);
+  try {
+    const response = await fetch(endpoint, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` },
+      signal: controller.signal, cache: "no-store",
+    });
+    if (!response.ok) return { status: "catalog-query-unavailable" };
+    const rows = await response.json() as Array<{
+      external_id: string; name: string | null; canonical_name: string | null;
+      canonical_external_id: string | null; image_url: string | null;
+      language: string | null; card_number: string | null;
+    }>;
+    const matching = rows.filter(row =>
+      row.external_id.toLowerCase() === id.toLowerCase() &&
+      row.language?.toUpperCase() === "JP" &&
+      normalize(row.canonical_name) === normalize(englishName) &&
+      buildCollectorNumberVariants(row.card_number).some(n =>
+        normalize(n) === normalize(localNumber))
+    );
+    if (matching.length !== 1) return { status: "no-unique-verified-catalog-identity", providerId: id };
+    const row = matching[0];
+    return {
+      status: "verified-japanese-catalog-identity",
+      providerId: row.external_id,
+      japaneseName: row.name,
+      canonicalExternalId: row.canonical_external_id,
+      hasJapaneseImage: Boolean(row.image_url?.trim()),
+      // No English counterpart image is returned: canonical identity does not
+      // prove artwork equivalence, and images require independent verification.
+    };
+  } catch {
+    return { status: "catalog-query-failed" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function GET(request: NextRequest) {
   try {
     const name =
@@ -4006,7 +4684,7 @@ export async function GET(request: NextRequest) {
     // Keep the original inventory name and the JP/CN identity paths unchanged.
     const requestedLanguageForName =
       request.nextUrl.searchParams.get("language")?.trim() ||
-      parsedName.language || "EN";
+      parsedName.language || inferJapaneseLanguageFromSetLabel(setName) || "EN";
     let canonicalName = parsedName.canonicalName;
     let marketplaceExclusiveVariant: string | null = null;
     if (normalizeTcgdexLanguage(requestedLanguageForName) === "en") {
@@ -4055,6 +4733,7 @@ export async function GET(request: NextRequest) {
     const language =
       requestedLanguage ||
       parsedName.language ||
+      inferJapaneseLanguageFromSetLabel(setName) ||
       "EN";
 
     const tcgdexLanguage =
@@ -4113,19 +4792,27 @@ export async function GET(request: NextRequest) {
     //
     // If MintRadar already knows the physical regional language, provider
     // set id, and collector number, use that identity before any fuzzy
-    // localized search. The returned TCGdex detail must independently prove
+    // localized search, including English promos. The returned TCGdex detail must independently prove
     // the same set id + collector number, so canonical English mappings
     // cannot substitute artwork from another physical card.
+    const exactRegionalDiagnostics: Record<string, unknown> = {
+      attempted: Boolean(suppliedSetId && cardNumber),
+      requestedSetId: suppliedSetId,
+      requestedNumber: cardNumber,
+      language: tcgdexLanguage,
+      outcome: "not-attempted",
+    };
     if (
-      tcgdexLanguage !== "en" &&
       suppliedSetId &&
       cardNumber
     ) {
+      exactRegionalDiagnostics.outcome = "no-verified-image";
       const exactRegional =
         await resolveExactRegionalTcgdexImage({
           setId: suppliedSetId,
           cardNumber,
           language: tcgdexLanguage,
+          diagnostics: exactRegionalDiagnostics,
         });
 
       if (exactRegional) {
@@ -4151,6 +4838,30 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // Curated vintage JP artwork: after the exact TCGdex regional attempt,
+    // but BEFORE the expensive official Japan searches. The three mappings
+    // below were visually checked against their exact printed identities.
+    // No cross-set substitutions, inferred numbers, or generic URL patterns.
+    if (tcgdexLanguage === "ja" && suppliedSetId && cardNumber) {
+      const curatedVintage = resolveVerifiedPcgSearchVintageArtwork({
+        setId: suppliedSetId,
+        cardNumber,
+      });
+      if (curatedVintage) {
+        return NextResponse.json({
+          ok: true,
+          imageUrl: curatedVintage.imageUrl,
+          provider: curatedVintage.provider,
+          match: curatedVintage.match,
+          regionalArtworkVerified: true,
+          diagnostics: {
+            curatedVintage: "exact-allowlist-match",
+            exactRegional: exactRegionalDiagnostics,
+          },
+        });
+      }
+    }
+
     // -----------------------------------------
     // JAPANESE SET-SCOPED IMAGE RESOLVER
     // -----------------------------------------
@@ -4159,6 +4870,56 @@ export async function GET(request: NextRequest) {
       const officialJapanDiagnostics: Record<string, unknown> = {};
       const discoveredJapaneseSetId = suppliedSetId ||
         await discoverJapaneseSetId(resolverSetName);
+      let privateVintageIdentityDiagnostics: Record<string, unknown> | null = null;
+      // Private test artwork: use only a verified card identity. This avoids
+      // confusing Pokédex numbers with printed collector numbers.
+      if (privateVintageArtworkEnabled() && discoveredJapaneseSetId &&
+          /^(?:PMCG[1-9]|PCG[1-9]|E[1-5]|neo[1-4]|VS1)$/i.test(discoveredJapaneseSetId)) {
+        const vintageIdentity = await inspectJapaneseVintageIdentity({
+          setId: discoveredJapaneseSetId,
+          name: canonicalName,
+          suppliedNumber: cardNumber,
+        });
+        privateVintageIdentityDiagnostics = vintageIdentity;
+        if ("identityVerified" in vintageIdentity && vintageIdentity.identityVerified === true &&
+            "candidateProviderCardId" in vintageIdentity &&
+            typeof vintageIdentity.candidateProviderCardId === "string") {
+          const staged = await findPrivateStagedVintageArtwork(
+            vintageIdentity.candidateProviderCardId
+          );
+          if (staged) {
+            return NextResponse.json({ ok: true, ...staged,
+              diagnostics: { vintageIdentity, mode: "local-development-only",
+        identityApproval: "not-granted-by-historical-alias",
+        artworkRights: "not-cleared-by-historical-alias" } },
+              { headers: { "Cache-Control": "private, no-store" } });
+          }
+        }
+      }
+      // Official Japanese promos can have a printed series suffix (BW-P)
+      // different from the official page's expansion mark (BWP). Resolve
+      // only exact, independently verified official detail records.
+      const verifiedPromo = await resolveOfficialJapanesePromoDetail({
+        name: canonicalName,
+        setId: discoveredJapaneseSetId,
+        setName: resolverSetName,
+        cardNumber,
+      });
+      if (verifiedPromo) {
+        return NextResponse.json({
+          ok: true,
+          imageUrl: verifiedPromo.imageUrl,
+          provider: verifiedPromo.provider,
+          match: verifiedPromo.match,
+          parsedIdentity: {
+            originalName: name, canonicalName, variant, language,
+            suppliedSetName: setName, suppliedSetId,
+            resolverSetName, resolvedSetName: resolverSetName,
+            resolvedSetId: "BW-P",
+          },
+        });
+      }
+
       const jpSetScoped =
         await resolveJapaneseSetScopedImage({
           name: canonicalName,
@@ -4305,6 +5066,22 @@ export async function GET(request: NextRequest) {
         });
       }
 
+      // Last-resort curated PCG Search artwork for exactly three visually
+      // verified printings. No arbitrary card-number URL generation.
+      // Keep this after TCGdex, official Japan, and owned local artwork.
+      const pcgSearchVintage = resolveVerifiedPcgSearchVintageArtwork({
+        setId: officialJapanSetId,
+        cardNumber,
+      });
+      if (pcgSearchVintage) {
+        return NextResponse.json({
+          ok: true,
+          imageUrl: pcgSearchVintage.imageUrl,
+          provider: pcgSearchVintage.provider,
+          match: pcgSearchVintage.match,
+        });
+      }
+
       // Critical safety rule: an explicit JP provider setId is authoritative.
       // Never fall through to a global localId search when we know the set.
       const recognizedJpSet =
@@ -4318,14 +5095,14 @@ export async function GET(request: NextRequest) {
         );
 
       if (recognizedJpSet) {
-        const vintageIdentity = discoveredJapaneseSetId &&
-          /^PMCG[1-9]$/i.test(discoveredJapaneseSetId)
-          ? await inspectJapaneseVintageIdentity({
-              setId: discoveredJapaneseSetId,
-              name: canonicalName,
-              suppliedNumber: cardNumber,
-            })
-          : null;
+        const vintageIdentity = privateVintageIdentityDiagnostics ||
+          (discoveredJapaneseSetId && /^PMCG[1-9]$/i.test(discoveredJapaneseSetId)
+            ? await inspectJapaneseVintageIdentity({
+                setId: discoveredJapaneseSetId,
+                name: canonicalName,
+                suppliedNumber: cardNumber,
+              })
+            : null);
         const vintageArtworkDiagnostics: Record<string, unknown> = {
           status: "not-attempted-identity-not-verified",
         };
@@ -4380,8 +5157,19 @@ export async function GET(request: NextRequest) {
             requestedNumber:
               cardNumber || null,
             officialJapan: officialJapanDiagnostics,
+            exactRegional: exactRegionalDiagnostics,
+            catalogIdentity: await inspectJapaneseCatalogIdentity({
+              setId: discoveredJapaneseSetId,
+              cardNumber,
+              englishName: canonicalName,
+            }),
             vintageIdentity,
             vintageArtwork: vintageArtworkDiagnostics,
+            pcgSearchVintage: {
+              enabled: process.env.ENABLE_PCG_SEARCH_VINTAGE_ARTWORK === "true",
+              candidate: `${(officialJapanSetId || "").toUpperCase()}-${(cardNumber || "").padStart(3, "0")}`,
+              matched: false,
+            },
           },
         });
       }
@@ -4579,6 +5367,7 @@ export async function GET(request: NextRequest) {
           requestedNumber: cardNumber || null,
         },
         tcgdexDiagnostics,
+        exactRegionalDiagnostics,
       });
     }
 
@@ -4722,6 +5511,7 @@ export async function GET(request: NextRequest) {
           reason:
             "upstream-unavailable",
           tcgdexDiagnostics,
+          exactRegionalDiagnostics,
         },
         { status: 502 }
       );
@@ -4816,6 +5606,7 @@ export async function GET(request: NextRequest) {
           topRejectedCandidates,
         },
         tcgdexDiagnostics,
+        exactRegionalDiagnostics,
       });
     }
 

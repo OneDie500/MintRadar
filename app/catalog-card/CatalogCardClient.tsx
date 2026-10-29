@@ -163,7 +163,7 @@ function ResilientCatalogImage({
 
   const [src, setSrc] =
     useState<string | null>(
-      card.image_url?.trim() || null
+      ((value) => /^https?:\/\//i.test(value) || value.startsWith("/api/") || value.startsWith("/images/") ? value : null)(card.image_url?.trim() || "")
     );
 
   const [
@@ -228,7 +228,7 @@ function ResilientCatalogImage({
     setFailed(false);
 
     const storedImage =
-      card.image_url?.trim() || null;
+      ((value) => /^https?:\/\//i.test(value) || value.startsWith("/api/") || value.startsWith("/images/") ? value : null)(card.image_url?.trim() || "");
 
     if (storedImage) {
       const displayImage =

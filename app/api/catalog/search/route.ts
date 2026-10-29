@@ -216,8 +216,37 @@ export async function GET(
       );
     }
 
+    const requestedLanguage = (request.nextUrl.searchParams.get("language") || "All").toUpperCase();
+    const languageFilter: CardRow["language"] | null =
+      requestedLanguage === "JP" || requestedLanguage === "EN" ||
+      requestedLanguage === "CN" || requestedLanguage === "CN-TW"
+        ? requestedLanguage
+        : null;
+
     const supabase =
       getSupabaseClient();
+
+    // Filter by language in Supabase BEFORE pagination. A JP-only
+    // search must not be limited by the first 1,000 mixed-language rows.
+    // For ordinary card-name searches, use database range/count so all
+    // eras remain reachable, even beyond Supabase's default row limit.
+    if (languageFilter && !/\d/.test(query)) {
+      const direct = await searchCardsByNamePaged(
+        supabase, query, languageFilter, page, pageSize
+      );
+      const results = await enrichMissingPokemonImages(
+        request, direct.rows.map(normalizeCard)
+      );
+      return NextResponse.json({
+        query, page, pageSize, count: results.length,
+        total: direct.total,
+        totalPages: Math.ceil(direct.total / pageSize),
+        hasMore: page * pageSize < direct.total,
+        matchedSets: [],
+        parsedSearch: { set: null, language: languageFilter, cardText: query },
+        results,
+      });
+    }
 
     const setCandidates =
       await findMatchingSets(
@@ -286,6 +315,10 @@ export async function GET(
         balanceCardsByLanguage(
           matchingCards
         );
+    }
+
+    if (languageFilter) {
+      matchingCards = matchingCards.filter(card => card.language === languageFilter);
     }
 
     const start =
@@ -551,6 +584,83 @@ async function searchWithinSet(
   }
 
   return (data ?? []) as CardRow[];
+}
+
+// Learn localized spellings from cards already linked to English names.
+// This is a read-only search expansion; it never assigns a canonical identity
+// or an image to an unlinked card.
+async function discoverLocalizedNameAliases(
+  supabase: ReturnType<typeof getSupabaseClient>,
+  query: string,
+  language: CardRow["language"]
+): Promise<string[]> {
+  if (language === "EN" || !/^[a-z][a-z .'-]*$/i.test(query.trim())) return [];
+  const clean = query.trim();
+  if (clean.length < 3) return [];
+
+  // Only exact canonical-name identities are eligible as translation seeds.
+  // Avoid broad prefix matches (e.g. Pikachu VMAX is not a translation of Pikachu).
+  const { data, error } = await supabase.from("cards")
+    .select("name,canonical_name")
+    .eq("data_source", "tcgdex")
+    .eq("category", "Pokemon")
+    .eq("language", language)
+    .ilike("canonical_name", escapeLikePattern(clean))
+    .limit(300);
+  if (error || !data) return [];
+
+  const candidates = new Map<string, number>();
+  for (const row of data) {
+    const localized = typeof row.name === "string" ? row.name.trim().normalize("NFKC") : "";
+    if (!localized || localized.toLowerCase() === clean.toLowerCase()) continue;
+    // A simple localized species/name spelling is safe to expand; names with
+    // spaces, numbers, or Latin variant suffixes are not used as seeds.
+    if (!/^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー・]{2,24}$/u.test(localized)) continue;
+    candidates.set(localized, (candidates.get(localized) || 0) + 1);
+  }
+  // Restrict expansion to the most-supported spellings, avoiding accidental
+  // aliases from a single incorrectly canonicalized catalog row.
+  const ranked = [...candidates.entries()].sort((a,b) => b[1]-a[1] || a[0].length-b[0].length);
+  if (!ranked.length) return [];
+  const strongest = ranked[0][1];
+  return ranked.filter(([,count]) => count >= Math.max(2, Math.ceil(strongest * 0.25)))
+    .slice(0, 3).map(([name]) => name);
+}
+
+async function searchCardsByNamePaged(
+  supabase: ReturnType<typeof getSupabaseClient>,
+  query: string,
+  language: CardRow["language"],
+  page: number,
+  pageSize: number
+): Promise<{ rows: CardRow[]; total: number }> {
+  const words = normalizeText(query).split(" ").filter(
+    word => word.length > 0 && !STOP_WORDS.has(word)
+  );
+  if (!words.length) return { rows: [], total: 0 };
+
+  const localizedAliases = await discoverLocalizedNameAliases(supabase, query, language);
+
+  let request = supabase.from("cards")
+    .select("external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish,language,variant,canonical_name,canonical_external_id,canonical_language,canonical_confidence", { count: "exact" })
+    .eq("data_source", "tcgdex")
+    .eq("category", "Pokemon")
+    .eq("language", language);
+
+  for (const word of words) {
+    const safe = escapeLikePattern(word);
+    const aliasConditions = localizedAliases.map(alias => `name.ilike.%${escapeLikePattern(alias)}%`);
+    request = request.or([`name.ilike.%${safe}%`, `canonical_name.ilike.%${safe}%`, ...aliasConditions].join(","));
+  }
+
+  const start = (page - 1) * pageSize;
+  const { data, error, count } = await request
+    .order("set_name", { ascending: true })
+    .order("card_number", { ascending: true })
+    .order("external_id", { ascending: true })
+    .range(start, start + pageSize - 1);
+  if (error) throw new Error(`Pokémon card search failed: ${error.message}`);
+  return { rows: (data ?? []) as CardRow[], total: count ?? 0 };
 }
 
 async function searchCardsByName(

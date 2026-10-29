@@ -65,6 +65,14 @@ type CatalogCard = {
   set_id?: string | null;
 };
 
+function matchesLanguage(language: string | null | undefined, filter: "All" | "EN" | "JP") {
+  if (filter === "All") return true;
+  const normalized = (language || "EN").trim().toUpperCase();
+  return filter === "JP"
+    ? ["JP", "JA", "JAPANESE"].includes(normalized)
+    : ["EN", "ENG", "ENGLISH"].includes(normalized);
+}
+
 // Keep universal (All) searches relevant across different catalog providers.
 // Individual providers can return loose matches; for multi-term searches,
 // every requested word must occur in this card's own identity/metadata.
@@ -388,6 +396,7 @@ export default function Home() {
   const [cards, setCards] = useState<Card[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
+  const [languageFilter, setLanguageFilter] = useState<"All" | "EN" | "JP">("All");
   const [activeCategory, setActiveCategory] =
     useState("All");
   const [catalogResults, setCatalogResults] = useState<CatalogCard[]>([]);
@@ -660,7 +669,7 @@ export default function Home() {
         });
 
         const catalogMatches = Array.from(unique.values());
-        const relevantResults = catalogMatches.filter((card) => matchesUniversalCatalogQuery(card, query));
+        const relevantResults = catalogMatches.filter((card) => matchesLanguage(card.language, languageFilter) && matchesUniversalCatalogQuery(card, query));
 
         setCatalogResults(relevantResults.slice(0, 20));
 
@@ -700,7 +709,7 @@ export default function Home() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [searchTerm]);
+  }, [searchTerm, languageFilter]);
 
   async function addToWishlist(card: CatalogCard) {
     const key = `${card.data_source}:${card.external_id}`;
@@ -817,7 +826,7 @@ export default function Home() {
         cardCategory.toLowerCase() ===
           activeCategory.toLowerCase();
 
-      if (!matchesCategory) {
+      if (!matchesCategory || !matchesLanguage(card.language, languageFilter)) {
         return false;
       }
 
@@ -859,7 +868,7 @@ export default function Home() {
         searchableListingText.includes(search)
       );
     });
-  }, [cards, searchTerm, activeCategory]);
+  }, [cards, searchTerm, activeCategory, languageFilter]);
 
   // -----------------------------------------
   // TOTAL LIVE LISTINGS
@@ -976,6 +985,20 @@ export default function Home() {
               <div className="absolute right-5 top-1/2 -translate-y-1/2 text-emerald-400 text-2xl">
                 ⌕
               </div>
+            </div>
+
+            <div className="mt-4 flex items-center justify-center gap-3">
+              <label htmlFor="collector-language-filter" className="text-sm text-zinc-400 font-semibold">Language</label>
+              <select
+                id="collector-language-filter"
+                value={languageFilter}
+                onChange={(event) => setLanguageFilter(event.target.value as "All" | "EN" | "JP")}
+                className="rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-2.5 text-sm text-white outline-none focus:border-emerald-400"
+              >
+                <option value="All">All languages</option>
+                <option value="EN">EN — English</option>
+                <option value="JP">JP — Japanese</option>
+              </select>
             </div>
 
             <p className="text-xs text-zinc-600 mt-3">
@@ -1184,12 +1207,14 @@ export default function Home() {
             </div>
 
             {(searchTerm ||
-              activeCategory !== "All") && (
+              activeCategory !== "All" ||
+              languageFilter !== "All") && (
               <button
                 type="button"
                 onClick={() => {
                   setSearchTerm("");
                   setActiveCategory("All");
+                  setLanguageFilter("All");
                 }}
                 className="text-sm text-zinc-400 hover:text-emerald-400 transition"
               >
