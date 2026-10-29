@@ -1003,6 +1003,9 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
   const streamRef = useRef<MediaStream | null>(null);
   const nativeCameraRef = useRef(false);
   const nativeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const detectionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stableFramesRef = useRef(0);
+  const [detectionStatus, setDetectionStatus] = useState("Looking for a card…");
   const nativeBusyRef = useRef(false);
   const [nativeCameraBusy, setNativeCameraBusy] = useState(false);
   const [identifying, setIdentifying] = useState(false);
@@ -1065,6 +1068,8 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     setSelectedCaptureId(null);
   }
   function stopCamera() {
+    if (detectionTimerRef.current) { clearInterval(detectionTimerRef.current); detectionTimerRef.current = null; }
+    stableFramesRef.current = 0;
     if (nativeTimerRef.current) {
       clearTimeout(nativeTimerRef.current);
       nativeTimerRef.current = null;
@@ -1115,40 +1120,10 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
       return;
     }
 
-    // Native plugin fallback: its preview is ABOVE the WebView. The embedded
-    // guides cannot overlay it, so capture automatically and return to review.
-    nativeBusyRef.current = true;
-    setNativeCameraBusy(true);
-    try {
-      const { CameraPreview } = await import("@capacitor-community/camera-preview");
-      await CameraPreview.start({
-        position: "rear", toBack: false, disableAudio: true,
-        width: Math.round(window.innerWidth), height: Math.round(window.innerHeight),
-        x: 0, y: 0,
-      });
-      nativeCameraRef.current = true;
-      setCameraBackend("native");
-      setScannerOpen(true);
-      nativeTimerRef.current = setTimeout(() => {
-        nativeTimerRef.current = null;
-        void (async () => {
-          try {
-            const result = await CameraPreview.capture({ quality: 85 });
-            if (!result?.value) throw new Error("Native camera returned no image.");
-            const image = result.value.startsWith("data:")
-              ? result.value : `data:image/jpeg;base64,${result.value}`;
-            stopCamera();
-            void addCapture(image);
-          } catch (error) {
-            stopCamera();
-            setCameraError(error instanceof Error ? error.message : "Native capture failed.");
-          }
-        })();
-      }, 2600);
-    } catch (error) {
-      stopCamera();
-      setCameraError(error instanceof Error ? error.message : "Could not start camera.");
-    }
+    // Never fall back to the old timed native capture: it spends credits on blank frames.
+    // WebView getUserMedia is required for local detection. A native frame processor
+    // can be added later for devices that do not expose getUserMedia.
+    setCameraError("Automatic card detection requires camera frame access. Enable camera permission for MintRadar and reopen the scanner.");
   }
 
   // Start on entry to the Scanner tab; a manual start control remains available
@@ -1160,14 +1135,70 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, view]);
 
-  useEffect(() => {
-    if (scannerOpen && videoRef.current && streamRef.current) {
-      videoRef.current.srcObject = streamRef.current;
-      void videoRef.current.play().catch(() => setCameraError("Tap the video to start the camera."));
+  // Conservative, on-device card-shape screening. This does not call the paid API.
+  // We require a lit, detailed frame with a strong rectangular boundary in the
+  // center and several consecutive stable samples before submitting one frame.
+  function cardPresent(video: HTMLVideoElement): boolean {
+    if (video.videoWidth < 160 || video.videoHeight < 160) return false;
+    const canvas = document.createElement("canvas");
+    canvas.width = 120; canvas.height = 160;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return false;
+    const sourceWidth = video.videoWidth * 0.72;
+    const sourceHeight = video.videoHeight * 0.84;
+    ctx.drawImage(video, (video.videoWidth-sourceWidth)/2, (video.videoHeight-sourceHeight)/2, sourceWidth, sourceHeight, 0, 0, 120, 160);
+    const pixels = ctx.getImageData(0, 0, 120, 160).data;
+    const luminance = (x: number, y: number) => { const i = (y*120+x)*4; return (pixels[i]*0.299+pixels[i+1]*0.587+pixels[i+2]*0.114); };
+    let brightness=0, detail=0, count=0;
+    for (let y=10;y<150;y+=4) for (let x=10;x<110;x+=4) {
+      const l=luminance(x,y); brightness+=l; detail+=Math.abs(l-luminance(x+3,y))+Math.abs(l-luminance(x,y+3)); count++;
     }
-  }, [scannerOpen]);
+    if (brightness/count < 42 || brightness/count > 235 || detail/count < 26) return false;
+    // Compare the perimeter of a card-sized central region with nearby pixels.
+    // The paired contrasts reject featureless desks and dark/blank scenes.
+    let edge=0, hits=0;
+    for (let y=22;y<=138;y+=6) {
+      for (const x of [24,96]) {
+        const diff=Math.abs(luminance(x,y)-luminance(x+(x<60?-7:7),y));
+        edge+=diff; if(diff>19)hits++;
+      }
+    }
+    for (let x=24;x<=96;x+=6) {
+      for (const y of [22,138]) {
+        const diff=Math.abs(luminance(x,y)-luminance(x,y+(y<80?-7:7)));
+        edge+=diff; if(diff>19)hits++;
+      }
+    }
+    return hits >= 19 && edge >= 1350;
+  }
+
+  useEffect(() => {
+    if (!scannerOpen || cameraBackend !== "web" || !videoRef.current || !streamRef.current || selectedCaptureId) return;
+    const video = videoRef.current;
+    video.srcObject = streamRef.current;
+    void video.play().catch(() => setCameraError("Camera playback was blocked. Reopen the scanner."));
+    detectionTimerRef.current = setInterval(() => {
+      if (scanRequestRef.current || video.readyState < 2) return;
+      const present = cardPresent(video);
+      stableFramesRef.current = present ? stableFramesRef.current + 1 : 0;
+      setDetectionStatus(present ? "Card detected · Hold steady…" : "Align a card inside the blue corners");
+      if (stableFramesRef.current >= 5) {
+        stableFramesRef.current = 0;
+        const canvas = document.createElement("canvas");
+        const scale = Math.min(1, 960/video.videoWidth);
+        canvas.width = Math.round(video.videoWidth*scale);
+        canvas.height = Math.round(video.videoHeight*scale);
+        canvas.getContext("2d")?.drawImage(video,0,0,canvas.width,canvas.height);
+        stopCamera();
+        void addCapture(canvas.toDataURL("image/jpeg",0.82));
+      }
+    }, 350);
+    return () => { if (detectionTimerRef.current) clearInterval(detectionTimerRef.current); detectionTimerRef.current=null; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scannerOpen, cameraBackend, selectedCaptureId]);
   useEffect(() => () => {
     if (nativeTimerRef.current) clearTimeout(nativeTimerRef.current);
+    if (detectionTimerRef.current) clearInterval(detectionTimerRef.current);
     streamRef.current?.getTracks().forEach(track => track.stop());
     if (nativeCameraRef.current) {
       void import("@capacitor-community/camera-preview")
@@ -1280,16 +1311,16 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
   const buttonClass = "rounded-xl border border-zinc-800 bg-black px-3 py-2 text-xs font-black text-zinc-300 transition hover:border-emerald-400/50 hover:text-white";
 
   return <>
-    <button type="button" onClick={() => setOpen(true)} className="rounded-xl border border-emerald-400/30 bg-zinc-950 px-6 py-4 text-center font-black text-emerald-300 transition hover:bg-zinc-900">
+    <button type="button" onClick={() => { setView("scanner"); setOpen(true); }} className="rounded-xl border border-emerald-400/30 bg-zinc-950 px-6 py-4 text-center font-black text-emerald-300 transition hover:bg-zinc-900">
       Scanner
     </button>
-    {open && <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/85 p-0 sm:items-center sm:p-5" onMouseDown={event => { if (event.target === event.currentTarget) { stopCamera(); setOpen(false); } }}>
-      <div role="dialog" aria-modal="true" aria-label="MintRadar Deal Analyzer V2" className="max-h-[96vh] w-full max-w-6xl overflow-y-auto rounded-t-3xl border border-zinc-800 bg-zinc-950 text-white shadow-2xl sm:rounded-3xl">
-        <header className="sticky top-0 z-20 flex items-start justify-between gap-4 border-b border-zinc-800 bg-zinc-950 p-5 sm:p-6">
+    {open && <div className="fixed inset-0 z-[100] flex bg-[#090d16]" onMouseDown={event => { if (event.target === event.currentTarget) { stopCamera(); setOpen(false); } }}>
+      <div role="dialog" aria-modal="true" aria-label="MintRadar Deal Analyzer V2" className="flex h-[100dvh] w-full flex-col overflow-hidden bg-[#090d16] text-white">
+        <header className="z-20 flex shrink-0 items-center justify-between gap-4 border-b border-zinc-800 bg-[#090d16] px-4 py-3">
           <div><p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400">MintRadar • Vendor Tools</p><h2 className="mt-1 text-2xl font-black sm:text-3xl">MintRadar Scanner</h2><p className="mt-1 text-sm text-zinc-500">Scan customer cards, add them intentionally, then review the deal.</p></div>
           <button type="button" aria-label="Close Deal Analyzer" onClick={() => { stopCamera(); setOpen(false); }} className="rounded-full border border-zinc-800 px-3 py-1.5 text-xl text-zinc-400">×</button>
         </header>
-        <div className="space-y-5 p-4 sm:p-6">
+        <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex gap-2"><button type="button" onClick={() => { setView("scanner"); }} className={`rounded-xl px-4 py-3 text-sm font-black ${view === "scanner" ? "bg-emerald-400 text-black" : "border border-zinc-800 text-zinc-300"}`}>Scan Customer Card</button><button type="button" onClick={() => { stopCamera(); setView("summary"); }} className={`relative rounded-xl px-4 py-3 text-sm font-black ${view === "summary" ? "bg-emerald-400 text-black" : "border border-zinc-800 text-zinc-300"}`}>Summary <span className="ml-1 rounded-full bg-white px-2 py-0.5 text-xs text-black">{dealCards.length}</span>{addedNotice && view === "scanner" && <span className="absolute -right-1 -top-1 h-3 w-3 rounded-full bg-emerald-400 ring-2 ring-black"/>}</button></div>
             <button type="button" onClick={() => { if (window.confirm("Clear this deal and start over?")) resetDeal(); }} className={buttonClass}>Reset Deal</button>
@@ -1304,14 +1335,14 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
             <section className="rounded-2xl border border-zinc-800 bg-black p-4"><h3 className="text-lg font-black">Vendor Inventory · Trade</h3><p className="mt-1 text-xs text-zinc-400">Add a published listing by its MintRadar QR destination URL or listing ID. Only listings loaded for this vendor can be added.</p><div className="mt-3 flex gap-2"><input value={qrText} onChange={e => setQrText(e.target.value)} placeholder="Paste /listing/ URL or listing ID" className={inputClass}/><button type="button" onClick={() => addVendorListing(qrText)} className="rounded-xl bg-emerald-400 px-4 font-black text-black">Add</button></div>{qrError && <p role="alert" className="mt-2 text-xs text-amber-300">{qrError}</p>}<div className="mt-3 max-h-44 space-y-2 overflow-y-auto">{inventory.filter(item => Number(item.quantity ?? 0) > 0 && item.price != null).slice(0, 30).map(item => <button key={item.id} type="button" onClick={() => addVendorListing(item.id)} className="flex w-full justify-between rounded-lg border border-zinc-800 px-3 py-2 text-left text-xs hover:border-emerald-400"><span>{inventoryTitle(item)} · {inventorySubtitle(item)}</span><strong>{money(Number(item.price))} +</strong></button>)}</div>{vendorItems.map(item => <div key={item.id} className="mt-2 flex items-center justify-between rounded-lg bg-zinc-950 p-3 text-sm"><span>{inventoryTitle(item)} · {money(Number(item.price))}</span><button type="button" onClick={() => setVendorItems(current => current.filter(entry => entry.id !== item.id))} className="text-red-300">Remove</button></div>)}<div className="mt-4 space-y-2 border-t border-zinc-800 pt-4"><div className="flex justify-between"><span>Vendor Asking Total</span><strong>{money(vendorTotal)}</strong></div><div className="flex justify-between"><span>Customer Trade Credit</span><strong>{money(tradeCredit)}</strong></div><div className="flex justify-between text-lg font-black"><span>{tradeDifference >= 0 ? "Customer Owes" : "Credit Remaining"}</span><strong className="text-emerald-400">{money(Math.abs(tradeDifference))}</strong></div></div></section>
             <p className="text-xs text-zinc-500">Estimate only. No payment, inventory update, or sale is recorded. Verify card identities, prices, and condition before completing a deal.</p>
           </div>}
-          {view === "scanner" && <div className="space-y-5">
-          <section className="rounded-2xl border border-emerald-400/25 bg-black p-4">
+          {view === "scanner" && <div className="flex min-h-full flex-col">
+          <section className="flex flex-1 flex-col rounded-2xl bg-[#090d16] p-1">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div><h3 className="text-lg font-black">MintRadar Live Scanner</h3><p className="text-xs text-zinc-500">Scan directly with your camera. Identify the card and check its price. Cards are only added when you tap Add Card.</p></div>
 
             </div>
-            <div className="mt-4 mx-auto w-full max-w-md">
-              <div className="relative aspect-[3/4] overflow-hidden rounded-2xl border border-sky-500/50 bg-[#0a1424] shadow-[0_0_0_1px_rgba(56,189,248,0.12)]">
+            <div className="mt-3 mx-auto w-full max-w-lg">
+              <div className="relative h-[min(56dvh,650px)] overflow-hidden rounded-2xl border border-sky-500/50 bg-[#0a1424]">
                 {scannerOpen && cameraBackend === "web" && (
                   <video ref={videoRef} autoPlay muted playsInline className="absolute inset-0 h-full w-full object-cover" />
                 )}
@@ -1331,21 +1362,13 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
                   <span className="absolute -bottom-0.5 -right-0.5 h-9 w-9 rounded-br-lg border-b-4 border-r-4 border-sky-400" />
                 </div>
                 <div className="pointer-events-none absolute inset-x-0 bottom-5 text-center text-xs font-bold text-white drop-shadow-lg">
-                  {identifying ? "Identifying card…" : scannerOpen ? "Center your card inside the corners" : "Scan a card to review it"}
+                  {identifying ? "Identifying card…" : scannerOpen ? detectionStatus : "Ready for the next card"}
                 </div>
               </div>
               {cameraError && <p role="alert" className="mt-3 text-sm text-amber-300">{cameraError}</p>}
-              {!selectedCapture && (
-                <div className="mt-4 flex justify-center gap-3">
-                  <button type="button" disabled={identifying || nativeCameraBusy} onClick={() => { if (scannerOpen) stopCamera(); else void startCamera(); }} className={buttonClass}>
-                    {scannerOpen ? "Stop Camera" : "Start Scanner"}
-                  </button>
-                  {scannerOpen && cameraBackend === "web" && <button type="button" disabled={identifying} onClick={captureFrame} className="rounded-xl bg-sky-500 px-7 py-3 text-sm font-black text-white disabled:opacity-50">Scan Card</button>}
-                </div>
-              )}
-              {scannerOpen && cameraBackend === "native" && <p className="mt-2 text-center text-xs text-slate-400">Native camera fallback: capturing automatically. Framing guides are available in embedded-camera mode.</p>}
+              {cameraError && <button type="button" onClick={() => void startCamera()} className="mt-3 w-full rounded-xl bg-sky-500 px-4 py-3 font-black text-white">Retry Camera</button>}
             </div>
-            {selectedCapture && <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950 p-4">
+            {selectedCapture && <div className="sticky bottom-0 z-20 mt-3 rounded-2xl border border-slate-700 bg-[#121c2b] p-4 shadow-2xl">
               <div className="flex items-center justify-between gap-2"><p className="text-sm font-black">{selectedCapture.status === "identifying" ? "Identifying your card..." : selectedCapture.matched ? "Card added to deal" : "Review Card Match"}</p><button type="button" onClick={() => { setCaptures(current => current.filter(c => c.id !== selectedCapture.id)); setSelectedCaptureId(null); }} className={buttonClass}>Dismiss</button></div>
               {selectedCapture.status === "identifying" && <p className="mt-3 text-sm text-emerald-300">Checking card identity and current market pricing...</p>}
               {selectedCapture.error && <p role="alert" className="mt-3 text-sm text-amber-300">{selectedCapture.error}</p>}
@@ -1353,10 +1376,11 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
               {(selectedCapture.result?.data?.candidates?.length ?? 0) > 1 && !selectedCapture.matched && <div className="mt-3 space-y-2">{selectedCapture.result?.data?.candidates?.map((candidate, index) => <button key={`${candidate.card_id ?? index}-${index}`} type="button" onClick={() => setCaptures(current => current.map(c => c.id === selectedCapture.id ? { ...c, selectedIndex: index } : c))} className={`block w-full rounded-lg border p-2 text-left text-xs ${selectedCapture.selectedIndex === index ? "border-emerald-400 text-emerald-200" : "border-zinc-800 text-zinc-400"}`}>{candidate.name} · {candidate.set?.name} · #{candidate.number}</button>)}</div>}
               {selectedCandidate && <div className="mt-3 flex gap-4"><div className="h-36 w-24 shrink-0 overflow-hidden rounded-lg bg-black">{selectedCandidate.image_url ? <img src={selectedCandidate.image_url} alt={selectedCandidate.name ?? "Matched card"} className="h-full w-full object-contain"/> : <img src={selectedCapture.image} alt="Captured card" className="h-full w-full object-contain"/>}</div><div className="min-w-0 flex-1"><p className="font-black">{selectedCandidate.name}</p><p className="mt-1 text-xs text-zinc-400">{selectedCandidate.set?.name} · #{selectedCandidate.number}</p><p className="mt-1 text-xs text-zinc-500">{selectedCandidate.rarity} · {selectedPrice?.printing ?? selectedCandidate.suggested_printing ?? "Printing not specified"}</p><p className="mt-3 text-xs text-zinc-500">TCGplayer Market Price</p><p className="text-2xl font-black text-emerald-400">{typeof selectedPrice?.market_price === "number" ? money(selectedPrice.market_price) : "Not available"}</p><p className="mt-1 text-xs text-zinc-500">Offer at {defaultPercentage}%: {typeof selectedPrice?.market_price === "number" ? money(selectedPrice.market_price * defaultPercentage / 100) : "Enter market price manually"}</p></div></div>}
               {typeof selectedCapture.result?.meta?.scans_remaining === "number" && <p className="mt-2 text-xs text-zinc-500">API test credits remaining: {selectedCapture.result.meta.scans_remaining}</p>}
-              <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+              <div className="mt-4 grid grid-cols-2 gap-3">
                 <button type="button" disabled={identifying || nativeCameraBusy} onClick={() => { setAddedNotice(""); setSelectedCaptureId(null); void startCamera(); }} className={buttonClass}>Scan More</button>
                 <button type="button" disabled={selectedCapture.status !== "review" || !selectedCandidate?.name || !selectedCandidate.number} onClick={() => confirmScan(selectedCapture)} className="rounded-xl bg-sky-500 px-6 py-3 font-black text-white disabled:opacity-40">{selectedCapture.matched ? "✓ Card Added" : "Add Card"}</button>
               </div>
+              <button type="button" onClick={() => { stopCamera(); setView("summary"); }} className="mt-3 w-full rounded-xl border border-slate-600 py-3 text-sm font-black">Summary ({dealCards.length})</button>
             </div>}
           </section>
 
