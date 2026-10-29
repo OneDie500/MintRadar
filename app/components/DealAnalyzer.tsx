@@ -946,7 +946,7 @@ function CatalogCardSearch({
 
 
 type DealMode = "buy" | "trade";
-type ScanMode = "single" | "continuous";
+type ScanMode = "cards" | "qr";
 type ScanPrice = { printing?: string; market_price?: number | null; low_price?: number | null; median_price?: number | null; last_updated_at?: string | null };
 type ScanCandidate = { card_id?: number; tcgplayer_id?: number; name?: string; number?: string; rarity?: string; image_url?: string; suggested_printing?: string; set?: { name?: string }; game?: { slug?: string; name?: string }; prices?: ScanPrice[] };
 type ScanResult = { ok?: boolean; error?: string; data?: { status?: string; message?: string | null; candidates?: ScanCandidate[]; warnings?: string[] }; meta?: { scans_remaining?: number } };
@@ -993,7 +993,10 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
   const [targetInventory, setTargetInventory] = useState<VendorInventorySearchItem | null>(null);
   const [inventorySearch, setInventorySearch] = useState("");
   const [targetPrice, setTargetPrice] = useState("");
-  const [scanMode, setScanMode] = useState<ScanMode>("single");
+  const [scanMode, setScanMode] = useState<ScanMode>("cards");
+  const [qrCandidate, setQrCandidate] = useState<VendorInventorySearchItem | null>(null);
+  const [qrScanMessage, setQrScanMessage] = useState("");
+  const qrBusyRef = useRef(false);
   const [scannerOpen, setScannerOpen] = useState(false);
   const [cameraBackend, setCameraBackend] = useState<"web" | "native" | null>(null);
   const [cameraError, setCameraError] = useState("");
@@ -1055,6 +1058,9 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     setVendorItems([]);
     setQrText("");
     setQrError("");
+    setQrCandidate(null);
+    setQrScanMessage("");
+    setScanMode("cards");
     setCashRate(70);
     setTradeRate(80);
     setDefaultPercentage(70);
@@ -1084,6 +1090,7 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
         .catch(error => console.warn("Native camera cleanup:", error));
     }
     nativeBusyRef.current = false;
+    qrBusyRef.current = false;
     setNativeCameraBusy(false);
     setScannerOpen(false);
     setCameraBackend(null);
@@ -1091,6 +1098,7 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
 
   async function startCamera() {
     setCameraError("");
+    setQrScanMessage("");
     if (nativeBusyRef.current || scanRequestRef.current) return;
     stopCamera();
 
@@ -1129,11 +1137,63 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
   // Start on entry to the Scanner tab; a manual start control remains available
   // for iOS permission prompts that require a direct user gesture.
   useEffect(() => {
-    if (!open || view !== "scanner" || scannerOpen || identifying || selectedCaptureId) return;
+    if (!open || view !== "scanner" || scannerOpen || identifying || selectedCaptureId || qrCandidate) return;
     void startCamera();
     // Run only on entering the scanner view, not when camera state changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, view]);
+  }, [open, view, scanMode]);
+
+  function changeScannerMode(next: ScanMode) {
+    if (next === scanMode) return;
+    stopCamera();
+    setSelectedCaptureId(null);
+    setQrCandidate(null);
+    setQrScanMessage("");
+    setCameraError("");
+    setScanMode(next);
+  }
+
+  // Existing MintRadar labels use /listing/<uuid>. Only current-vendor inventory
+  // is accepted; the QR is a locator, never proof of ownership or authorization.
+  function resolveQrListing(value: string): VendorInventorySearchItem | null {
+    let id = value.trim();
+    try {
+      const url = new URL(id);
+      if (!(["https:", "http:"].includes(url.protocol))) return null;
+      const segments = url.pathname.split("/").filter(Boolean);
+      if (segments.length !== 2 || segments[0] !== "listing") return null;
+      id = segments[1];
+    } catch { /* UUID-only labels are also accepted. */ }
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return null;
+    return inventory.find(item => item.id.toLowerCase() === id.toLowerCase()) ?? null;
+  }
+
+  function reviewQrValue(value: string) {
+    const item = resolveQrListing(value);
+    if (!item) { setQrScanMessage("This QR does not match a listing in the current vendor inventory."); return; }
+    if (Number(item.quantity ?? 0) <= 0 || item.price == null) {
+      setQrScanMessage("This listing is out of stock or missing an asking price."); return;
+    }
+    if (vendorItems.some(entry => entry.id === item.id)) {
+      setQrScanMessage("This listing is already in the current transaction."); return;
+    }
+    stopCamera();
+    setQrScanMessage("");
+    setQrCandidate(item);
+  }
+
+  function confirmQrCandidate() {
+    if (!qrCandidate) return;
+    const currentItem = inventory.find(item => item.id === qrCandidate.id);
+    if (!currentItem || Number(currentItem.quantity ?? 0) <= 0 || currentItem.price == null || vendorItems.some(item => item.id === qrCandidate.id)) {
+      setQrCandidate(null);
+      setQrScanMessage("Listing is no longer available or is already in this transaction.");
+      return;
+    }
+    setVendorItems(current => [...current, currentItem]);
+    setAddedNotice(`${inventoryTitle(currentItem)} added to vendor side`);
+    setQrCandidate(null);
+  }
 
   // Conservative, on-device card-shape screening. This does not call the paid API.
   // We require a lit, detailed frame with a strong rectangular boundary in the
@@ -1173,12 +1233,31 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
   }
 
   useEffect(() => {
-    if (!scannerOpen || cameraBackend !== "web" || !videoRef.current || !streamRef.current || selectedCaptureId) return;
+    if (!scannerOpen || cameraBackend !== "web" || !videoRef.current || !streamRef.current || selectedCaptureId || qrCandidate) return;
     const video = videoRef.current;
     video.srcObject = streamRef.current;
     void video.play().catch(() => setCameraError("Camera playback was blocked. Reopen the scanner."));
+    // BarcodeDetector is supported by recent Chromium browsers, but not every
+    // iOS WebView. When unavailable, the manual QR URL field remains usable.
+    type QRDetector = { detect: (source: HTMLVideoElement) => Promise<Array<{ rawValue: string }>> };
+    const detectorConstructor = (globalThis as typeof globalThis & {
+      BarcodeDetector?: new (options: { formats: string[] }) => QRDetector;
+    }).BarcodeDetector;
+    let detector: QRDetector | null = null;
+    if (scanMode === "qr" && detectorConstructor) {
+      try { detector = new detectorConstructor({ formats: ["qr_code"] }); } catch { /* manual fallback */ }
+    }
+    if (scanMode === "qr" && !detector) setQrScanMessage("Live QR decoding is unavailable on this device. Paste the label URL below instead.");
     detectionTimerRef.current = setInterval(() => {
       if (scanRequestRef.current || video.readyState < 2) return;
+      if (scanMode === "qr") {
+        if (!detector || qrBusyRef.current) return;
+        qrBusyRef.current = true;
+        void detector.detect(video).then(codes => {
+          if (codes.length && codes[0].rawValue) reviewQrValue(codes[0].rawValue);
+        }).catch(() => setQrScanMessage("QR reading failed. Try again or paste the label URL below.")).finally(() => { qrBusyRef.current = false; });
+        return;
+      }
       const present = cardPresent(video);
       stableFramesRef.current = present ? stableFramesRef.current + 1 : 0;
       setDetectionStatus(present ? "Card detected · Hold steady…" : "Align a card inside the blue corners");
@@ -1195,7 +1274,7 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
     }, 350);
     return () => { if (detectionTimerRef.current) clearInterval(detectionTimerRef.current); detectionTimerRef.current=null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scannerOpen, cameraBackend, selectedCaptureId]);
+  }, [scannerOpen, cameraBackend, selectedCaptureId, scanMode, qrCandidate]);
   useEffect(() => () => {
     if (nativeTimerRef.current) clearTimeout(nativeTimerRef.current);
     if (detectionTimerRef.current) clearInterval(detectionTimerRef.current);
@@ -1288,6 +1367,7 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
   }
 
   function captureFrame() {
+    if (scanMode !== "cards") return;
     const video = videoRef.current;
     if (!video || !video.videoWidth) {
       setCameraError("Camera is still starting. Try again in a moment.");
@@ -1338,18 +1418,22 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
           {view === "scanner" && <div className="flex min-h-full flex-col">
           <section className="flex flex-1 flex-col rounded-2xl bg-[#090d16] p-1">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div><h3 className="text-lg font-black">MintRadar Live Scanner</h3><p className="text-xs text-zinc-500">Scan directly with your camera. Identify the card and check its price. Cards are only added when you tap Add Card.</p></div>
+              <div><h3 className="text-lg font-black">MintRadar Live Scanner</h3><p className="text-xs text-zinc-500">{scanMode === "cards" ? "Identify customer cards and check market prices." : "Scan a MintRadar inventory label into this same transaction. No recognition credits used."}</p></div>
 
+            </div>
+            <div className="mx-auto mt-3 flex w-full max-w-lg rounded-xl border border-slate-700 bg-slate-950 p-1" role="group" aria-label="Scanner mode">
+              <button type="button" aria-pressed={scanMode === "cards"} onClick={() => changeScannerMode("cards")} className={`flex-1 rounded-lg px-4 py-3 text-sm font-black ${scanMode === "cards" ? "bg-sky-500 text-white" : "text-slate-400"}`}>Cards</button>
+              <button type="button" aria-pressed={scanMode === "qr"} onClick={() => changeScannerMode("qr")} className={`flex-1 rounded-lg px-4 py-3 text-sm font-black ${scanMode === "qr" ? "bg-sky-500 text-white" : "text-slate-400"}`}>QR</button>
             </div>
             <div className="mt-3 mx-auto w-full max-w-lg">
               <div className="relative h-[min(56dvh,650px)] overflow-hidden rounded-2xl border border-sky-500/50 bg-[#0a1424]">
                 {scannerOpen && cameraBackend === "web" && (
                   <video ref={videoRef} autoPlay muted playsInline className="absolute inset-0 h-full w-full object-cover" />
                 )}
-                {!scannerOpen && !selectedCapture && (
+                {!scannerOpen && !selectedCapture && !qrCandidate && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center text-slate-400">
                     <span className="text-4xl">▣</span>
-                    <span className="text-sm font-semibold">Ready to scan a card</span>
+                    <span className="text-sm font-semibold">{scanMode === "qr" ? "Ready to scan an inventory QR" : "Ready to scan a card"}</span>
                   </div>
                 )}
                 {!scannerOpen && selectedCapture && (
@@ -1362,13 +1446,16 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
                   <span className="absolute -bottom-0.5 -right-0.5 h-9 w-9 rounded-br-lg border-b-4 border-r-4 border-sky-400" />
                 </div>
                 <div className="pointer-events-none absolute inset-x-0 bottom-5 text-center text-xs font-bold text-white drop-shadow-lg">
-                  {identifying ? "Identifying card…" : scannerOpen ? detectionStatus : "Ready for the next card"}
+                  {scanMode === "qr" ? (scannerOpen ? "Align MintRadar QR label inside the corners" : "Ready for inventory QR") : identifying ? "Identifying card…" : scannerOpen ? detectionStatus : "Ready for the next card"}
                 </div>
               </div>
+              {scanMode === "qr" && qrScanMessage && <p role="status" className="mt-3 text-sm text-amber-300">{qrScanMessage}</p>}
+              {scanMode === "qr" && <div className="mt-3 flex gap-2"><input aria-label="MintRadar listing URL or UUID" value={qrText} onChange={e => setQrText(e.target.value)} placeholder="Paste QR listing URL or UUID" className={inputClass}/><button type="button" onClick={() => { reviewQrValue(qrText); setQrText(""); }} className="rounded-xl bg-sky-500 px-4 font-black text-white">Find</button></div>}
+              {scanMode === "qr" && qrCandidate && <div className="mt-3 rounded-xl border border-emerald-400/40 bg-slate-950 p-4"><p className="text-xs font-black uppercase text-emerald-400">Inventory match · Review before adding</p><p className="mt-2 font-black">{inventoryTitle(qrCandidate)}</p><p className="text-sm text-slate-400">{inventorySubtitle(qrCandidate)}</p><p className="mt-2 text-xl font-black text-emerald-400">{money(Number(qrCandidate.price))}</p><div className="mt-3 grid grid-cols-2 gap-2"><button type="button" onClick={() => { setQrCandidate(null); void startCamera(); }} className={buttonClass}>Scan Again</button><button type="button" onClick={confirmQrCandidate} className="rounded-xl bg-emerald-400 px-3 py-3 font-black text-black">Add to Trade</button></div></div>}
               {cameraError && <p role="alert" className="mt-3 text-sm text-amber-300">{cameraError}</p>}
               {cameraError && <button type="button" onClick={() => void startCamera()} className="mt-3 w-full rounded-xl bg-sky-500 px-4 py-3 font-black text-white">Retry Camera</button>}
             </div>
-            {selectedCapture && <div className="sticky bottom-0 z-20 mt-3 rounded-2xl border border-slate-700 bg-[#121c2b] p-4 shadow-2xl">
+            {scanMode === "cards" && selectedCapture && <div className="sticky bottom-0 z-20 mt-3 rounded-2xl border border-slate-700 bg-[#121c2b] p-4 shadow-2xl">
               <div className="flex items-center justify-between gap-2"><p className="text-sm font-black">{selectedCapture.status === "identifying" ? "Identifying your card..." : selectedCapture.matched ? "Card added to deal" : "Review Card Match"}</p><button type="button" onClick={() => { setCaptures(current => current.filter(c => c.id !== selectedCapture.id)); setSelectedCaptureId(null); }} className={buttonClass}>Dismiss</button></div>
               {selectedCapture.status === "identifying" && <p className="mt-3 text-sm text-emerald-300">Checking card identity and current market pricing...</p>}
               {selectedCapture.error && <p role="alert" className="mt-3 text-sm text-amber-300">{selectedCapture.error}</p>}
@@ -1382,6 +1469,7 @@ export default function DealAnalyzer({ inventory }: { inventory: VendorInventory
               </div>
               <button type="button" onClick={() => { stopCamera(); setView("summary"); }} className="mt-3 w-full rounded-xl border border-slate-600 py-3 text-sm font-black">Summary ({dealCards.length})</button>
             </div>}
+            {scanMode === "qr" && <button type="button" onClick={() => { stopCamera(); setView("summary"); }} className="mx-auto mt-3 w-full max-w-lg rounded-xl border border-slate-600 py-3 text-sm font-black">Summary · {dealCards.length} customer / {vendorItems.length} vendor</button>}
           </section>
 
           </div>}
