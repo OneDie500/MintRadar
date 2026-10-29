@@ -4,8 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import { registerPlugin } from "@capacitor/core";
 import Link from "next/link";
 import Image from "next/image";
-import TradeAnalyzer from "../components/TradeAnalyzer";
-import BuyingAnalyzer from "../components/BuyingAnalyzer";
+import dynamic from "next/dynamic";
+
+// Split large analyzer modules out of the initial vendor dashboard bundle.
+// They retain their existing buttons and dialogs, but load independently.
+const TradeAnalyzer = dynamic(() => import("../components/TradeAnalyzer"), { ssr: false, loading: () => <div className="rounded-xl border border-zinc-800 px-6 py-4 text-sm text-zinc-500">Loading Trade Analyzer…</div> });
+const BuyingAnalyzer = dynamic(() => import("../components/BuyingAnalyzer"), { ssr: false, loading: () => <div className="rounded-xl border border-zinc-800 px-6 py-4 text-sm text-zinc-500">Loading Buying Analyzer…</div> });
+const DealAnalyzer = dynamic(() => import("../components/DealAnalyzer"), { ssr: false, loading: () => <div className="rounded-xl border border-emerald-400/30 px-6 py-4 text-sm text-emerald-300">Loading Analyzer V2…</div> });
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase";
 import { getActiveVendorMembership } from "../../lib/active-vendor";
@@ -94,6 +99,39 @@ type InventoryItem = {
 
   cards?: Card | null;
 };
+
+// Shared by the isolated listing editor and the vendor dashboard.
+function isGraded(
+    item: InventoryItem
+  ) {
+    return (
+      item.listing_type ===
+      "graded"
+    );
+  }
+
+function getListingLabel(
+    item: InventoryItem
+  ) {
+    if (
+      isGraded(item)
+    ) {
+      const company =
+        item.grading_company ||
+        "Graded";
+
+      const grade =
+        item.grade || "";
+
+      return `${company} ${grade}`.trim();
+    }
+
+    return (
+      item.condition ||
+      "Raw"
+    );
+  }
+
 
 type VendorSaleItem = {
   id: string;
@@ -545,6 +583,203 @@ function DashboardCompButtons({
   );
 }
 
+
+// Isolated modal: editing price no longer rerenders the entire inventory dashboard.
+function EditListingModal({ item, onClose, onSaved }: {
+  item: InventoryItem;
+  onClose: () => void;
+  onSaved: (id: string, price: number) => void;
+}) {
+  const [editPrice, setEditPrice] = useState(item.price != null && Number(item.price) > 0 ? Number(item.price).toFixed(2) : "");
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState("");
+
+  async function savePrice() {
+    if (editSaving) return;
+    const normalized = editPrice.trim().replace(/[$,]/g, "");
+    const nextPrice = Number(normalized);
+    if (!normalized || !Number.isFinite(nextPrice) || nextPrice <= 0) {
+      setEditError("Enter a price greater than $0 to publish this listing.");
+      return;
+    }
+    setEditSaving(true);
+    setEditError("");
+    try {
+      const { error } = await supabase.from("inventory").update({ price: nextPrice })
+        .eq("id", item.id).eq("vendor_id", item.vendor_id);
+      if (error) throw error;
+      onSaved(item.id, nextPrice);
+    } catch (error: unknown) {
+      setEditError(error instanceof Error ? error.message : "This listing price could not be updated.");
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
+  return (
+      (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 p-0 sm:items-center sm:p-5"
+          onMouseDown={(event) => {
+            if (
+              event.target ===
+              event.currentTarget
+            ) {
+              onClose();
+            }
+          }}
+        >
+          <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-t-3xl border border-zinc-800 bg-zinc-950 shadow-2xl sm:rounded-3xl">
+            <div className="flex items-start justify-between gap-5 border-b border-zinc-900 p-5 sm:p-6">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400">
+                  Edit Listing
+                </p>
+
+                <h2 className="mt-2 text-2xl font-black">
+                  {item.cards?.name ||
+                    "Unknown Card"}
+                </h2>
+
+                <p className="mt-1 text-sm text-zinc-500">
+                  {item.cards?.set_name ||
+                    "Unknown Set"}
+                  {item.cards?.card_number
+                    ? ` #${item.cards.card_number}`
+                    : ""}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={editSaving}
+                className="flex h-10 w-10 items-center justify-center rounded-full border border-zinc-800 bg-black text-xl text-zinc-400 transition hover:text-white disabled:opacity-50"
+                aria-label="Close edit listing"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="space-y-5 p-5 sm:p-6">
+              <div className="flex items-center gap-4 rounded-2xl border border-zinc-900 bg-black p-4">
+                <div className="h-24 w-16 shrink-0 overflow-hidden rounded-lg border border-zinc-900 bg-zinc-950">
+                  <VendorCardImage
+                    card={item.cards}
+                  />
+                </div>
+
+                <div className="min-w-0">
+                  <p className="font-black text-white">
+                    {getListingLabel(
+                      item
+                    )}
+                  </p>
+
+                  {isGraded(item) ? (
+                    <p className="mt-1 text-sm text-zinc-500">
+                      {item.grading_company}{" "}
+                      {item.grade}
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-sm text-zinc-500">
+                      {item.condition ||
+                        "Raw"}
+                    </p>
+                  )}
+
+                  <p className="mt-2 text-xs text-zinc-700">
+                    Current price: $
+                    {Number(
+                      item.price ?? 0
+                    ).toFixed(2)}
+                  </p>
+                </div>
+              </div>
+
+              <DashboardCompButtons
+                item={item}
+              />
+
+              <div className="rounded-2xl border border-zinc-800 bg-black p-4 sm:p-5">
+                <label
+                  htmlFor="edit-listing-price"
+                  className="text-xs font-black uppercase tracking-[0.16em] text-zinc-500"
+                >
+                  Listing Price
+                </label>
+
+                <div className="mt-2 flex items-center rounded-xl border border-zinc-800 bg-zinc-950 transition focus-within:border-emerald-400/50">
+                  <span className="pl-4 text-lg font-black text-zinc-500">
+                    $
+                  </span>
+
+                  <input
+                    id="edit-listing-price"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={editPrice}
+                    onChange={(event) =>
+                      setEditPrice(
+                        event.target.value
+                      )
+                    }
+                    onKeyDown={(event) => {
+                      if (
+                        event.key ===
+                        "Enter"
+                      ) {
+                        event.preventDefault();
+                        savePrice();
+                      }
+                    }}
+                    className="w-full bg-transparent px-3 py-4 text-xl font-black text-white outline-none"
+                    placeholder="0.00"
+                    autoFocus
+                  />
+                </div>
+
+                <p className="mt-2 text-xs leading-5 text-zinc-600">
+                  Check comps above, set the new price, and save. Your existing QR code will keep pointing to this listing automatically.
+                </p>
+
+                {editError && (
+                  <div className="mt-4 rounded-xl border border-red-400/20 bg-red-400/10 px-4 py-3 text-sm text-red-300">
+                    {editError}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  disabled={editSaving}
+                  className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-3 text-sm font-black text-zinc-300 transition hover:bg-zinc-800 hover:text-white disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="button"
+                  onClick={savePrice}
+                  disabled={editSaving}
+                  className="rounded-xl bg-emerald-400 px-5 py-3 text-sm font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {editSaving
+                    ? "Saving..."
+                    : "Save New Price"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )
+  );
+}
+
 export default function VendorDashboardPage() {
   const router = useRouter();
 
@@ -712,15 +947,6 @@ export default function VendorDashboardPage() {
 
   const [editItem, setEditItem] =
     useState<InventoryItem | null>(null);
-
-  const [editPrice, setEditPrice] =
-    useState("");
-
-  const [editSaving, setEditSaving] =
-    useState(false);
-
-  const [editError, setEditError] =
-    useState("");
 
   const [sales, setSales] =
     useState<VendorSale[]>([]);
@@ -1485,100 +1711,8 @@ export default function VendorDashboardPage() {
   // EDIT LISTING PRICE
   // -----------------------------------------
 
-  function openEditListing(
-    item: InventoryItem
-  ) {
+  function openEditListing(item: InventoryItem) {
     setEditItem(item);
-    setEditPrice(
-      item.price != null &&
-      Number(item.price) > 0
-        ? Number(item.price).toFixed(2)
-        : ""
-    );
-    setEditError("");
-  }
-
-  function closeEditListing() {
-    if (editSaving) {
-      return;
-    }
-
-    setEditItem(null);
-    setEditPrice("");
-    setEditError("");
-  }
-
-  async function saveListingPrice() {
-    if (!editItem) {
-      return;
-    }
-
-    const normalized =
-      editPrice.trim().replace(
-        /[$,]/g,
-        ""
-      );
-
-    const nextPrice =
-      Number(normalized);
-
-    if (
-      !normalized ||
-      !Number.isFinite(nextPrice) ||
-      nextPrice <= 0
-    ) {
-      setEditError(
-        "Enter a price greater than $0 to publish this listing."
-      );
-      return;
-    }
-
-    setEditSaving(true);
-    setEditError("");
-    setError("");
-
-    const { error: updateError } =
-      await supabase
-        .from("inventory")
-        .update({
-          price: nextPrice,
-        })
-        .eq("id", editItem.id)
-        .eq(
-          "vendor_id",
-          editItem.vendor_id
-        );
-
-    if (updateError) {
-      console.error(
-        "Price update error:",
-        updateError
-      );
-
-      setEditError(
-        updateError.message ||
-          "This listing price could not be updated."
-      );
-      setEditSaving(false);
-      return;
-    }
-
-    setInventory((current) =>
-      current.map((inventoryItem) =>
-        inventoryItem.id ===
-        editItem.id
-          ? {
-              ...inventoryItem,
-              price: nextPrice,
-            }
-          : inventoryItem
-      )
-    );
-
-    setEditItem(null);
-    setEditPrice("");
-    setEditError("");
-    setEditSaving(false);
   }
 
   // -----------------------------------------
@@ -4082,37 +4216,6 @@ export default function VendorDashboardPage() {
   // HELPERS
   // -----------------------------------------
 
-  function isGraded(
-    item: InventoryItem
-  ) {
-    return (
-      item.listing_type ===
-      "graded"
-    );
-  }
-
-  function getListingLabel(
-    item: InventoryItem
-  ) {
-    if (
-      isGraded(item)
-    ) {
-      const company =
-        item.grading_company ||
-        "Graded";
-
-      const grade =
-        item.grade || "";
-
-      return `${company} ${grade}`.trim();
-    }
-
-    return (
-      item.condition ||
-      "Raw"
-    );
-  }
-
   const needsPriceCount =
     inventory.filter(
       (item) =>
@@ -4304,6 +4407,8 @@ export default function VendorDashboardPage() {
               />
 
               <BuyingAnalyzer />
+
+              <DealAnalyzer inventory={inventory} />
 
               <Link
                 href="/vendor/orders"
@@ -5034,7 +5139,7 @@ export default function VendorDashboardPage() {
 
       {saleItem && (
         <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 p-0 backdrop-blur-sm sm:items-center sm:p-5"
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 p-0 sm:items-center sm:p-5"
           onMouseDown={(event) => {
             if (
               event.target ===
@@ -5199,169 +5304,20 @@ export default function VendorDashboardPage() {
       )}
 
       {editItem && (
-        <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 p-0 backdrop-blur-sm sm:items-center sm:p-5"
-          onMouseDown={(event) => {
-            if (
-              event.target ===
-              event.currentTarget
-            ) {
-              closeEditListing();
-            }
+        <EditListingModal
+          key={editItem.id}
+          item={editItem}
+          onClose={() => setEditItem(null)}
+          onSaved={(id, price) => {
+            setInventory(current => current.map(entry => entry.id === id ? { ...entry, price } : entry));
+            setEditItem(null);
           }}
-        >
-          <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-t-3xl border border-zinc-800 bg-zinc-950 shadow-2xl sm:rounded-3xl">
-            <div className="flex items-start justify-between gap-5 border-b border-zinc-900 p-5 sm:p-6">
-              <div>
-                <p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400">
-                  Edit Listing
-                </p>
-
-                <h2 className="mt-2 text-2xl font-black">
-                  {editItem.cards?.name ||
-                    "Unknown Card"}
-                </h2>
-
-                <p className="mt-1 text-sm text-zinc-500">
-                  {editItem.cards?.set_name ||
-                    "Unknown Set"}
-                  {editItem.cards?.card_number
-                    ? ` #${editItem.cards.card_number}`
-                    : ""}
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={closeEditListing}
-                disabled={editSaving}
-                className="flex h-10 w-10 items-center justify-center rounded-full border border-zinc-800 bg-black text-xl text-zinc-400 transition hover:text-white disabled:opacity-50"
-                aria-label="Close edit listing"
-              >
-                ×
-              </button>
-            </div>
-
-            <div className="space-y-5 p-5 sm:p-6">
-              <div className="flex items-center gap-4 rounded-2xl border border-zinc-900 bg-black p-4">
-                <div className="h-24 w-16 shrink-0 overflow-hidden rounded-lg border border-zinc-900 bg-zinc-950">
-                  <VendorCardImage
-                    card={editItem.cards}
-                  />
-                </div>
-
-                <div className="min-w-0">
-                  <p className="font-black text-white">
-                    {getListingLabel(
-                      editItem
-                    )}
-                  </p>
-
-                  {isGraded(editItem) ? (
-                    <p className="mt-1 text-sm text-zinc-500">
-                      {editItem.grading_company}{" "}
-                      {editItem.grade}
-                    </p>
-                  ) : (
-                    <p className="mt-1 text-sm text-zinc-500">
-                      {editItem.condition ||
-                        "Raw"}
-                    </p>
-                  )}
-
-                  <p className="mt-2 text-xs text-zinc-700">
-                    Current price: $
-                    {Number(
-                      editItem.price ?? 0
-                    ).toFixed(2)}
-                  </p>
-                </div>
-              </div>
-
-              <DashboardCompButtons
-                item={editItem}
-              />
-
-              <div className="rounded-2xl border border-zinc-800 bg-black p-4 sm:p-5">
-                <label
-                  htmlFor="edit-listing-price"
-                  className="text-xs font-black uppercase tracking-[0.16em] text-zinc-500"
-                >
-                  Listing Price
-                </label>
-
-                <div className="mt-2 flex items-center rounded-xl border border-zinc-800 bg-zinc-950 transition focus-within:border-emerald-400/50">
-                  <span className="pl-4 text-lg font-black text-zinc-500">
-                    $
-                  </span>
-
-                  <input
-                    id="edit-listing-price"
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    inputMode="decimal"
-                    value={editPrice}
-                    onChange={(event) =>
-                      setEditPrice(
-                        event.target.value
-                      )
-                    }
-                    onKeyDown={(event) => {
-                      if (
-                        event.key ===
-                        "Enter"
-                      ) {
-                        event.preventDefault();
-                        saveListingPrice();
-                      }
-                    }}
-                    className="w-full bg-transparent px-3 py-4 text-xl font-black text-white outline-none"
-                    placeholder="0.00"
-                    autoFocus
-                  />
-                </div>
-
-                <p className="mt-2 text-xs leading-5 text-zinc-600">
-                  Check comps above, set the new price, and save. Your existing QR code will keep pointing to this listing automatically.
-                </p>
-
-                {editError && (
-                  <div className="mt-4 rounded-xl border border-red-400/20 bg-red-400/10 px-4 py-3 text-sm text-red-300">
-                    {editError}
-                  </div>
-                )}
-              </div>
-
-              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-                <button
-                  type="button"
-                  onClick={closeEditListing}
-                  disabled={editSaving}
-                  className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-3 text-sm font-black text-zinc-300 transition hover:bg-zinc-800 hover:text-white disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-
-                <button
-                  type="button"
-                  onClick={saveListingPrice}
-                  disabled={editSaving}
-                  className="rounded-xl bg-emerald-400 px-5 py-3 text-sm font-black text-black transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {editSaving
-                    ? "Saving..."
-                    : "Save New Price"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        />
       )}
 
       {qrItem && (
         <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 p-0 backdrop-blur-sm sm:items-center sm:p-5"
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 p-0 sm:items-center sm:p-5"
           onMouseDown={(
             event
           ) => {
@@ -5934,7 +5890,7 @@ export default function VendorDashboardPage() {
                     )}
                   </div>
 
-                  <div className="sticky bottom-0 z-10 -mx-5 mt-5 border-t border-zinc-900 bg-zinc-950/95 px-5 pb-1 pt-4 backdrop-blur">
+                  <div className="sticky bottom-0 z-10 -mx-5 mt-5 border-t border-zinc-900 bg-zinc-950/95 px-5 pb-1 pt-4">
                   </div>
 
                   <p className="mt-4 text-center text-xs text-zinc-600">
