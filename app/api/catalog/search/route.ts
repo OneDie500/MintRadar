@@ -96,86 +96,139 @@ function getSupabaseClient() {
 }
 
 
+// Process image lookups in small batches instead of firing up to 50
+// expensive official-site searches simultaneously.
+const IMAGE_LOOKUP_CONCURRENCY = 4;
+const IMAGE_LOOKUP_TIMEOUT_MS = 20000;
+const IMAGE_CACHE_SUCCESS_MS = 60 * 60 * 1000;
+const IMAGE_CACHE_MISS_MS = 10 * 60 * 1000;
+const IMAGE_CACHE_MAX_ENTRIES = 2000;
+
+type ImageCacheEntry = {
+  imageUrl: string | null;
+  expiresAt: number;
+};
+
+// Best-effort process-local cache. It survives requests in a warm Next.js
+// process but is not shared between serverless instances or restarts.
+const imageLookupCache = new Map<string, ImageCacheEntry>();
+const imageLookupInFlight = new Map<string, Promise<string | null>>();
+
+function getCachedImage(key: string): string | null | undefined {
+  const entry = imageLookupCache.get(key);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= Date.now()) {
+    imageLookupCache.delete(key);
+    return undefined;
+  }
+  return entry.imageUrl;
+}
+
+function rememberImage(key: string, imageUrl: string | null) {
+  if (imageLookupCache.size >= IMAGE_CACHE_MAX_ENTRIES) {
+    const oldest = imageLookupCache.keys().next().value;
+    if (oldest !== undefined) imageLookupCache.delete(oldest);
+  }
+  imageLookupCache.set(key, {
+    imageUrl,
+    expiresAt: Date.now() + (imageUrl ? IMAGE_CACHE_SUCCESS_MS : IMAGE_CACHE_MISS_MS),
+  });
+}
+
+async function resolveMissingPokemonImage(
+  origin: string,
+  card: NormalizedCard
+): Promise<string | null> {
+  if (card.image_url || !card.name) return card.image_url;
+
+  const params = new URLSearchParams({ name: card.name });
+  if (card.set_name) params.set("setName", card.set_name);
+  if (card.set_id) params.set("setId", card.set_id);
+  if (card.card_number) params.set("cardNumber", card.card_number);
+  params.set("language", card.language);
+  if (card.variant) params.set("variant", card.variant);
+
+  // Include the full resolver identity, not just the card number, so
+  // different printings and languages cannot share cached artwork.
+  const key = params.toString();
+  const cached = getCachedImage(key);
+  if (cached !== undefined) return cached;
+
+  const existing = imageLookupInFlight.get(key);
+  if (existing) return existing;
+
+  const lookup = (async (): Promise<string | null> => {
+    try {
+      const response = await fetch(
+        `${origin}/api/catalog/pokemon-image-fallback?${key}`,
+        {
+          cache: "no-store",
+          signal: AbortSignal.timeout(IMAGE_LOOKUP_TIMEOUT_MS),
+        }
+      );
+
+      if (!response.ok) {
+        console.warn("Catalog image resolver HTTP error:", response.status,
+          card.language, card.set_id, card.card_number);
+        // Do not cache transport failures: they may be transient.
+        return null;
+      }
+
+      const payload = await response.json();
+      const imageUrl = payload?.ok && typeof payload.imageUrl === "string"
+        && /^https:\/\//i.test(payload.imageUrl)
+        ? payload.imageUrl
+        : null;
+
+      // A valid negative resolver response can be cached briefly.
+      rememberImage(key, imageUrl);
+      if (!imageUrl) {
+        console.warn("Catalog image resolver found no verified image:",
+          card.language, card.set_id, card.card_number,
+          payload?.reason || payload?.provider || "unknown");
+      }
+      return imageUrl;
+    } catch (error) {
+      console.warn("Catalog image lookup failed:",
+        card.language, card.set_id, card.card_number, error);
+      // Timeouts and network errors must remain retryable.
+      return null;
+    }
+  })();
+
+  imageLookupInFlight.set(key, lookup);
+  try {
+    return await lookup;
+  } finally {
+    imageLookupInFlight.delete(key);
+  }
+}
+
 async function enrichMissingPokemonImages(
   request: NextRequest,
   cards: NormalizedCard[]
 ): Promise<NormalizedCard[]> {
-  const origin = request.nextUrl.origin;
-
-  return Promise.all(
-    cards.map(async (card) => {
-      if (card.image_url || !card.name) {
-        return card;
-      }
-
-      try {
-        const params = new URLSearchParams({
-          name: card.name,
-        });
-
-        if (card.set_name) {
-          params.set("setName", card.set_name);
-        }
-
-        // Regional TCGdex catalogs can share collector numbers across sets.
-        // Carry the exact provider set identity into the image resolver so
-        // JP/CN artwork is resolved inside the correct physical set.
-        if (card.set_id) {
-          params.set("setId", card.set_id);
-        }
-
-        if (card.card_number) {
-          params.set("cardNumber", card.card_number);
-        }
-
-        params.set("language", card.language);
-
-        if (card.variant) {
-          params.set("variant", card.variant);
-        }
-
-        const response = await fetch(
-          `${origin}/api/catalog/pokemon-image-fallback?${params.toString()}`,
-          { cache: "no-store" }
-        );
-
-        if (!response.ok) {
-          console.warn(
-            "Catalog image enrichment resolver returned non-OK:",
-            response.status,
-            card.language,
-            card.set_id,
-            card.card_number
-          );
-          return card;
-        }
-
-        const payload = await response.json();
-
-        if (payload?.ok && payload?.imageUrl) {
-          return {
-            ...card,
-            image_url: String(payload.imageUrl),
-          };
-        }
-
-        console.warn(
-          "Catalog image enrichment resolver returned no image:",
-          card.language,
-          card.set_id,
-          card.card_number,
-          payload?.reason || payload?.provider || "unknown"
-        );
-      } catch (error) {
-        console.warn(
-          "Catalog image enrichment skipped:",
-          error
-        );
-      }
-
-      return card;
-    })
+  const results = [...cards];
+  const missingIndices = cards.flatMap((card, index) =>
+    !card.image_url && card.name ? [index] : []
   );
+  if (!missingIndices.length) return results;
+
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < missingIndices.length) {
+      const index = missingIndices[nextIndex++];
+      const card = cards[index];
+      const imageUrl = await resolveMissingPokemonImage(request.nextUrl.origin, card);
+      if (imageUrl) results[index] = { ...card, image_url: imageUrl };
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(IMAGE_LOOKUP_CONCURRENCY, missingIndices.length) },
+      () => worker())
+  );
+  return results;
 }
 
 export async function GET(
@@ -226,28 +279,6 @@ export async function GET(
     const supabase =
       getSupabaseClient();
 
-    // Filter by language in Supabase BEFORE pagination. A JP-only
-    // search must not be limited by the first 1,000 mixed-language rows.
-    // For ordinary card-name searches, use database range/count so all
-    // eras remain reachable, even beyond Supabase's default row limit.
-    if (languageFilter && !/\d/.test(query)) {
-      const direct = await searchCardsByNamePaged(
-        supabase, query, languageFilter, page, pageSize
-      );
-      const results = await enrichMissingPokemonImages(
-        request, direct.rows.map(normalizeCard)
-      );
-      return NextResponse.json({
-        query, page, pageSize, count: results.length,
-        total: direct.total,
-        totalPages: Math.ceil(direct.total / pageSize),
-        hasMore: page * pageSize < direct.total,
-        matchedSets: [],
-        parsedSearch: { set: null, language: languageFilter, cardText: query },
-        results,
-      });
-    }
-
     const setCandidates =
       await findMatchingSets(
         supabase,
@@ -278,43 +309,55 @@ export async function GET(
           )
         : "";
 
-    let matchingCards:
-      CardRow[] = [];
+    let matchingCards: CardRow[] = [];
 
     if (bestSet) {
-      matchingCards =
-        await searchWithinSet(
-          supabase,
-          bestSet.set,
-          cardTextWithinSet
-        );
+      // EN and JP sets can share a TCGdex ID while having different names.
+      // A search for either localized set name or its code must discover
+      // both printings, unless a language was explicitly requested.
+      const equivalentSets = await supabase
+        .from("catalog_sets")
+        .select("external_id,name,code,language")
+        .eq("data_source", "tcgdex")
+        .eq("category", "Pokemon")
+        .eq("external_id", bestSet.set.external_id);
+
+      if (equivalentSets.error) {
+        throw new Error(`Pokémon equivalent-set lookup failed: ${equivalentSets.error.message}`);
+      }
+
+      const sets = ((equivalentSets.data ?? []) as SetRow[])
+        .filter((set) => !languageFilter || set.language === languageFilter);
+      const groups = await Promise.all(
+        sets.map((set) => searchWithinSet(supabase, set, cardTextWithinSet))
+      );
+      matchingCards = balanceCardsByLanguage(mergeCardRows(...groups));
+    } else if (languageFilter && !/\d/.test(query)) {
+      // Preserve database-level pagination for ordinary language-specific
+      // name searches. Set searches are handled above, before this branch.
+      const direct = await searchCardsByNamePaged(
+        supabase, query, languageFilter, page, pageSize
+      );
+      const results = await enrichMissingPokemonImages(
+        request, direct.rows.map(normalizeCard)
+      );
+      return NextResponse.json({
+        query, page, pageSize, count: results.length,
+        total: direct.total,
+        totalPages: Math.ceil(direct.total / pageSize),
+        hasMore: page * pageSize < direct.total,
+        matchedSets: [],
+        parsedSearch: { set: null, language: languageFilter, cardText: query },
+        results,
+      });
     } else {
-      const directMatches =
-        await searchCardsByName(
-          supabase,
-          query
-        );
-
-      const numericSetMatches =
-        await searchNumericSetInterpretations(
-          supabase,
-          query,
-          setCandidates
-        );
-
-      matchingCards =
-        mergeCardRows(
-          directMatches,
-          numericSetMatches
-        );
-
-      // Keep broad searches from filling the first page with a single
-      // language. Regional printings remain separate; this only
-      // interleaves EN / JP / CN-TW / CN before pagination.
-      matchingCards =
-        balanceCardsByLanguage(
-          matchingCards
-        );
+      const directMatches = await searchCardsByName(supabase, query);
+      const numericSetMatches = await searchNumericSetInterpretations(
+        supabase, query, setCandidates
+      );
+      matchingCards = balanceCardsByLanguage(
+        mergeCardRows(directMatches, numericSetMatches)
+      );
     }
 
     if (languageFilter) {

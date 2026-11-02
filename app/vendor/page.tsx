@@ -293,6 +293,19 @@ function vendorPokemonDisplayName(card?: Card | null) {
   return name.replace(/\bStar$/i, "☆");
 }
 
+
+// Private E-Series / PCG artwork previews are restricted to local development.
+function vintagePreviewIdentity(setId?: string | null, externalId?: string | null, number?: string | null) {
+  const idMatch = /^(E[1-5]|PCG[1-9])-(\d{1,3})$/i.exec((externalId || "").trim());
+  const set = (setId || idMatch?.[1] || "").trim().toUpperCase();
+  if (!/^(?:E[1-5]|PCG[1-9])$/.test(set)) return null;
+  if (idMatch && idMatch[1].toUpperCase() !== set) return null;
+  const printed = (number || idMatch?.[2] || "").trim().split("/")[0].trim();
+  if (!/^\d{1,3}$/.test(printed) || Number(printed) < 1) return null;
+  if (idMatch && Number(idMatch[2]) !== Number(printed)) return null;
+  return { setId: set, number: printed.padStart(3, "0") };
+}
+
 function VendorCardImage({ card }: { card?: Card | null }) {
   const sportsCard = isSportsCategory(card?.category);
   const pokemonCard = isPokemonCategory(card?.category);
@@ -301,6 +314,9 @@ function VendorCardImage({ card }: { card?: Card | null }) {
     card?.language?.trim().toUpperCase() === "JP" ||
     /\(JP\)|\bJapanese\b/i.test(`${card?.set_name || ""} ${card?.name || ""}`)
   );
+  const vintagePreview = pokemonCard && process.env.NODE_ENV === "development"
+    ? vintagePreviewIdentity(card?.set_id, card?.external_id, card?.card_number)
+    : null;
   const japanesePokemonCard = pokemonCard && (
     ["JP", "JPN", "JAPANESE", "JA"].includes(card?.language?.trim().toUpperCase() || "") ||
     /\(JP\)|\bJapanese\b|Tag Team GX All Stars/i.test(card?.set_name || "") ||
@@ -338,6 +354,12 @@ function VendorCardImage({ card }: { card?: Card | null }) {
         const inferredSetId = card.set_id?.trim() ||
           (/^((?:SM12a|neo[1-4]|BW-P))-/i.exec(card.external_id || "")?.[1] ?? null);
         if (inferredSetId) params.set("setId", inferredSetId);
+        if (vintagePreview) {
+          params.set("setId", vintagePreview.setId);
+          params.set("cardNumber", vintagePreview.number);
+          params.set("language", "JP");
+          params.set("stagedCandidate", "1");
+        }
         if (card.variant?.trim() || card.finish?.trim())
           params.set("variant", (card.variant || card.finish || "").trim());
         url = `/api/catalog/pokemon-image-fallback?${params.toString()}`;

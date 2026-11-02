@@ -84,6 +84,15 @@ function matchesUniversalCatalogQuery(card: CatalogCard, query: string): boolean
       .replace(/[^\p{L}\p{N}]+/gu, " ")
       .trim();
 
+  // English and Japanese Neo sets share set IDs but not set names.
+  // Include the English set alias when checking localized catalog results.
+  const neoAliases: Record<string, string> = {
+    neo1: "Neo Genesis",
+    neo2: "Neo Discovery",
+    neo3: "Neo Revelation",
+    neo4: "Neo Destiny",
+  };
+  const neoAlias = neoAliases[(card.set_id || "").toLowerCase()] || "";
   const queryTokens = normalize(query).split(/\s+/).filter(Boolean);
   if (queryTokens.length === 0) return false;
 
@@ -92,6 +101,7 @@ function matchesUniversalCatalogQuery(card: CatalogCard, query: string): boolean
     card.canonical_name,
     card.set_name,
     card.set_id,
+    neoAlias,
     card.card_number,
     card.rarity,
     card.edition,
@@ -584,7 +594,13 @@ export default function Home() {
         const responses = await Promise.allSettled(
           selectedRoutes.map(async (route) => {
             const response = await fetch(
-              `${route}?q=${encodeURIComponent(query)}`,
+              `${route}?${new URLSearchParams({
+                q: query,
+                ...(route === "/api/catalog/search" ? {
+                  language: languageFilter,
+                  pageSize: "50",
+                } : {}),
+              }).toString()}`,
               {
                 signal: controller.signal,
               }
@@ -911,7 +927,7 @@ export default function Home() {
         <div className="text-center">
           <Image
             src="/mintradar-logo.png"
-            alt="MintRadar by OnlySlabs"
+            alt="MintRadar"
             width={900}
             height={450}
             priority
@@ -935,7 +951,7 @@ export default function Home() {
         <div className="max-w-7xl mx-auto px-5 py-6 flex items-center justify-center">
           <Image
             src="/mintradar-logo.png"
-            alt="MintRadar by OnlySlabs"
+            alt="MintRadar"
             width={1200}
             height={600}
             priority
@@ -1280,7 +1296,7 @@ export default function Home() {
         <div className="max-w-7xl mx-auto px-5 py-10 text-center">
           <Image
             src="/mintradar-logo.png"
-            alt="MintRadar by OnlySlabs"
+            alt="MintRadar"
             width={600}
             height={300}
             className="w-[200px] sm:w-[250px] h-auto mx-auto opacity-70"
