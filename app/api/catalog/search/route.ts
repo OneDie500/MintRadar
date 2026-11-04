@@ -25,6 +25,7 @@ type CardRow = {
 
 type SetRow = {
   external_id: string;
+  data_source: string;
   name: string;
   code: string | null;
   language: "EN" | "JP" | "CN-TW" | "CN";
@@ -32,7 +33,7 @@ type SetRow = {
 
 type NormalizedCard = {
   external_id: string;
-  data_source: "tcgdex";
+  data_source: string;
   name: string | null;
   set_name: string | null;
   set_id: string | null;
@@ -139,7 +140,7 @@ async function resolveMissingPokemonImage(
   origin: string,
   card: NormalizedCard
 ): Promise<string | null> {
-  if (card.image_url || !card.name) return card.image_url;
+  if (card.image_url || !card.name || card.data_source === "tcgapi_verified") return card.image_url;
 
   const params = new URLSearchParams({ name: card.name });
   if (card.set_name) params.set("setName", card.set_name);
@@ -210,7 +211,7 @@ async function enrichMissingPokemonImages(
 ): Promise<NormalizedCard[]> {
   const results = [...cards];
   const missingIndices = cards.flatMap((card, index) =>
-    !card.image_url && card.name ? [index] : []
+    !card.image_url && card.name && card.data_source !== "tcgapi_verified" ? [index] : []
   );
   if (!missingIndices.length) return results;
 
@@ -317,8 +318,8 @@ export async function GET(
       // both printings, unless a language was explicitly requested.
       const equivalentSets = await supabase
         .from("catalog_sets")
-        .select("external_id,name,code,language")
-        .eq("data_source", "tcgdex")
+        .select("external_id,data_source,name,code,language")
+        .eq("data_source", bestSet.set.data_source)
         .eq("category", "Pokemon")
         .eq("external_id", bestSet.set.external_id);
 
@@ -480,12 +481,9 @@ async function findMatchingSets(
             await supabase
               .from("catalog_sets")
               .select(
-                "external_id,name,code,language"
+                "external_id,data_source,name,code,language"
               )
-              .eq(
-                "data_source",
-                "tcgdex"
-              )
+              .in("data_source", ["tcgdex", "tcgapi_verified"])
               .eq(
                 "category",
                 "Pokemon"
@@ -536,7 +534,7 @@ async function findMatchingSets(
 
       const existing =
         candidates.get(
-          `${set.language}:${set.external_id}`
+          `${set.data_source}:${set.language}:${set.external_id}`
         );
 
       if (
@@ -544,7 +542,7 @@ async function findMatchingSets(
         score > existing.score
       ) {
         candidates.set(
-          `${set.language}:${set.external_id}`,
+          `${set.data_source}:${set.language}:${set.external_id}`,
           {
             set,
             sourceQuery: piece,
@@ -576,10 +574,7 @@ async function searchWithinSet(
       .select(
         "external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish,language,variant,canonical_name,canonical_external_id,canonical_language,canonical_confidence"
       )
-      .eq(
-        "data_source",
-        "tcgdex"
-      )
+      .eq("data_source", set.data_source)
       .eq(
         "category",
         "Pokemon"
@@ -686,7 +681,7 @@ async function searchCardsByNamePaged(
 
   let request = supabase.from("cards")
     .select("external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish,language,variant,canonical_name,canonical_external_id,canonical_language,canonical_confidence", { count: "exact" })
-    .eq("data_source", "tcgdex")
+    .in("data_source", ["tcgdex", "tcgapi_verified"])
     .eq("category", "Pokemon")
     .eq("language", language);
 
@@ -766,10 +761,7 @@ async function searchCardsByName(
       .select(
         "external_id,data_source,name,set_name,card_number,image_url,category,rarity,edition,finish,language,variant,canonical_name,canonical_external_id,canonical_language,canonical_confidence"
       )
-      .eq(
-        "data_source",
-        "tcgdex"
-      )
+      .in("data_source", ["tcgdex", "tcgapi_verified"])
       .eq(
         "category",
         "Pokemon"
@@ -1018,7 +1010,7 @@ function normalizeCard(
   return {
     external_id:
       card.external_id,
-    data_source: "tcgdex",
+    data_source: card.data_source || "tcgdex",
     name: card.name,
     set_name: card.set_name,
     set_id:
@@ -1164,20 +1156,22 @@ function scoreSetMatch(
     return 0;
   }
 
+  const shortSetName = setCode && setName.startsWith(`${setCode} `)
+    ? setName.slice(setCode.length + 1)
+    : setName;
+
   if (
-    normalizedFull ===
-      setName ||
-    normalizedFull ===
-      setCode
+    normalizedFull === setName ||
+    normalizedFull === shortSetName ||
+    normalizedFull === setCode
   ) {
     return 1000;
   }
 
   if (
-    setName &&
-    normalizedFull.includes(
-      setName
-    )
+    shortSetName &&
+    shortSetName.includes(" ") &&
+    normalizedFull.includes(shortSetName)
   ) {
     return (
       900 +
@@ -1250,6 +1244,9 @@ function isConfidentSetMatch(
     normalizeText(
       candidate.set.code || ""
     );
+  const shortSetName = setCode && setName.startsWith(`${setCode} `)
+    ? setName.slice(setCode.length + 1)
+    : setName;
 
   if (!normalizedQuery) {
     return false;
@@ -1258,6 +1255,7 @@ function isConfidentSetMatch(
   // Exact set-name or set-code search.
   if (
     normalizedQuery === setName ||
+    normalizedQuery === shortSetName ||
     normalizedQuery === setCode
   ) {
     return true;
@@ -1266,9 +1264,9 @@ function isConfidentSetMatch(
   // A complete multi-word set name appearing in the query is
   // strong enough to interpret as a set-qualified card search.
   if (
-    setName &&
-    setName.includes(" ") &&
-    normalizedQuery.includes(setName)
+    shortSetName &&
+    shortSetName.includes(" ") &&
+    normalizedQuery.includes(shortSetName)
   ) {
     return true;
   }
