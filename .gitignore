@@ -93,3 +93,4 @@ android/app/build/
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
+.env*.local
