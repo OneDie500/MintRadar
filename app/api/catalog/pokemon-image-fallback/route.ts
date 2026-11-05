@@ -4648,6 +4648,107 @@ async function inspectJapaneseCatalogIdentity(args: {
   }
 }
 
+
+// MintRadar TCG API missing-image fallback. Never overrides an existing image.
+// Strict printed-identity matching prevents cross-set or alternate-art swaps.
+// JP results remain explicit, development-only research candidates unless the
+// image's regional printing can be independently established.
+type MintTcgApiCard = {
+  id?: number | string;
+  name?: string;
+  number?: string;
+  set_name?: string;
+  game_slug?: string;
+  image_url?: string | null;
+  product_type?: string;
+  printing?: string | null;
+};
+
+async function resolveMintTcgApiMissingArtwork(input: {
+  name: string;
+  setName: string | null;
+  cardNumber: string | null;
+  language: string;
+  candidateOnly?: boolean;
+}) {
+  const apiKey = process.env.TCG_API_KEY;
+  if (!apiKey || !input.name || !input.setName || !input.cardNumber) return null;
+  if (input.name.trim().length < 2) return null;
+  const expectedName = normalizeMetadataText(input.name);
+  const expectedSet = normalizeSet(input.setName);
+  const expectedNumber = normalizePrintedCollectorNumber(input.cardNumber);
+  if (!expectedName || !expectedSet || !expectedNumber) return null;
+
+  const endpoint = new URL("https://api.tcgapi.dev/v1/search");
+  endpoint.searchParams.set("q", input.name);
+  endpoint.searchParams.set("game", "pokemon");
+  endpoint.searchParams.set("type", "Cards");
+  endpoint.searchParams.set("per_page", "100");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6500);
+  try {
+    const response = await fetch(endpoint.toString(), {
+      headers: { "X-API-Key": apiKey, Accept: "application/json" },
+      next: { revalidate: 43200 },
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const payload = await response.json() as {
+      data?: MintTcgApiCard[];
+      meta?: { has_more?: boolean; total?: number };
+    };
+    // A truncated result set cannot prove uniqueness.
+    if (!Array.isArray(payload.data) || payload.meta?.has_more === true ||
+        (typeof payload.meta?.total === "number" && payload.meta.total > payload.data.length)) return null;
+    const matches = payload.data.filter((card) => {
+      if (!card.image_url || card.product_type !== "Cards") return false;
+      if (card.game_slug && card.game_slug.toLowerCase() !== "pokemon") return false;
+      if (normalizeMetadataText(card.name) !== expectedName) return false;
+      if (normalizeSet(card.set_name) !== expectedSet) return false;
+      const actual = normalizePrintedCollectorNumber(card.number);
+      // A complete printed number must match completely. A short requested
+      // number can match only the numerator of the provider's printed number.
+      const numberMatches = expectedNumber.includes("/")
+        ? actual === expectedNumber
+        : actual === expectedNumber || actual.split("/")[0] === expectedNumber;
+      if (!numberMatches) return false;
+      try {
+        const url = new URL(card.image_url);
+        return url.protocol === "https:" && !url.username && !url.password &&
+          ["product-images.tcgplayer.com", "tcgplayer-cdn.tcgplayer.com"].includes(url.hostname);
+      } catch { return false; }
+    });
+    // Duplicate printings may have different artwork; don't guess.
+    const uniqueImages = new Set(matches.map((card) => card.image_url));
+    if (matches.length === 0 || uniqueImages.size !== 1) return null;
+    const match = matches[0];
+    const japanese = input.language === "ja";
+    if (japanese && (!input.candidateOnly || process.env.NODE_ENV !== "development")) return null;
+    return {
+      ok: true,
+      imageUrl: match.image_url,
+      provider: japanese ? "tcgapi-jp-development-candidate" : "tcgapi-exact-missing-image",
+      match: {
+        id: match.id || null,
+        name: match.name || null,
+        setName: match.set_name || null,
+        cardNumber: match.number || null,
+        printing: match.printing || null,
+      },
+      identityVerified: !japanese,
+      artworkVerified: !japanese,
+      rightsCleared: false,
+      testingOnly: japanese,
+      requiresManualReview: japanese,
+      diagnostics: { matchRule: "unique-exact-name-set-number-and-image", source: "tcgapi" },
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function GET(request: NextRequest) {
   try {
     const name =
@@ -5082,6 +5183,182 @@ export async function GET(request: NextRequest) {
         });
       }
 
+      // Universal vintage staging candidate lookup: development-only and explicit opt-in.
+      // Exact Japanese name, set ID and collector number are mandatory. This is
+      // research data, never proof of image licensing or identity approval.
+      if (
+        privateVintageArtworkEnabled() &&
+        request.nextUrl.searchParams.get("stagedCandidate") === "1" &&
+        tcgdexLanguage === "ja" &&
+        suppliedSetId && cardNumber && canonicalName
+      ) {
+        const requestedSet = suppliedSetId.trim();
+        const allowedSet = /^(?:PMCG[1-9]|PCG[1-9]|E[1-5]|neo[1-4]|VS1|BW8a)$/i.test(requestedSet);
+        const short = shortCardNumber(cardNumber);
+        const number = /^\d{1,3}$/.test(short) && Number(short) > 0
+          ? short.padStart(3, "0") : null;
+        const exactPrintedNumber = number && (
+          !cardNumber.includes("/") ||
+          (requestedSet.toLowerCase() === "bw8a" && cardNumber === `${number}/051`)
+        );
+        // Keep the previously tested BW8a numbering boundary unchanged.
+        const bw8aNumberValid = requestedSet.toLowerCase() !== "bw8a" ||
+          (number !== null && Number(number) <= 58);
+        const provider = requestedSet.toLowerCase() === "bw8a"
+          ? "bw8a-private-staging-review-candidate"
+          : "universal-vintage-private-staging-review-candidate";
+        if (allowedSet && exactPrintedNumber && bw8aNumberValid && number) {
+          const base = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+          const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+          if (base && key) {
+            const endpoint = new URL(`${base.replace(/\/$/, "")}/rest/v1/vintage_artwork_staging`);
+            // Set and catalog identity are both checked after retrieval, not
+            // inferred from an image URL or a similarly named expansion.
+            endpoint.searchParams.set("select", "catalog_id,set_id,card_name,image_url,visual_approved,identity_approved,rights_cleared,source");
+            endpoint.searchParams.set("catalog_id", `ilike.${requestedSet}-${number}`);
+            endpoint.searchParams.set("limit", "2");
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 4500);
+            try {
+              const response = await fetch(endpoint.toString(), {
+                headers: { apikey: key, Authorization: `Bearer ${key}` },
+                cache: "no-store", signal: controller.signal,
+              });
+              if (response.ok) {
+                const rows = (await response.json()) as Array<StagedVintageArtwork & { source?: string | null }>;
+                const row = Array.isArray(rows) && rows.length === 1 ? rows[0] : null;
+                const normalizedName = (value: string) => value.normalize("NFKC").replace(/\s+/g, "").trim();
+                if (row &&
+                    row.catalog_id.toLowerCase() === `${requestedSet}-${number}`.toLowerCase() &&
+                    row.set_id.toLowerCase() === requestedSet.toLowerCase() &&
+                    row.visual_approved === true &&
+                    row.card_name && normalizedName(row.card_name) === normalizedName(canonicalName) &&
+                    row.image_url) {
+                  const url = new URL(row.image_url);
+                  const approvedHost = url.hostname === "product-images.tcgplayer.com" ||
+                    url.hostname === "pcg-search.com";
+                  if (url.protocol === "https:" && approvedHost && !url.username && !url.password) {
+                    return NextResponse.json({
+                      ok: true, imageUrl: row.image_url,
+                      provider,
+                      match: { id: row.catalog_id, setId: row.set_id, name: row.card_name, cardNumber: number },
+                      visualApproved: true,
+                      identityVerified: row.identity_approved === true,
+                      rightsCleared: row.rights_cleared === true,
+                      requiresManualReview: row.identity_approved !== true || row.rights_cleared !== true,
+                      testingOnly: true,
+                      source: row.source || null,
+                    }, { headers: { "Cache-Control": "private, no-store" } });
+                  }
+                }
+              }
+            } catch {
+              // Research lookup failure must not affect the default resolver.
+            } finally {
+              clearTimeout(timeout);
+            }
+          }
+        }
+        return NextResponse.json({
+          ok: false, imageUrl: null, provider,
+          reason: "no-exact-approved-staging-match", testingOnly: true,
+        }, { headers: { "Cache-Control": "private, no-store" } });
+      }
+
+      // BW8a Spiral Force candidate-only recovery.
+      // Local development + explicit opt-in; no catalog writes or approvals.
+      // The TCGplayer-hosted image may not be Japanese artwork.
+      if (
+        process.env.NODE_ENV === "development" &&
+        request.nextUrl.searchParams.get("recoveryCandidate") === "1" &&
+        suppliedSetId?.toLowerCase() === "bw8a" &&
+        tcgdexLanguage === "ja" &&
+        cardNumber &&
+        process.env.TCG_API_KEY
+      ) {
+        const requestedNumber = shortCardNumber(cardNumber);
+        const wantedNumber = /^\d{1,3}$/.test(requestedNumber)
+          ? requestedNumber.padStart(3, "0")
+          : null;
+        const validPrintedNumber =
+          !cardNumber.includes("/") ||
+          cardNumber === `${wantedNumber}/051`;
+
+        if (wantedNumber && validPrintedNumber &&
+            Number(wantedNumber) >= 1 && Number(wantedNumber) <= 58) {
+          try {
+            const response = await fetch(
+              "https://api.tcgapi.dev/v1/sets/1900327/cards?per_page=100",
+              {
+                headers: {
+                  "X-API-Key": process.env.TCG_API_KEY,
+                  Accept: "application/json",
+                },
+                next: { revalidate: 43200 },
+                signal: AbortSignal.timeout(7000),
+              }
+            );
+            if (response.ok) {
+              const payload = (await response.json()) as {
+                data?: Array<{
+                  name?: string;
+                  number?: string;
+                  image_url?: string;
+                  printing?: string;
+                }>;
+              };
+              const cards = payload.data;
+              if (Array.isArray(cards) && cards.length === 58) {
+                const matches = cards.filter(
+                  (card) => card.number === `${wantedNumber}/051`
+                );
+                if (matches.length === 1 && matches[0].image_url) {
+                  const candidate = matches[0];
+                  const imageUrl = candidate.image_url as string;
+                  const parsed = new URL(imageUrl);
+                  if (
+                    parsed.protocol === "https:" &&
+                    parsed.hostname === "product-images.tcgplayer.com" &&
+                    /^\/fit-in\/400x400\/\d+\.jpg$/.test(parsed.pathname) &&
+                    !parsed.search &&
+                    !parsed.hash &&
+                    !parsed.username &&
+                    !parsed.password
+                  ) {
+                    return NextResponse.json(
+                      {
+                        ok: true,
+                        imageUrl,
+                        provider: "tcgapi-bw8a-review-candidate",
+                        match: {
+                          name: candidate.name || null,
+                          setId: "BW8a",
+                          setName: "Spiral Force",
+                          cardNumber: wantedNumber,
+                          printedNumber: candidate.number,
+                          printing: candidate.printing || null,
+                        },
+                        identityVerified: false,
+                        artworkVerified: false,
+                        rightsCleared: false,
+                        requiresManualReview: true,
+                        testingOnly: true,
+                      },
+                      { headers: { "Cache-Control": "private, no-store" } }
+                    );
+                  }
+                }
+              }
+            }
+          } catch (error) {
+            console.warn(
+              "[BW8a candidate lookup]",
+              error instanceof Error ? error.message : "Lookup failed"
+            );
+          }
+        }
+      }
+
       // Critical safety rule: an explicit JP provider setId is authoritative.
       // Never fall through to a global localId search when we know the set.
       const recognizedJpSet =
@@ -5134,6 +5411,23 @@ export async function GET(request: NextRequest) {
                 vintageIdentity: { ...vintageIdentity, artworkVerified: true },
                 vintageArtwork: vintageArtworkDiagnostics,
               },
+            });
+          }
+        }
+        // Optional Japanese TCG API recovery is candidate-only and local-only.
+        // A TCGplayer image is not evidence of Japanese-language artwork.
+        if (request.nextUrl.searchParams.get("recoveryCandidate") === "1" &&
+            privateVintageArtworkEnabled()) {
+          const tcgApiCandidate = await resolveMintTcgApiMissingArtwork({
+            name: canonicalName,
+            setName: resolverSetName,
+            cardNumber,
+            language: tcgdexLanguage,
+            candidateOnly: true,
+          });
+          if (tcgApiCandidate) {
+            return NextResponse.json(tcgApiCandidate, {
+              headers: { "Cache-Control": "private, no-store" },
             });
           }
         }
@@ -5370,6 +5664,16 @@ export async function GET(request: NextRequest) {
         exactRegionalDiagnostics,
       });
     }
+
+    // Recover only missing artwork; all earlier overrides, staged vintage
+    // records, and regional providers have already had first priority.
+    const tcgApiArtwork = await resolveMintTcgApiMissingArtwork({
+      name: canonicalName,
+      setName: resolverSetName,
+      cardNumber,
+      language: tcgdexLanguage,
+    });
+    if (tcgApiArtwork) return NextResponse.json(tcgApiArtwork);
 
     // -----------------------------------------
     // POKEMON TCG API FALLBACK

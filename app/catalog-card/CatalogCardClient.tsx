@@ -59,6 +59,85 @@ function isSports(card: CatalogCard) {
   ].some((term) => value.includes(term));
 }
 
+type VerifiedMarketPrice = {
+  market_price: number;
+  low_price: number | null;
+  printing: string;
+  as_of: string | null;
+  product_url: string | null;
+};
+
+type MarketPreviewResponse = {
+  ok?: boolean;
+  reason?: string;
+  price?: VerifiedMarketPrice;
+};
+
+function VerifiedMarketPanel({ card }: { card: CatalogCard }) {
+  const [loading, setLoading] = useState(true);
+  const [result, setResult] = useState<MarketPreviewResponse | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setResult(null);
+
+    if (normalize(card.category) !== "pokemon" ||
+        (card.language || "EN").trim().toUpperCase() !== "EN" ||
+        !card.external_id || !card.data_source) {
+      setLoading(false);
+      return () => { active = false; };
+    }
+
+    const params = new URLSearchParams({
+      external_id: card.external_id,
+      data_source: card.data_source,
+    });
+    void (async () => {
+      try {
+        const response = await fetch(`/api/catalog/verified-market?${params}`, { cache: "no-store" });
+        const json = (await response.json()) as MarketPreviewResponse;
+        if (active) setResult(json);
+      } catch {
+        if (active) setResult({ ok: false, reason: "Market data is temporarily unavailable." });
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [card.external_id, card.data_source, card.category, card.language]);
+
+  const money = (value: number) => new Intl.NumberFormat("en-US", {
+    style: "currency", currency: "USD",
+  }).format(value);
+  const price = result?.ok ? result.price : undefined;
+  const date = price?.as_of && !Number.isNaN(Date.parse(price.as_of))
+    ? new Date(price.as_of).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
+    : null;
+
+  return (
+    <section className="mt-8 rounded-3xl border border-zinc-800 bg-zinc-950 p-5 sm:p-6">
+      <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">Verified Market Pricing</p>
+      {loading ? (
+        <p className="mt-3 text-sm text-zinc-400" role="status">Checking verified market data...</p>
+      ) : price ? (
+        <div className="mt-4">
+          <div className="flex flex-wrap items-end gap-x-8 gap-y-4">
+            <div><p className="text-xs text-zinc-400">Market price</p><p className="text-3xl font-black text-white">{money(price.market_price)}</p></div>
+            {typeof price.low_price === "number" && <div><p className="text-xs text-zinc-400">Low price</p><p className="text-xl font-bold text-white">{money(price.low_price)}</p></div>}
+          </div>
+          <p className="mt-3 text-sm text-zinc-300">Verified printing: {price.printing}</p>
+          {date && <p className="mt-1 text-xs text-zinc-500">Provider updated: {date}</p>}
+          {price.product_url && <a className="mt-3 inline-block text-sm font-bold text-emerald-400 hover:text-emerald-300" href={price.product_url} target="_blank" rel="noreferrer">View verified TCGplayer product ↗</a>}
+          <p className="mt-3 text-xs text-zinc-500">TCG API market data · Development preview only. Prices may change.</p>
+        </div>
+      ) : (
+        <p className="mt-3 text-sm text-zinc-400">{result?.reason || "Verified pricing is not available for this card yet."}</p>
+      )}
+    </section>
+  );
+}
+
 function MarketCompButtons({
   card,
 }: {
@@ -142,6 +221,19 @@ function MarketCompButtons({
   );
 }
 
+
+// Private E-Series / PCG artwork previews are restricted to local development.
+function vintagePreviewIdentity(setId?: string | null, externalId?: string | null, number?: string | null) {
+  const idMatch = /^(E[1-5]|PCG[1-9])-(\d{1,3})$/i.exec((externalId || "").trim());
+  const set = (setId || idMatch?.[1] || "").trim().toUpperCase();
+  if (!/^(?:E[1-5]|PCG[1-9])$/.test(set)) return null;
+  if (idMatch && idMatch[1].toUpperCase() !== set) return null;
+  const printed = (number || idMatch?.[2] || "").trim().split("/")[0].trim();
+  if (!/^\d{1,3}$/.test(printed) || Number(printed) < 1) return null;
+  if (idMatch && Number(idMatch[2]) !== Number(printed)) return null;
+  return { setId: set, number: printed.padStart(3, "0") };
+}
+
 function ResilientCatalogImage({
   card,
 }: {
@@ -211,10 +303,16 @@ function ResilientCatalogImage({
       );
     }
 
-    params.set(
-      "language",
-      language
-    );
+    const vintage = process.env.NODE_ENV === "development"
+      ? vintagePreviewIdentity(card.set_id, card.external_id, card.card_number)
+      : null;
+
+    params.set("language", vintage ? "JP" : language);
+    if (vintage) {
+      params.set("setId", vintage.setId);
+      params.set("cardNumber", vintage.number);
+      params.set("stagedCandidate", "1");
+    }
 
     return (
       `/api/catalog/pokemon-image-fallback?${params.toString()}`
@@ -288,6 +386,7 @@ function ResilientCatalogImage({
             ? ((await response.json()) as {
                 ok?: boolean;
                 imageUrl?: string | null;
+                testingOnly?: boolean;
               })
             : null;
 
@@ -295,7 +394,8 @@ function ResilientCatalogImage({
           active &&
           payload?.ok &&
           typeof payload.imageUrl === "string" &&
-          payload.imageUrl.trim()
+          payload.imageUrl.trim() &&
+          (!payload.testingOnly || process.env.NODE_ENV === "development")
         ) {
           setSrc(
             payload.imageUrl.trim()
@@ -373,13 +473,15 @@ function ResilientCatalogImage({
           ? ((await response.json()) as {
               ok?: boolean;
               imageUrl?: string | null;
+                testingOnly?: boolean;
             })
           : null;
 
       if (
         payload?.ok &&
         typeof payload.imageUrl === "string" &&
-        payload.imageUrl.trim()
+        payload.imageUrl.trim() &&
+          (!payload.testingOnly || process.env.NODE_ENV === "development")
       ) {
         setSrc(
           payload.imageUrl.trim()
@@ -785,6 +887,8 @@ export default function CatalogCardClient({
             </div>
           </div>
         </section>
+
+        <VerifiedMarketPanel card={card} />
 
         <section className="mt-10 overflow-hidden rounded-3xl border border-zinc-900 bg-zinc-950">
           <div className="border-b border-zinc-900 p-5">
