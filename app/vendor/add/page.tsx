@@ -2299,7 +2299,7 @@ export default function AddInventoryPage() {
                             }
 
                             {card.card_number
-                              ? ` #${card.card_number}`
+                              ? ` • #${card.card_number}`
                               : ""}
                           </p>
 
@@ -3220,7 +3220,7 @@ export default function AddInventoryPage() {
                 }
 
                 {selectedCard.card_number
-                  ? ` #${selectedCard.card_number}`
+                  ? ` • #${selectedCard.card_number}`
                   : ""}
               </p>
 
@@ -3490,7 +3490,7 @@ function SelectedCardHeader({
             "No Set"}
 
           {card.card_number
-            ? ` #${card.card_number}`
+            ? ` • #${card.card_number}`
             : ""}
 
         </p>
