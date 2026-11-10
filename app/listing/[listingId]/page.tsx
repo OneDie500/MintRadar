@@ -9,6 +9,34 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
+type MarketPreview = {
+  ok: boolean;
+  price?: {
+    market_price: number;
+    low_price: number | null;
+    printing: string | null;
+    as_of: string | null;
+    product_url: string | null;
+  };
+  reason?: string;
+};
+
+type IdentityCandidate = {
+  id: number;
+  name: string;
+  set_name: string;
+  number: string;
+  printing: string | null;
+  image_url: string | null;
+  tcgplayer_id: number | null;
+  product_url: string | null;
+  same_set: boolean;
+  same_number: boolean;
+  confidence: number;
+  review_required: boolean;
+};
+type IdentityDiscovery = { ok: boolean; candidates?: IdentityCandidate[]; reason?: string; incomplete?: boolean };
+
 type Listing = {
   id: string;
   vendor_id: string;
@@ -34,6 +62,7 @@ type Listing = {
     category: string | null;
     edition: string | null;
     finish: string | null;
+    language: string | null;
   } | null;
   vendors: {
     id: string;
@@ -61,7 +90,7 @@ type MarketplaceListing = {
 };
 
 type CardProviderLink = {
-  provider: "tcgplayer" | "collectr" | "pricecharting";
+  provider: "tcgplayer" | "collectr" | "pricecharting" | "tcgapi";
   provider_product_id: string | null;
   product_url: string;
   match_status: "auto" | "verified" | "manual";
@@ -365,6 +394,80 @@ export default function PublicListingPage() {
     setProviderLinks,
   ] = useState<CardProviderLink[]>([]);
 
+  const [marketPreview, setMarketPreview] = useState<MarketPreview | null>(null);
+  const [marketPreviewLoading, setMarketPreviewLoading] = useState(false);
+
+  const [discovery, setDiscovery] = useState<IdentityDiscovery | null>(null);
+  const [discovering, setDiscovering] = useState(false);
+  async function discoverIdentity() {
+    if (!listing?.cards || discovering) return;
+    setDiscovering(true);
+    setDiscovery(null);
+    try {
+      const c = listing.cards;
+      const qs = new URLSearchParams({
+        mode: "discover", name: c.name || "", setName: c.set_name || "",
+        cardNumber: c.card_number || "", language: c.language || "", category: c.category || "",
+      });
+      const response = await fetch(`/api/tcg-market-preview?${qs.toString()}`, { cache: "no-store" });
+      const result = (await response.json()) as IdentityDiscovery;
+      setDiscovery(result);
+    } catch {
+      setDiscovery({ ok: false, reason: "Could not search TCG API." });
+    } finally {
+      setDiscovering(false);
+    }
+  }
+
+  // Development-only preview: the server resolves the catalog UUID to a
+  // verified TCG API mapping and selects the exact printing. The browser
+  // never supplies a provider product ID or authorizes a price match.
+  useEffect(() => {
+    if (
+      process.env.NODE_ENV !== "development" ||
+      !listing?.cards ||
+      listing.listing_type === "graded" ||
+      Boolean(listing.grading_company || listing.grade)
+    ) {
+      setMarketPreview(null);
+      setMarketPreviewLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const cardId = listing.cards.id;
+
+    const run = async () => {
+      setMarketPreviewLoading(true);
+      setMarketPreview(null);
+      try {
+        const query = new URLSearchParams({ card_id: cardId });
+        const response = await fetch(
+          `/api/catalog/verified-market?${query.toString()}`,
+          { cache: "no-store" }
+        );
+        const payload = (await response.json()) as MarketPreview;
+        if (!cancelled) {
+          setMarketPreview(
+            response.ok
+              ? payload
+              : { ok: false, reason: payload.reason || "Market pricing unavailable." }
+          );
+        }
+      } catch {
+        if (!cancelled) {
+          setMarketPreview({ ok: false, reason: "Unable to retrieve verified market pricing." });
+        }
+      } finally {
+        if (!cancelled) setMarketPreviewLoading(false);
+      }
+    };
+
+    void run();
+    return () => { cancelled = true; };
+  }, [listing?.card_id, listing?.listing_type, listing?.grading_company, listing?.grade,
+      listing?.cards?.id]);
+
   const [listingImages, setListingImages] =
     useState<ListingImage[]>([]);
 
@@ -409,7 +512,8 @@ export default function PublicListingPage() {
               rarity,
               category,
               edition,
-              finish
+              finish,
+              language
             ),
             vendors (
               id,
@@ -1239,6 +1343,45 @@ export default function PublicListingPage() {
                 />
               </div>
             </div>
+
+            {process.env.NODE_ENV === "development" && (
+              <div className="mt-6 rounded-3xl border border-amber-400/30 bg-zinc-950 p-6">
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-amber-300">TCG API · Development Preview Only</p>
+                <p className="mt-2 text-xs text-zinc-500">Free-plan market data is not shown on public production listings. Prices are reference values for ungraded cards, not condition-specific appraisals.</p>
+                {graded ? (
+                  <p className="mt-4 text-sm text-zinc-400">Graded pricing is not supported by this preview.</p>
+                ) : marketPreviewLoading ? (
+                  <p className="mt-4 text-sm text-zinc-400">Checking matched market data...</p>
+                ) : marketPreview?.ok && typeof marketPreview.price?.market_price === "number" ? (
+                  <div className="mt-4 space-y-2">
+                    <p className="text-3xl font-black text-white">${marketPreview.price!.market_price.toFixed(2)}</p>
+                    <p className="text-xs text-zinc-400">Market price · {marketPreview.price!.printing || "Unknown printing"}</p>
+                    {typeof marketPreview.price?.low_price === "number" && <p className="text-sm text-zinc-400">Lowest listing: ${marketPreview.price!.low_price!.toFixed(2)}</p>}
+                    {marketPreview.price!.market_price > 0 && <p className="text-sm text-zinc-300">Vendor asking price is {((Number(listing.price || 0) / marketPreview.price!.market_price - 1) * 100).toFixed(1)}% {Number(listing.price || 0) >= marketPreview.price!.market_price ? "above" : "below"} market.</p>}
+                    <p className="text-xs text-zinc-600">Market price as of: {marketPreview.price!.as_of || "Not provided"}</p>
+                  </div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    <p className="text-sm text-zinc-400">{marketPreview?.reason || "Market price unavailable for this exact card/printing."}</p>
+                    <button type="button" onClick={() => void discoverIdentity()} disabled={discovering || !card?.name}
+                      className="rounded-xl border border-amber-400/40 px-4 py-2 text-xs font-bold text-amber-200 disabled:opacity-50">
+                      {discovering ? "Searching TCG API..." : "Search TCG API candidates (1 API request)"}
+                    </button>
+                    {discovery && <div className="space-y-3 rounded-xl border border-zinc-800 p-3">
+                      <p className="text-xs text-zinc-400">{discovery.reason}</p>
+                      {discovery.incomplete && <p className="text-xs text-amber-300">First page only; additional matches may exist.</p>}
+                      {(discovery.candidates || []).map(candidate => <div key={candidate.id} className="rounded-lg border border-zinc-800 p-3 text-xs">
+                        <p className="font-bold text-white">{candidate.name} · {candidate.set_name} · #{candidate.number}</p>
+                        <p className="mt-1 text-zinc-400">TCG API ID: {candidate.id} · TCGplayer ID: {candidate.tcgplayer_id ?? "unavailable"} · Printing: {candidate.printing || "unspecified"}</p>
+                        <p className="mt-1 text-amber-300">{candidate.same_set ? "Set matches" : "Set NOT confirmed"} · {candidate.same_number ? "Number matches" : "Number NOT confirmed"} · Manual review required</p>
+                        {candidate.product_url && <a className="mt-1 inline-block text-emerald-300 underline" href={candidate.product_url} target="_blank" rel="noreferrer">Inspect TCGplayer product</a>}
+                      </div>)}
+                      <p className="text-xs text-zinc-500">Discovery is read-only. No provider mapping or market price is automatically approved.</p>
+                    </div>}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="mt-6 rounded-3xl border border-zinc-800 bg-zinc-950 p-6">
               <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-400">

@@ -1,113 +1,193 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const noStore = { "Cache-Control": "private, no-store" };
-const reply = (reason: string, status = 200) =>
-  NextResponse.json({ ok: false, reason }, { status, headers: noStore });
-
-type PriceRow = {
+type Candidate = {
+  id?: number;
+  name?: string;
+  number?: string | number | null;
+  set_name?: string | null;
+  tcgplayer_id?: number | null;
+  tcgplayer_url?: string | null;
+  image_url?: string | null;
   printing?: string | null;
-  market_price?: number | null;
-  low_price?: number | null;
-  market_price_as_of?: string | null;
-  last_updated_at?: string | null;
 };
 
-type CardRow = {
-  id: string;
-  name: string | null;
-  set_name: string | null;
-  card_number: string | null;
-  finish: string | null;
-  variant: string | null;
-  language: string | null;
-  category: string | null;
-};
+type DiscoveryResult = Record<string, unknown>;
+const cache = new Map<string, { until: number; value: DiscoveryResult }>();
+const TTL = 12 * 60 * 60 * 1000;
+const MAX_CACHE_ENTRIES = 500;
 
-// Keep special foil types distinct. Unknown is never an exact match.
-function printingKind(value: string | null | undefined): string {
-  const v = (value || "").toLowerCase().trim();
-  if (!v) return "unknown";
-  if (/reverse/.test(v)) return "reverse";
-  if (/master\s*ball/.test(v)) return "master-ball";
-  if (/pok[eé]\s*ball/.test(v)) return "poke-ball";
-  if (/cosmos/.test(v)) return "cosmos";
-  if (/etched/.test(v)) return "etched";
-  if (/stamped/.test(v)) return "stamped";
-  if (/parallel/.test(v)) return "parallel";
-  if (/non[\s-]?holo|non[\s-]?foil|normal|regular|standard/.test(v)) return "normal";
-  if (/holo|foil/.test(v)) return "holo";
-  return "unknown";
+function respond(data: DiscoveryResult, status = 200) {
+  return NextResponse.json(data, {
+    status,
+    headers: { "Cache-Control": "private, no-store" },
+  });
 }
 
-export async function GET(req: NextRequest) {
-  // TCG API free-plan data is evaluated locally only; never publish this endpoint commercially.
-  if (process.env.NODE_ENV !== "development") return reply("Market pricing is not available.", 403);
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
+function normalize(value: string) {
+  return value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]/g, "");
+}
+
+function normalizeNumber(value: string) {
+  return value.trim().replace(/^0+/, "").toLowerCase();
+}
+
+async function apiGet(path: string, key: string): Promise<unknown> {
+  const response = await fetch(`https://api.tcgapi.dev/v1/${path}`, {
+    headers: { "X-API-Key": key },
+    signal: AbortSignal.timeout(12000),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`TCG API returned ${response.status}`);
+  }
+
+  const payload: unknown = await response.json();
+  return payload && typeof payload === "object" && "data" in payload
+    ? (payload as { data: unknown }).data
+    : null;
+}
+
+export async function GET(request: NextRequest) {
+  // Development evaluation only. Do not expose TCG API results in production.
+  if (process.env.NODE_ENV !== "development") {
+    return respond(
+      { ok: false, reason: "TCG API preview is disabled outside local development." },
+      403
+    );
+  }
+
+  const params = request.nextUrl.searchParams;
+  const mode = params.get("mode");
+
+  // Pricing must never be authorized by a browser-supplied provider ID.
+  // Use /api/catalog/verified-market?card_id=<catalog UUID> instead.
+  if (mode !== "discover") {
+    return respond({
+      ok: false,
+      reason:
+        "Direct provider-ID pricing is disabled. Use the verified-market endpoint with a catalog card ID.",
+    });
+  }
+
   const key = process.env.TCG_API_KEY;
-  if (!url || !service || !key) return reply("Market pricing is not configured.", 503);
-
-  const externalId = (req.nextUrl.searchParams.get("external_id") || "").trim();
-  const dataSource = (req.nextUrl.searchParams.get("data_source") || "").trim();
-  if (!externalId || !dataSource || externalId.length > 160 || dataSource.length > 100) {
-    return reply("Invalid catalog identity.", 400);
+  if (!key) {
+    return respond({ ok: false, reason: "TCG_API_KEY is missing." }, 503);
   }
 
-  const db = createClient(url, service, { auth: { persistSession: false, autoRefreshToken: false } });
-  const { data: card, error: cardError } = await db.from("cards")
-    .select("id,name,set_name,card_number,finish,variant,language,category")
-    .eq("external_id", externalId).eq("data_source", dataSource).maybeSingle();
-  if (cardError) return reply("Catalog lookup is temporarily unavailable.", 503);
-  if (!card) return reply("This card has no verified market mapping yet.");
-  const catalog = card as CardRow;
-  if (catalog.category?.toLowerCase() !== "pokemon" || catalog.language?.toUpperCase() !== "EN") {
-    return reply("Verified market pricing is currently available for English Pokémon cards only.");
-  }
-  const kind = printingKind(catalog.finish || catalog.variant);
-  if (kind === "unknown") return reply("Exact printing is not recorded for this card.");
+  const name = (params.get("name") || "").trim().slice(0, 100);
+  const setName = (params.get("setName") || "").trim().slice(0, 160);
+  const number = (params.get("cardNumber") || "").trim().slice(0, 60);
+  const language = (params.get("language") || "").trim().toUpperCase();
+  const category = (params.get("category") || "").trim().toLowerCase();
 
-  const { data: link, error: linkError } = await db.from("card_provider_links")
-    .select("provider_product_id,product_url,match_status")
-    .eq("card_id", catalog.id).eq("provider", "tcgapi")
-    .eq("match_status", "verified").maybeSingle();
-  if (linkError) return reply("Verified mapping lookup is temporarily unavailable.", 503);
-  if (!link) return reply("No verified TCG API mapping yet. Check market comps below.");
-  const id = String(link.provider_product_id || "");
-  if (!/^\d{1,12}$/.test(id) || Number(id) <= 0) return reply("Verified provider ID is invalid.");
+  if (name.length < 2) {
+    return respond({ ok: false, reason: "Card name required." }, 400);
+  }
+  if (language && language !== "EN") {
+    return respond({
+      ok: false,
+      reason: "Non-English identities require a separate language-specific review.",
+    });
+  }
+  if (category && category !== "pokemon") {
+    return respond({
+      ok: false,
+      reason: "This discovery test supports Pokémon only.",
+    });
+  }
+
+  const cacheKey = JSON.stringify([
+    normalize(name),
+    normalize(setName),
+    normalizeNumber(number),
+    language,
+    category,
+  ]);
+  const cached = cache.get(cacheKey);
+  if (cached && cached.until > Date.now()) {
+    return respond(cached.value);
+  }
 
   try {
-    const response = await fetch(`https://api.tcgapi.dev/v1/cards/${id}/prices`, {
-      headers: { "X-API-Key": key }, cache: "no-store", signal: AbortSignal.timeout(12000),
+    const qs = new URLSearchParams({
+      q: name,
+      game: "pokemon",
+      type: "Cards",
+      per_page: "50",
+      page: "1",
     });
-    if (!response.ok) return reply("Market pricing is temporarily unavailable.", 502);
-    const json: unknown = await response.json();
-    const data = json && typeof json === "object" && "data" in json
-      ? (json as { data: unknown }).data : null;
-    const rows: PriceRow[] = Array.isArray(data) ? data as PriceRow[]
-      : data && typeof data === "object" ? [data as PriceRow] : [];
-    const exact = rows.filter(p => printingKind(p.printing) === kind &&
-      typeof p.market_price === "number" && Number.isFinite(p.market_price) && p.market_price >= 0);
-    // Ambiguous or missing exact-print prices must not be displayed.
-    if (exact.length !== 1) return reply("No unambiguous market price is available for this exact printing.");
-    const selected = exact[0];
-    const productUrl = typeof link.product_url === "string" &&
-      /^https:\/\/www\.tcgplayer\.com\/product\/\d+(?:[/?#].*)?$/.test(link.product_url)
-      ? link.product_url : null;
-    return NextResponse.json({
+    const raw = await apiGet(`search?${qs.toString()}`, key);
+    const items: Candidate[] = Array.isArray(raw) ? (raw as Candidate[]) : [];
+    const normalizedName = normalize(name);
+    const normalizedSet = normalize(setName);
+    const normalizedNumber = normalizeNumber(number);
+
+    const candidates = items
+      .filter(
+        (candidate) =>
+          typeof candidate.id === "number" &&
+          Number.isSafeInteger(candidate.id) &&
+          candidate.id > 0 &&
+          normalize(candidate.name || "") === normalizedName
+      )
+      .map((candidate) => {
+        const sameSet =
+          Boolean(normalizedSet) &&
+          normalize(candidate.set_name || "") === normalizedSet;
+        const sameNumber =
+          Boolean(normalizedNumber) &&
+          normalizeNumber(String(candidate.number ?? "")) === normalizedNumber;
+        const confidence = sameSet && sameNumber ? 1 : sameSet || sameNumber ? 0.65 : 0.25;
+
+        return {
+          id: candidate.id,
+          name: candidate.name || "",
+          set_name: candidate.set_name || "",
+          number: String(candidate.number ?? ""),
+          printing: candidate.printing || null,
+          image_url: candidate.image_url || null,
+          tcgplayer_id: candidate.tcgplayer_id || null,
+          product_url:
+            typeof candidate.tcgplayer_url === "string" &&
+            /^https:\/\//i.test(candidate.tcgplayer_url)
+              ? candidate.tcgplayer_url
+              : null,
+          same_set: sameSet,
+          same_number: sameNumber,
+          confidence,
+          review_required: true,
+        };
+      })
+      .sort((a, b) => b.confidence - a.confidence)
+      .slice(0, 15);
+
+    const result: DiscoveryResult = {
       ok: true,
-      price: {
-        market_price: selected.market_price,
-        low_price: typeof selected.low_price === "number" && Number.isFinite(selected.low_price) && selected.low_price >= 0 ? selected.low_price : null,
-        printing: selected.printing,
-        as_of: selected.market_price_as_of || selected.last_updated_at || null,
-        product_url: productUrl,
-      },
-    }, { headers: noStore });
-  } catch {
-    return reply("Market pricing is temporarily unavailable.", 502);
+      candidates,
+      incomplete: items.length >= 50,
+      reason: candidates.length
+        ? "Candidates are unverified. Confirm exact set, number, printing, artwork, and promotional release before saving a provider mapping."
+        : "No exact-name candidates on the first search page. No mapping was created.",
+    };
+
+    if (cache.size >= MAX_CACHE_ENTRIES) {
+      const oldestKey = cache.keys().next().value;
+      if (oldestKey !== undefined) cache.delete(oldestKey);
+    }
+    cache.set(cacheKey, { until: Date.now() + TTL, value: result });
+    return respond(result);
+  } catch (error) {
+    console.error(
+      "[MintRadar identity discovery]",
+      error instanceof Error ? error.message : error
+    );
+    return respond(
+      { ok: false, reason: "TCG API search failed or daily limit reached." },
+      502
+    );
   }
 }
