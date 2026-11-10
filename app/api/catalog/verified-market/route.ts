@@ -39,19 +39,35 @@ type PriceRow = {
   last_updated_at?: string | null;
 };
 
-function printingKind(value: string | null | undefined): string {
+type PrintingKind =
+  | "reverse"
+  | "master-ball"
+  | "poke-ball"
+  | "cosmos"
+  | "etched"
+  | "stamped"
+  | "parallel"
+  | "normal"
+  | "holo"
+  | "unknown";
+
+function printingKind(value: string | null | undefined): PrintingKind {
   const v = (value || "").toLowerCase().trim();
 
   if (!v) return "unknown";
-  if (/reverse/.test(v)) return "reverse";
-  if (/master\s*ball/.test(v)) return "master-ball";
-  if (/pok[eé]\s*ball/.test(v)) return "poke-ball";
-  if (/cosmos/.test(v)) return "cosmos";
+
+  if (/master[\s-]*ball/.test(v)) return "master-ball";
+  if (/pok[eé][\s-]*ball/.test(v)) return "poke-ball";
+  if (/cosmos?/.test(v)) return "cosmos";
   if (/etched/.test(v)) return "etched";
-  if (/stamped/.test(v)) return "stamped";
+  if (/stamp(?:ed)?/.test(v)) return "stamped";
   if (/parallel/.test(v)) return "parallel";
-  if (/non[\s-]?holo|non[\s-]?foil|normal|regular|standard/.test(v))
+  if (/reverse/.test(v)) return "reverse";
+
+  if (/non[\s-]?holo|non[\s-]?foil|normal|regular|standard/.test(v)) {
     return "normal";
+  }
+
   if (/holo|foil/.test(v)) return "holo";
 
   return "unknown";
@@ -68,6 +84,7 @@ function isValidProductUrl(value: string | null): boolean {
 
   try {
     const url = new URL(value);
+
     return (
       url.protocol === "https:" &&
       url.hostname === "www.tcgplayer.com" &&
@@ -76,6 +93,81 @@ function isValidProductUrl(value: string | null): boolean {
   } catch {
     return false;
   }
+}
+
+function normalizeText(value: string): string {
+  return value
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function specialVariantReason(
+  finish: string | null,
+  variant: string | null
+): string | null {
+  const f = (finish || "").trim();
+  const v = (variant || "").trim();
+
+  if (!v) return null;
+
+  const finishKind = printingKind(f);
+  const variantKind = printingKind(v);
+
+  const specialKinds: PrintingKind[] = [
+    "master-ball",
+    "poke-ball",
+    "cosmos",
+    "etched",
+    "stamped",
+    "parallel",
+  ];
+
+  // Special variants must not silently inherit ordinary Holo pricing.
+  if (specialKinds.includes(variantKind)) {
+    if (
+      finishKind !== "unknown" &&
+      finishKind !== "holo" &&
+      finishKind !== variantKind
+    ) {
+      return "Catalog finish and special variant conflict.";
+    }
+
+    return "Special printing requires additional provider verification.";
+  }
+
+  // Artwork and release-specific variants require independent
+  // identity verification before pricing can be displayed.
+  if (
+    /full[\s-]*art|alternate|alt[\s-]*art|exclusive|blister|promo|pattern|special|edition/i.test(
+      v
+    )
+  ) {
+    return "Variant-specific pricing requires additional provider verification.";
+  }
+
+  if (variantKind === "unknown") {
+    return "Unrecognized catalog variant requires manual review.";
+  }
+
+  if (
+    finishKind !== "unknown" &&
+    variantKind !== finishKind
+  ) {
+    return "Catalog finish and variant printing conflict.";
+  }
+
+  // Equivalent standard-printing labels are permitted.
+  if (normalizeText(f) === normalizeText(v)) {
+    return null;
+  }
+
+  // Corrected: TypeScript has already narrowed the types here.
+  if (finishKind === variantKind) {
+    return null;
+  }
+
+  return "Catalog printing information requires manual review.";
 }
 
 export async function GET(req: NextRequest) {
@@ -131,6 +223,15 @@ export async function GET(req: NextRequest) {
     return reply(
       "Verified market pricing is currently available for English Pokémon cards only."
     );
+  }
+
+  const variantReason = specialVariantReason(
+    catalog.finish,
+    catalog.variant
+  );
+
+  if (variantReason) {
+    return reply(variantReason);
   }
 
   const kind = printingKind(catalog.finish || catalog.variant);
