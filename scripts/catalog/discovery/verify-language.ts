@@ -60,6 +60,7 @@ export type LanguageVerificationReport = {
   version: 1;
   provider: "tcgapi";
   listingComplete: true;
+  discoverySha256: string;
   verifiedLanguages: VerifiedLanguage[];
   reviewQueue: LanguageReview[];
   summary: {
@@ -156,8 +157,12 @@ function fail(message: string): never {
 
 export function verifyLanguages(
   discovery: unknown,
-  evidenceInput: unknown
+  evidenceInput: unknown,
+  discoverySha256: string
 ): LanguageVerificationReport {
+  if (!/^[a-f0-9]{64}$/.test(discoverySha256)) {
+    fail("Invalid discovery report SHA-256");
+  }
   if (
     !object(discovery) ||
     discovery.provider !== "tcgapi" ||
@@ -352,6 +357,7 @@ export function verifyLanguages(
     version: 1,
     provider: "tcgapi",
     listingComplete: true,
+    discoverySha256,
     verifiedLanguages,
     reviewQueue,
     summary: {
@@ -406,15 +412,21 @@ async function selfTest(): Promise<void> {
     ],
   };
 
+  const digest = createHash("sha256")
+    .update(JSON.stringify(discovery))
+    .digest("hex");
+
   const good = verifyLanguages(
     discovery,
-    evidence
+    evidence,
+    digest
   );
 
   if (
     good.verifiedLanguages.length !== 1 ||
     good.verifiedLanguages[0].language !==
       "JP" ||
+    good.discoverySha256 !== digest ||
     good.summary.withheldSets !== 0
   ) {
     fail("Reviewed JP evidence fixture failed");
@@ -422,7 +434,8 @@ async function selfTest(): Promise<void> {
 
   const missing = verifyLanguages(
     discovery,
-    { sets: [] }
+    { sets: [] },
+    digest
   );
 
   if (
@@ -440,7 +453,8 @@ async function selfTest(): Promise<void> {
   if (
     verifyLanguages(
       discovery,
-      wrongName
+      wrongName,
+      digest
     ).verifiedLanguages.length !== 0
   ) {
     fail("Mismatched set name was accepted");
@@ -456,7 +470,8 @@ async function selfTest(): Promise<void> {
   if (
     verifyLanguages(
       discovery,
-      duplicates
+      duplicates,
+      digest
     ).verifiedLanguages.length !== 0
   ) {
     fail("Duplicate evidence was accepted");
@@ -471,7 +486,8 @@ async function selfTest(): Promise<void> {
   if (
     verifyLanguages(
       discovery,
-      invalidLanguage
+      invalidLanguage,
+      digest
     ).verifiedLanguages.length !== 0
   ) {
     fail("Unknown language was accepted");
@@ -487,7 +503,8 @@ async function selfTest(): Promise<void> {
   try {
     verifyLanguages(
       incomplete,
-      evidence
+      evidence,
+      digest
     );
   } catch {
     blocked = true;
@@ -496,6 +513,14 @@ async function selfTest(): Promise<void> {
   if (!blocked) {
     fail("Incomplete listing was accepted");
   }
+
+  let badDigestBlocked = false;
+  try {
+    verifyLanguages(discovery, evidence, "not-a-sha256");
+  } catch {
+    badDigestBlocked = true;
+  }
+  if (!badDigestBlocked) fail("Invalid digest accepted");
 
   console.log(
     "PASS: explicit JP evidence, missing evidence quarantine, " +
@@ -560,12 +585,11 @@ async function main(): Promise<void> {
     fail("Empty input path");
   }
 
-  const discovery = JSON.parse(
-    await readFile(
-      path.resolve(reportPath),
-      "utf8"
-    )
-  ) as unknown;
+  const discoveryBytes = await readFile(path.resolve(reportPath));
+  const discoverySha256 = createHash("sha256")
+    .update(discoveryBytes)
+    .digest("hex");
+  const discovery = JSON.parse(discoveryBytes.toString("utf8")) as unknown;
 
   const evidence = JSON.parse(
     await readFile(
@@ -576,7 +600,8 @@ async function main(): Promise<void> {
 
   const result = verifyLanguages(
     discovery,
-    evidence
+    evidence,
+    discoverySha256
   );
 
   const outputRoot = path.resolve(

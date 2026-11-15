@@ -7,6 +7,7 @@
  *  - Complete #5F-F3 discovery report
  *  - #5F-F5 reviewed-language report
  *  - Explicit SHA-256 of the discovery report
+ *  - #5F-F7 F5 language report with matching discoverySha256
  *
  * Safeguards:
  *  - No live API calls or Supabase calls
@@ -75,7 +76,7 @@ type BuildResult = {
     noDatabaseCalls: true;
     noCatalogWrites: true;
     noApprovals: true;
-    languageProvenanceBound: false;
+    languageProvenanceBound: true;
   };
 };
 
@@ -216,8 +217,18 @@ export function buildImportManifests(
     fail("Language report is invalid");
   }
 
-  // F5 does not yet include a source report digest.
-  // We therefore cannot claim cryptographic binding.
+  // F7: The F5 report must be tied to the exact discovery file bytes.
+  // CLI independently hashes the file before calling this function.
+  if (languageReport.discoverySha256 !== discoveryDigest) {
+    fail("Language evidence belongs to a different discovery report");
+  }
+
+  if (!record(languageReport.summary) ||
+      languageReport.summary.discoveredSets !== discovery.acceptedSets.length ||
+      languageReport.summary.verifiedSets !== languageReport.verifiedLanguages.length ||
+      languageReport.summary.withheldSets !== discovery.acceptedSets.length - languageReport.verifiedLanguages.length) {
+    fail("Language report summary does not match discovery");
+  }
   if (
     discovery.reviewQueue.length > 0 ||
     languageReport.reviewQueue.length > 0
@@ -566,7 +577,7 @@ export function buildImportManifests(
       noDatabaseCalls: true,
       noCatalogWrites: true,
       noApprovals: true,
-      languageProvenanceBound: false,
+      languageProvenanceBound: true,
     },
   };
 }
@@ -653,7 +664,9 @@ async function selfTest(): Promise<void> {
     version: 1,
     provider: "tcgapi",
     listingComplete: true,
+    discoverySha256: sha256(JSON.stringify(discovery)),
     reviewQueue: [],
+    summary: { discoveredSets: 1, verifiedSets: 1, withheldSets: 0 },
     verifiedLanguages: [
       {
         providerSetId: "42",
@@ -724,6 +737,8 @@ async function selfTest(): Promise<void> {
   );
 
   missing.verifiedLanguages = [];
+  missing.summary.verifiedSets = 0;
+  missing.summary.withheldSets = 1;
 
   if (
     buildImportManifests(
@@ -758,6 +773,12 @@ async function selfTest(): Promise<void> {
   if (!upstreamBlocked) {
     fail("Upstream review was not blocked");
   }
+
+  const stale = structuredClone(languages);
+  stale.discoverySha256 = "0".repeat(64);
+  let staleBlocked = false;
+  try { buildImportManifests(discovery, stale, digest); } catch { staleBlocked = true; }
+  if (!staleBlocked) fail("Stale language report was accepted");
 
   const dir = await mkdtemp(
     path.join(tmpdir(), "mintradar-f6-")
@@ -905,8 +926,8 @@ async function main(): Promise<void> {
 
   console.log(
     "Manifests are for importer --dry-run only. " +
-    "Language review is not cryptographically bound " +
-    "to the original discovery report."
+    "Language review is SHA-256 bound to the discovery file. " +
+    "Reviewed sources are not independently authenticated."
   );
 }
 
