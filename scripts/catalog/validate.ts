@@ -8,6 +8,10 @@ export type CatalogCard = {
   rarity?: string;
   finish?: string;
   edition?: string;
+  // Optional explicit physical collector number, distinct from provider card ID.
+  collectorNumber?: string;
+  // Optional source-declared printing pattern; not an identity approval.
+  printingPattern?: string;
 };
 
 export type CatalogSet = {
@@ -124,6 +128,8 @@ export function validateCatalogManifest(
         "rarity",
         "finish",
         "edition",
+        "collectorNumber",
+        "printingPattern",
       ] as const) {
         const value = card[field];
 
@@ -132,7 +138,11 @@ export function validateCatalogManifest(
             throw new Error(`Invalid ${field} for ${id}-${cardId}`);
           }
 
-          result[field] = value.trim();
+          const trimmed = value.trim();
+          if ((field === "collectorNumber" || field === "printingPattern") && !trimmed) {
+            throw new Error(`Empty ${field} for ${id}-${cardId}`);
+          }
+          result[field] = trimmed;
         }
       }
 

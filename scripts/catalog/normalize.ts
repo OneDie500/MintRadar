@@ -33,6 +33,8 @@ export type CatalogCardRow = {
   rarity: string | null;
   edition: string | null;
   finish: string | null;
+  // Import-only evidence; never insert into the cards table.
+  printing_pattern?: string | null;
   canonical_name: string | null;
   canonical_external_id: string | null;
   canonical_language: string | null;
@@ -75,12 +77,15 @@ export function normalizeCatalogManifest(
         name: card.name,
         set_name: set.name,
         set_id: set.id,
-        card_number: card.id,
-        image_url: "",
+        card_number: card.collectorNumber ?? card.id,
+        // Preserve the supplied source reference; publication rights must be
+        // evaluated separately before using this URL in a public catalog.
+        image_url: card.imageUrl?.trim() ?? "",
         category: manifest.category,
         rarity: card.rarity ?? null,
         edition: card.edition ?? null,
         finish: card.finish ?? null,
+        printing_pattern: card.printingPattern ?? null,
         canonical_name: card.name,
         canonical_external_id: null,
         canonical_language: null,
