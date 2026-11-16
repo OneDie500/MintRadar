@@ -10,6 +10,9 @@ export type ExistingCard = {
   data_source: string;
   language: string;
   category: string | null;
+  name: string | null;
+  edition: string | null;
+  finish: string | null;
   set_name: string | null;
   card_number: string | null;
   image_url: string | null;
@@ -33,6 +36,14 @@ export type CrossProviderOverlap = {
   language: string;
   set_name: string;
   card_number: string;
+  incoming_name: string;
+  existing_name: string;
+  incoming_edition: string;
+  existing_edition: string;
+  incoming_finish: string;
+  existing_finish: string;
+  review_status: "POSSIBLE_SAME_PRINTING" | "PRINTING_CONFLICT" | "INSUFFICIENT_EVIDENCE";
+  review_reason: string;
 };
 
 export type ReconciliationResult = {
@@ -83,6 +94,77 @@ function physicalKey(
   ]);
 }
 
+// Only recognize explicit, known printing-pattern tokens. Do not infer
+// patterns from arbitrary provider ID suffixes or rarity labels.
+function declaredPrintingPatterns(name: string, externalId: string, explicitPattern?: string | null): Set<string> {
+  const tokens = [normalizeText(name), normalizeText(externalId), normalizeText(explicitPattern ?? "")];
+  const patterns = new Set<string>();
+  if (tokens.some((token) => token.includes("masterballpattern"))) {
+    patterns.add("master_ball_pattern");
+  }
+  if (tokens.some((token) => token.includes("pokeballpattern"))) {
+    patterns.add("poke_ball_pattern");
+  }
+  return patterns;
+}
+
+// Some providers append the collector number to the display name, e.g.
+// "Dark Slowbro (29)". Remove it only when it exactly matches the
+// separately supplied card number. Never strip arbitrary parentheticals.
+function comparisonName(name: string, cardNumber: string): string {
+  const match = name.trim().match(/^(.*?)\s*\(([^()]*)\)\s*$/u);
+  if (match && normalizeText(match[2]) === normalizeText(cardNumber) && normalizeText(cardNumber)) {
+    return normalizeText(match[1]);
+  }
+  return normalizeText(name);
+}
+
+// Diagnostic-only. A matching name/finish/edition is not proof of
+// physical-printing equivalence. Unknown attributes never imply equality.
+function printingReview(
+  incoming: CatalogCardRow,
+  existing: ExistingCard
+): Pick<CrossProviderOverlap, "review_status" | "review_reason"> {
+  const aName = comparisonName(incoming.name, incoming.card_number);
+  const bName = comparisonName(existing.name ?? "", existing.card_number ?? "");
+  const aEdition = normalizeText(incoming.edition ?? "");
+  const bEdition = normalizeText(existing.edition ?? "");
+  const aFinish = normalizeText(incoming.finish ?? "");
+  const bFinish = normalizeText(existing.finish ?? "");
+
+  const incomingPatterns = declaredPrintingPatterns(incoming.name, incoming.external_id, incoming.printing_pattern);
+  const existingPatterns = declaredPrintingPatterns(existing.name ?? "", existing.external_id ?? "");
+  const patternDifference = [...new Set([...incomingPatterns, ...existingPatterns])]
+    .some((pattern) => incomingPatterns.has(pattern) !== existingPatterns.has(pattern));
+  if (patternDifference) {
+    // Diagnostic conflict only. A missing marker is not proof of a standard
+    // printing, and no records are merged or approved based on this result.
+    return { review_status: "PRINTING_CONFLICT", review_reason: "different_explicit_printing_pattern" };
+  }
+
+  // Unknown declared patterns cannot be treated as matching verified printings.
+  // Keep the original text for diagnostics, but never infer equivalence.
+  const explicit = normalizeText(incoming.printing_pattern ?? "");
+  if (explicit && incomingPatterns.size === 0) {
+    return { review_status: "INSUFFICIENT_EVIDENCE", review_reason: "unrecognized_explicit_printing_pattern" };
+  }
+
+  // Explicit name differences can indicate named parallels/patterns.
+  if (aName && bName && aName !== bName) {
+    return { review_status: "PRINTING_CONFLICT", review_reason: "different_card_or_pattern_name" };
+  }
+  if (aEdition && bEdition && aEdition !== bEdition) {
+    return { review_status: "PRINTING_CONFLICT", review_reason: "different_edition" };
+  }
+  if (aFinish && bFinish && aFinish !== bFinish) {
+    return { review_status: "PRINTING_CONFLICT", review_reason: "different_finish" };
+  }
+  if (!aName || !bName || !aEdition || !bEdition || !aFinish || !bFinish) {
+    return { review_status: "INSUFFICIENT_EVIDENCE", review_reason: "one_or_more_identity_attributes_missing" };
+  }
+  return { review_status: "POSSIBLE_SAME_PRINTING", review_reason: "matching_declared_attributes_not_verified" };
+}
+
 export async function reconcileCatalog(
   supabase: SupabaseClient,
   sets: CatalogSetRow[],
@@ -127,6 +209,9 @@ export async function reconcileCatalog(
             "data_source",
             "language",
             "category",
+            "name",
+            "edition",
+            "finish",
             "set_name",
             "card_number",
             "image_url",
@@ -232,6 +317,13 @@ export async function reconcileCatalog(
           language: card.language,
           set_name: card.set_name,
           card_number: card.card_number,
+          incoming_name: card.name,
+          existing_name: match.name ?? "",
+          incoming_edition: card.edition ?? "",
+          existing_edition: match.edition ?? "",
+          incoming_finish: card.finish ?? "",
+          existing_finish: match.finish ?? "",
+          ...printingReview(card, match),
         });
       }
     }

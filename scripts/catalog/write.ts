@@ -149,9 +149,23 @@ async function insertBatches<T extends CatalogIdentity>(
     }
 
     // INSERT ONLY. Never update existing rows.
+    // printing_pattern is reconciliation-only evidence, not a DB column.
+    // Strip it from cards before INSERT; retain existing set payloads.
+    const insertRows = table === "cards"
+      ? pending.map((row) => {
+          const { printing_pattern: _printingPattern, ...dbRow } = row as T & { printing_pattern?: string | null };
+          void _printingPattern;
+          return dbRow;
+        })
+      : pending;
+
+    // The only removed property is the import-only printing_pattern.
+    // Supabase's generic insert signature cannot infer that an Omit<T, K>
+    // remains a valid row for its runtime-selected table. Keep the assertion
+    // local to this boundary; identity and write gates run before this point.
     const { error } = await supabase
       .from(table)
-      .insert(pending);
+      .insert(insertRows as T[]);
 
     if (error) {
       report.failedBatches++;
@@ -193,6 +207,14 @@ export async function writeCatalog(
   if (reconciliation.quarantined.length > 0) {
     throw new Error(
       `Write blocked: ${reconciliation.quarantined.length} quarantined records`
+    );
+  }
+
+  // Defense in depth: callers other than the universal importer must not
+  // bypass cross-provider review. This check occurs before either table insert.
+  if (reconciliation.crossProviderOverlaps.length > 0) {
+    throw new Error(
+      `Write blocked: ${reconciliation.crossProviderOverlaps.length} cross-provider overlaps require review.`
     );
   }
 

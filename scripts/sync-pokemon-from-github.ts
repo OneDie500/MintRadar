@@ -14,7 +14,7 @@ import ts from "typescript";
 
 type CatalogSetRow = {
   external_id: string;
-  data_source: "tcgdex";
+  data_source: string;
   language: CatalogLanguage;
   name: string;
   category: "Pokemon";
@@ -30,7 +30,7 @@ type CatalogSetRow = {
 
 type CardRow = {
   external_id: string;
-  data_source: "tcgdex";
+  data_source: string;
   language: CatalogLanguage;
   name: string;
   set_name: string;
@@ -899,6 +899,7 @@ async function main() {
 
 
   await prepareCnSupplementalGapFill(setRows, cardRows, now);
+  await prepareEnglishSupplementalReleases(setRows, cardRows, now);
 
   printCnSetDiscoveryDiagnostics();
   printCnGemPackDiagnostics();
@@ -985,7 +986,20 @@ async function main() {
   printJapaneseCanonicalReport(dedupedCardRows);
   printJapaneseUnresolvedAudit(dedupedCardRows);
 
+  // Quarantine the independently verified CN-TW S5R-020 false match before
+  // preservation/auditing so the prepared rows never propose xy10-67.
+  quarantineVerifiedCanonicalMismatch(dedupedCardRows);
+
+  // Compare source rows with existing catalog records before any write.
+  // Protect artwork and previously established canonical identity evidence.
+  await protectExistingPokemonCards(dedupedCardRows);
+  // Fail closed if future resolver/preservation changes reintroduce a false ID.
+  assertVerifiedCanonicalQuarantine(dedupedCardRows);
+
+  // #5F-A: Production writes require explicit opt-in.
+  // Legacy POKEMON_SYNC_DRY_RUN=1 always overrides the write opt-in.
   const pokemonSyncDryRun =
+    process.env.POKEMON_SYNC_WRITE !== "1" ||
     process.env.POKEMON_SYNC_DRY_RUN === "1";
 
   if (pokemonSyncDryRun) {
@@ -999,7 +1013,7 @@ async function main() {
       "Diagnostics, source reads, matching, CN gap-fill auditing, and cache generation completed normally."
     );
     console.log(
-      "Set POKEMON_SYNC_DRY_RUN=0 (or remove it) only when you intentionally want the prepared rows upserted."
+      "Writes require POKEMON_SYNC_WRITE=1 and POKEMON_SYNC_DRY_RUN must not equal 1."
     );
     console.log(
       "=== END GLOBAL DRY RUN ===\n"
@@ -1024,6 +1038,184 @@ async function main() {
   );
 }
 
+
+// This is a narrowly scoped, verified false-positive quarantine, NOT a general
+// species-name or artwork equivalence. CN-TW S5R-020 is Galarian Mr. Mime;
+// swsh5-41 is Frillish and xy10-67 is a different Mr. Mime printing.
+// Keep the original localized record and any image intact; do not assign an
+// English printing until exact card evidence has been reviewed.
+function isVerifiedCanonicalQuarantine(row: CardRow): boolean {
+  return row.data_source === "tcgdex" &&
+    row.language === "CN-TW" && row.external_id === "S5R-020";
+}
+
+function quarantineVerifiedCanonicalMismatch(rows: CardRow[]): void {
+  let quarantined = 0;
+  for (const row of rows) {
+    if (!isVerifiedCanonicalQuarantine(row)) continue;
+    row.canonical_name = "Galarian Mr. Mime"; // Search label only.
+    row.canonical_external_id = null;
+    row.canonical_language = null;
+    row.canonical_confidence = null;
+    quarantined++;
+  }
+  if (quarantined !== 1) {
+    throw new Error(`Canonical quarantine expected exactly 1 CN-TW S5R-020 row, found ${quarantined}.`);
+  }
+  console.log("Canonical quarantine: CN-TW S5R-020 kept without an unverified English printing ID.");
+}
+
+function assertVerifiedCanonicalQuarantine(rows: CardRow[]): void {
+  const matches = rows.filter(isVerifiedCanonicalQuarantine);
+  if (matches.length !== 1 || matches[0].canonical_external_id !== null ||
+      matches[0].canonical_language !== null ||
+      matches[0].canonical_confidence !== null) {
+    throw new Error("Unsafe canonical mapping for CN-TW S5R-020; Pokémon sync aborted before writes.");
+  }
+}
+
+// Preservation is deliberately conservative: an existing image is never replaced
+// by a source sync. Image upgrades must go through the dedicated image resolver.
+// Vintage staging and its approval flags are never written by this script.
+async function protectExistingPokemonCards(rows: CardRow[]) {
+  const counts = {
+    newCards: 0,
+    existingCards: 0,
+    protectedImages: 0,
+    protectedCanonicalIds: 0,
+    protectedCanonicalNames: 0,
+    protectedCanonicalConfidence: 0,
+  };
+
+  type AuditRecord = { language: string; set_id: string; external_id: string; card_number: string; name: string; set_name: string; existing_image_url: string; incoming_image_url: string; existing_canonical_id: string; incoming_canonical_id: string; existing_confidence: string; incoming_confidence: string; reason: string };
+  const newCardsAudit: AuditRecord[] = [];
+  const protectedImagesAudit: AuditRecord[] = [];
+  const canonicalReviewAudit: AuditRecord[] = [];
+  const auditRow = (row: CardRow, old: { image_url?: string | null; canonical_external_id?: string | null; canonical_confidence?: number | null } | null, reason: string, incomingImage = row.image_url, incomingId = row.canonical_external_id, incomingConfidence = row.canonical_confidence): AuditRecord => ({
+    language: row.language,
+    set_id: row.external_id.slice(0, -(row.card_number.length + 1)),
+    external_id: row.external_id,
+    card_number: row.card_number,
+    name: row.name,
+    set_name: row.set_name,
+    existing_image_url: old?.image_url ?? "",
+    incoming_image_url: incomingImage ?? "",
+    existing_canonical_id: old?.canonical_external_id ?? "",
+    incoming_canonical_id: incomingId ?? "",
+    existing_confidence: old?.canonical_confidence == null ? "" : String(old.canonical_confidence),
+    incoming_confidence: incomingConfidence == null ? "" : String(incomingConfidence),
+    reason,
+  });
+
+  for (let start = 0; start < rows.length; start += 100) {
+    const batch = rows.slice(start, start + 100);
+    const byLanguage = new Map<CatalogLanguage, CardRow[]>();
+    for (const row of batch) {
+      const group = byLanguage.get(row.language) ?? [];
+      group.push(row);
+      byLanguage.set(row.language, group);
+    }
+
+    for (const [language, group] of byLanguage) {
+      const { data, error } = await supabase
+        .from("cards")
+        .select("external_id,image_url,canonical_name,canonical_external_id,canonical_language,canonical_confidence")
+        .eq("data_source", "tcgdex")
+        .eq("language", language)
+        .in("external_id", group.map((row) => row.external_id));
+      if (error) throw new Error(`Pokémon preservation lookup failed: ${error.message}`);
+      const existing = new Map((data ?? []).map((row) => [row.external_id as string, row]));
+
+      for (const row of group) {
+        const old = existing.get(row.external_id);
+        if (!old) { counts.newCards++; newCardsAudit.push(auditRow(row, null, "new-card")); continue; }
+        counts.existingCards++;
+        if (typeof old.image_url === "string" && old.image_url.trim()) {
+          if (row.image_url !== old.image_url) {
+            counts.protectedImages++;
+            protectedImagesAudit.push(auditRow(row, old, "existing-image-preserved"));
+          }
+          row.image_url = old.image_url;
+        }
+        // Preserve existing canonical evidence if the incoming identity is absent
+        // or has lower confidence. Never combine a new ID with old confidence.
+        const oldConfidence = typeof old.canonical_confidence === "number"
+          ? old.canonical_confidence : null;
+        const incomingConfidence = row.canonical_confidence;
+        const oldId = typeof old.canonical_external_id === "string"
+          ? old.canonical_external_id.trim() : "";
+        const incomingId = row.canonical_external_id?.trim() ?? "";
+        if (oldId && incomingId && oldId !== incomingId) {
+          canonicalReviewAudit.push(auditRow(row, old, "canonical-id-disagreement"));
+        } else if (oldId && !incomingId) {
+          canonicalReviewAudit.push(auditRow(row, old, "incoming-canonical-id-missing"));
+        }
+        // Never resurrect an existing canonical ID for a verified quarantine.
+        // This also protects against a stale Supabase row retaining swsh5-41.
+        if (isVerifiedCanonicalQuarantine(row)) {
+          row.canonical_name = "Galarian Mr. Mime";
+          row.canonical_external_id = null;
+          row.canonical_language = null;
+          row.canonical_confidence = null;
+          continue;
+        }
+        // A disagreement is never resolved by confidence alone. Retain the
+        // existing identity until independently verified, even at confidence 100.
+        if (oldId && (!incomingId || oldId !== incomingId ||
+            (oldConfidence ?? -1) > (incomingConfidence ?? -1))) {
+          if (row.canonical_external_id !== oldId) counts.protectedCanonicalIds++;
+          row.canonical_external_id = oldId;
+          row.canonical_language = old.canonical_language === "EN" ? "EN" : null;
+          row.canonical_confidence = oldConfidence;
+          counts.protectedCanonicalConfidence++;
+          if (typeof old.canonical_name === "string" && old.canonical_name.trim()) {
+            row.canonical_name = old.canonical_name;
+            counts.protectedCanonicalNames++;
+          }
+        } else if (!row.canonical_name?.trim() &&
+                   typeof old.canonical_name === "string" && old.canonical_name.trim()) {
+          row.canonical_name = old.canonical_name;
+          counts.protectedCanonicalNames++;
+        }
+      }
+    }
+  }
+  console.log("\n=== POKÉMON CATALOG PRESERVATION REPORT ===");
+  console.log(JSON.stringify(counts, null, 2));
+  console.log("Existing nonempty images are retained; staging approvals are not modified.");
+  // Local audit exports only; no Supabase writes, no staging approval changes.
+  const auditDir = join(ROOT, ".cache", "pokemon-sync-audit");
+  mkdirSync(auditDir, { recursive: true });
+  const fields: (keyof AuditRecord)[] = ["language", "set_id", "external_id", "card_number", "name", "set_name", "existing_image_url", "incoming_image_url", "existing_canonical_id", "incoming_canonical_id", "existing_confidence", "incoming_confidence", "reason"];
+  const csvCell = (value: string) => `"${value.replace(/"/g, '""')}"`;
+  const exportCsv = (filename: string, records: AuditRecord[]) => {
+    const output = [fields.join(","), ...records.map((record) => fields.map((field) => csvCell(record[field])).join(","))].join("\n") + "\n";
+    writeFileSync(join(auditDir, filename), output, "utf8");
+  };
+  exportCsv("new-cards.csv", newCardsAudit);
+  exportCsv("protected-images.csv", protectedImagesAudit);
+  exportCsv("canonical-review.csv", canonicalReviewAudit);
+  const imageByLanguageSet = new Map<string, number>();
+  for (const record of protectedImagesAudit) {
+    const key = `${record.language} | ${record.set_id}`;
+    imageByLanguageSet.set(key, (imageByLanguageSet.get(key) ?? 0) + 1);
+  }
+  console.log("\n=== POKÉMON READ-ONLY AUDIT ===");
+  console.log(`New cards exported: ${newCardsAudit.length} -> ${join(auditDir, "new-cards.csv")}`);
+  console.log(`Protected image changes exported: ${protectedImagesAudit.length} -> ${join(auditDir, "protected-images.csv")}`);
+  console.log(`Canonical IDs requiring review: ${canonicalReviewAudit.length} -> ${join(auditDir, "canonical-review.csv")}`);
+  console.log("Protected images by language:");
+  for (const language of ["EN", "JP", "CN-TW", "CN"]) {
+    console.log(`  ${language}: ${protectedImagesAudit.filter((record) => record.language === language).length}`);
+  }
+  console.log("Top 25 protected-image sets:");
+  for (const [key, count] of [...imageByLanguageSet.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 25)) {
+    console.log(`  ${key}: ${count}`);
+  }
+  console.log("Review canonical disagreements before enabling writes; this audit does not validate artwork rights.");
+  console.log("=== END READ-ONLY AUDIT ===\n");
+  console.log("=== END PRESERVATION REPORT ===\n");
+}
 
 async function preserveExistingPokemonSearchNames(rows: CardRow[]) {
   const unresolved = rows.filter((row) =>
@@ -1387,6 +1579,185 @@ function isOfficialJpImage(url: string, setId: string): boolean {
       /\.jpe?g$/i.test(parsed.pathname);
   } catch {
     return false;
+  }
+}
+
+
+// English supplemental release intake (opt-in, manifest-based).
+// This does not invent release checklists, English numbering or artwork rights.
+// Provide an independently verified JSON manifest; no network scraping occurs.
+// The existing TCGdex and Asian ingestion paths are left unchanged.
+//
+// Example manifest:
+// {
+//   "source": "official_verified_feed",
+//   "sets": [{
+//     "id": "verified-provider-set-id", "name": "Verified English Set",
+//     "releaseDate": "2026-11-06",
+//     "cards": [{"id": "001", "name": "Verified Printed Name"}]
+//   }]
+// }
+//
+// Enable audit: EN_SUPPLEMENTAL_MANIFEST=/absolute/path/manifest.json
+// Explicitly stage eligible records for production (still subject to global
+// POKEMON_SYNC_DRY_RUN): EN_SUPPLEMENTAL_WRITE=1
+// Images are omitted unless independently cleared and explicitly opted in.
+// IMPORTANT: manifest IDs are source-specific and must be stable.
+type SupplementalCard = {
+  id: string;
+  name: string;
+  imageUrl?: string;
+  rarity?: string;
+  finish?: string;
+  edition?: string;
+};
+type SupplementalSet = {
+  id: string;
+  name: string;
+  releaseDate?: string;
+  cards: SupplementalCard[];
+};
+type SupplementalManifest = {
+  source: string;
+  sets: SupplementalSet[];
+};
+
+function normalizedPhysicalKey(setName: string, number: string): string {
+  return `${setName.normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "")}\u0000` +
+    number.normalize("NFKC").toLowerCase().replace(/\s+/g, "").replace(/^0+(?=\d)/, "");
+}
+
+function supplementalSafeSource(value: string): boolean {
+  return /^[a-z][a-z0-9_]{2,50}$/.test(value) &&
+    !["tcgdex", "collectr_import", "csv_import_canonical", "tcgplayer_import"].includes(value);
+}
+
+async function prepareEnglishSupplementalReleases(
+  setRows: CatalogSetRow[],
+  cardRows: CardRow[],
+  now: string
+): Promise<void> {
+  const path = process.env.EN_SUPPLEMENTAL_MANIFEST?.trim();
+  if (!path) {
+    console.log("EN supplemental intake disabled (EN_SUPPLEMENTAL_MANIFEST not set).");
+    return;
+  }
+  if (!existsSync(path)) throw new Error(`EN supplemental manifest not found: ${path}`);
+  const manifest = JSON.parse(readFileSync(path, "utf8")) as SupplementalManifest;
+  if (!manifest || !supplementalSafeSource(manifest.source) ||
+      !Array.isArray(manifest.sets) || manifest.sets.length === 0) {
+    throw new Error("EN supplemental manifest must have a distinct safe source and nonempty sets.");
+  }
+
+  const auditDir = join(ROOT, ".cache", "pokemon-sync-audit");
+  mkdirSync(auditDir, { recursive: true });
+  const audit: Array<{source: string; set_id: string; card_id: string;
+    name: string; status: string; detail: string}> = [];
+  const stagedSets: CatalogSetRow[] = [];
+  const stagedCards: CardRow[] = [];
+  const source = manifest.source;
+  const knownKeys = new Map<string, string[]>();
+  const existingSourceIds = new Set<string>();
+  const addKnown = (setName: string, cardNumber: string, description: string) => {
+    if (!setName || !cardNumber) return;
+    const key = normalizedPhysicalKey(setName, cardNumber);
+    knownKeys.set(key, [...(knownKeys.get(key) ?? []), description]);
+  };
+  for (const row of cardRows.filter((r) => r.language === "EN")) {
+    addKnown(row.set_name, row.card_number, `${row.data_source}:${row.external_id}`);
+  }
+
+  // Read all existing EN Pokémon source identities, not just TCGdex.
+  // Pagination avoids Supabase's default 1,000-row response cap.
+  let offset = 0;
+  const pageSize = 1000;
+  while (true) {
+    const { data, error } = await supabase.from("cards")
+      .select("data_source,external_id,set_name,card_number")
+      .eq("category", "Pokemon").eq("language", "EN")
+      .range(offset, offset + pageSize - 1);
+    if (error) throw new Error(`EN supplemental reconciliation read failed: ${error.message}`);
+    for (const row of data ?? []) {
+      if (row.data_source === source && row.external_id) existingSourceIds.add(row.external_id);
+      addKnown(row.set_name ?? "", row.card_number ?? "",
+        `${row.data_source ?? "null"}:${row.external_id ?? "null"}`);
+    }
+    if ((data ?? []).length < pageSize) break;
+    offset += pageSize;
+  }
+
+  const seenSourceIds = new Set<string>();
+  const seenSetIds = new Set<string>();
+  for (const set of manifest.sets) {
+    if (!set || typeof set.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(set.id) ||
+        typeof set.name !== "string" || !set.name.trim() ||
+        !Array.isArray(set.cards) || !set.cards.length ||
+        seenSetIds.has(set.id)) {
+      throw new Error("EN supplemental manifest contains an invalid/duplicate set.");
+    }
+    seenSetIds.add(set.id);
+    const releaseDate = set.releaseDate == null ? null : normalizeDate(set.releaseDate);
+    if (set.releaseDate && !releaseDate) throw new Error(`Invalid release date for ${set.id}`);
+    let eligible = 0;
+    for (const card of set.cards) {
+      if (!card || typeof card.id !== "string" ||
+          !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,79}$/.test(card.id) ||
+          typeof card.name !== "string" || !card.name.trim()) {
+        throw new Error(`Invalid EN supplemental card in set ${set.id}`);
+      }
+      const externalId = `${set.id}-${card.id}`;
+      if (seenSourceIds.has(externalId)) {
+        throw new Error(`Duplicate EN supplemental source ID: ${externalId}`);
+      }
+      seenSourceIds.add(externalId);
+      const key = normalizedPhysicalKey(set.name, card.id);
+      const matches = [...new Set(knownKeys.get(key) ?? [])];
+      if (existingSourceIds.has(externalId)) matches.push(`${source}:${externalId} (existing source ID)`);
+      const status = matches.length ? "candidate-overlap-quarantined" : "eligible-new";
+      audit.push({
+        source, set_id: set.id, card_id: card.id, name: card.name,
+        status, detail: matches.join(" | ")
+      });
+      if (matches.length) continue;
+      eligible++;
+      stagedCards.push({
+        external_id: externalId, data_source: source, language: "EN",
+        name: card.name.trim(), set_name: set.name.trim(), card_number: card.id,
+        // Never assume an externally hosted image is licensed for reuse.
+        image_url: process.env.EN_SUPPLEMENTAL_IMAGES_CLEARED === "1" &&
+          typeof card.imageUrl === "string" && /^https:\/\//i.test(card.imageUrl)
+          ? card.imageUrl : "",
+        category: "Pokemon", rarity: card.rarity ?? null,
+        edition: card.edition ?? null, finish: card.finish ?? null,
+        canonical_name: card.name.trim(), canonical_external_id: null,
+        canonical_language: null, canonical_confidence: null,
+        external_updated_at: now
+      });
+      // Also quarantine repeated physical print identities within the manifest.
+      addKnown(set.name, card.id, `${source}:${externalId}`);
+    }
+    if (eligible) stagedSets.push({
+      external_id: set.id, data_source: source, language: "EN",
+      name: set.name.trim(), category: "Pokemon", code: set.id,
+      card_count: set.cards.length, released_at: releaseDate, set_type: null,
+      series_id: null, logo_url: null, symbol_url: null, external_updated_at: now
+    });
+  }
+  const csvCell = (value: string) => `"${value.replace(/"/g, '""')}"`;
+  const auditPath = join(auditDir, "en-supplemental-reconciliation.csv");
+  writeFileSync(auditPath, [
+    "source,set_id,card_id,name,status,detail",
+    ...audit.map((row) => [row.source, row.set_id, row.card_id, row.name,
+      row.status, row.detail].map(csvCell).join(","))
+  ].join("\n") + "\n", "utf8");
+  const quarantined = audit.filter((row) => row.status !== "eligible-new").length;
+  const allowWrites = process.env.EN_SUPPLEMENTAL_WRITE === "1";
+  console.log(`EN supplemental: source=${source}; candidates=${audit.length}; eligible=${stagedCards.length}; quarantined=${quarantined}; mode=${allowWrites ? "WRITE OPT-IN" : "AUDIT ONLY"}`);
+  console.log(`EN supplemental audit: ${auditPath}`);
+  console.log("Set-name/number matches are only candidates; they are never auto-merged.");
+  if (allowWrites) {
+    setRows.push(...stagedSets);
+    cardRows.push(...stagedCards);
   }
 }
 
@@ -5846,6 +6217,16 @@ async function upsertBatches(
   >[],
   batchSize: number
 ) {
+  // Defense in depth: never call the database writer without explicit consent.
+  if (
+    process.env.POKEMON_SYNC_WRITE !== "1" ||
+    process.env.POKEMON_SYNC_DRY_RUN === "1"
+  ) {
+    throw new Error(
+      "Pokémon sync write blocked: set POKEMON_SYNC_WRITE=1 and disable POKEMON_SYNC_DRY_RUN."
+    );
+  }
+
   for (
     let start = 0;
     start < rows.length;

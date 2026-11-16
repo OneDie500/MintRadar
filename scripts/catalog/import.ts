@@ -119,6 +119,14 @@ async function main() {
     "language",
     "set_name",
     "card_number",
+    "incoming_name",
+    "existing_name",
+    "incoming_edition",
+    "existing_edition",
+    "incoming_finish",
+    "existing_finish",
+    "review_status",
+    "review_reason",
   ] as const;
 
   const overlapCsv =
@@ -143,6 +151,16 @@ async function main() {
   console.log(
     `Cross-provider overlap candidates: ${result.crossProviderOverlaps.length}`
   );
+  for (const status of [
+    "POSSIBLE_SAME_PRINTING",
+    "PRINTING_CONFLICT",
+    "INSUFFICIENT_EVIDENCE",
+  ] as const) {
+    console.log(
+      `${status}: ${result.crossProviderOverlaps.filter((overlap) => overlap.review_status === status).length}`
+    );
+  }
+  console.log("Overlap classifications are diagnostic only; none are auto-approved.");
 
   console.log("\n=== PRESERVATION REPORT ===");
   console.log(JSON.stringify(preservation, null, 2));
