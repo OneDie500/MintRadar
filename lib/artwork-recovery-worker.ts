@@ -176,6 +176,53 @@ async function saveJob(
   }
 }
 
+// Only the EN exact-ID resolver may use these two known name aliases.
+// All other providers and JP/vintage jobs retain literal name matching.
+function exactRegionalName(name: string): string {
+  const normalized = name.normalize("NFKC").trim();
+  if (normalized === "Nidoran F" || normalized === "Nidoran♀") return "Nidoran♀";
+  if (normalized === "Nidoran M" || normalized === "Nidoran♂") return "Nidoran♂";
+  return normalized;
+}
+
+// Only the six English ME06 two-piece printings have this catalog naming
+// convention. Each side is tied to its own exact provider card ID.
+const ME06_LEGENDARY_PIECES: Record<string, { name: string; side: "Left" | "Right" }> = {
+  "094": { name: "Legendary Pyroduct", side: "Left" },
+  "095": { name: "Legendary Pyroduct", side: "Right" },
+  "096": { name: "Legendary Summit", side: "Left" },
+  "097": { name: "Legendary Summit", side: "Right" },
+  "098": { name: "Legendary Trench", side: "Left" },
+  "099": { name: "Legendary Trench", side: "Right" },
+};
+
+function exactMe06LegendaryPiece(
+  job: RecoveryJob,
+  payload: Record<string, unknown>,
+  match: Record<string, unknown>
+): boolean {
+  if (job.language !== "EN" || job.set_id?.toLowerCase() !== "me06" ||
+      !["tcgdex-regional-exact-id", "tcgdex-regional-exact-set"].includes(String(payload.provider))) {
+    return false;
+  }
+  const printed = /^(\d{3})\/103$/.exec((job.card_number || "").trim());
+  if (!printed) return false;
+  const piece = ME06_LEGENDARY_PIECES[printed[1]];
+  if (!piece || job.external_id.toLowerCase() !== `me06-${printed[1]}/103`) return false;
+  if (job.card_name?.normalize("NFKC").trim() !==
+      `${piece.name} - ${printed[1]}/103 (${piece.side})`) return false;
+  if (match.name !== piece.name ||
+      String(match.id || "").toLowerCase() !== `me06-${printed[1]}` ||
+      String(match.cardNumber || "") !== printed[1]) return false;
+  const identity = payload.parsedIdentity;
+  if (!identity || typeof identity !== "object" || Array.isArray(identity)) return false;
+  const parsed = identity as Record<string, unknown>;
+  return parsed.originalName === job.card_name &&
+    String(parsed.language || "").toUpperCase() === "EN" &&
+    String(parsed.suppliedSetId || "").toLowerCase() === "me06" &&
+    String(parsed.resolvedSetId || "").toLowerCase() === "me06";
+}
+
 function exactMatch(
   job: RecoveryJob,
   payload: Record<string, unknown>
@@ -203,13 +250,24 @@ function exactMatch(
     typeof m.printedNumber === "string" ? m.printedNumber.trim() :
     typeof m.number === "string" ? m.number.trim() : "";
 
-  if (!name || !wantedName || !wantedSet || !wantedNumber ||
-      name !== wantedName || !number) {
+  if (!name || !wantedName || !wantedSet || !wantedNumber || !number) {
     return false;
   }
 
+  const regionalExactId = job.language === "EN" &&
+    payload.provider === "tcgdex-regional-exact-id";
+  // This is a separate, explicitly enumerated identity rule, not a
+  // generalized suffix-stripping or approximate name comparison.
+  if (exactMe06LegendaryPiece(job, payload, m)) return true;
+
+  const namesMatch = regionalExactId
+    ? exactRegionalName(name) === exactRegionalName(wantedName)
+    : name === wantedName;
+  if (!namesMatch) return false;
+
   // Preserve the original strict verification for all existing providers.
-  if (setId === wantedSet && number === wantedNumber) {
+  if (setId === wantedSet && number === wantedNumber &&
+      name === wantedName) {
     return true;
   }
 
@@ -252,7 +310,7 @@ function exactMatch(
   return Boolean(
     suppliedSet === wantedSet &&
     resolvedSet === wantedSet &&
-    originalName === wantedName &&
+    exactRegionalName(originalName) === exactRegionalName(wantedName) &&
     resolvedLanguage === "EN" &&
     sameLocalNumber &&
     exactProviderId
@@ -431,6 +489,17 @@ export async function processRecoveryJob(
       );
     }
 
+    if (result.reason === "optional-pokemon-tcg-api-not-configured") {
+      await saveJob(db, job, {
+        status: "unresolved",
+        next_attempt_at: null,
+        last_error: "Optional Pokémon TCG API fallback is not configured; requeue after configuration",
+        identity_verified: false,
+        rights_cleared: false,
+      });
+      return { external_id: job.external_id, status: "fallback-configuration-needed" };
+    }
+
     const raw =
       result.ok === true &&
       typeof result.imageUrl === "string"
@@ -483,6 +552,7 @@ export async function processRecoveryJob(
         catalog_set_name: catalogSetName || null,
         reason: result.reason ?? null,
         match: result.match ?? null,
+        parsed_identity: result.parsedIdentity ?? null,
         candidate_only: candidateOnly,
         identity_rule: verified
           ? "exact-name-set-number"
@@ -563,8 +633,14 @@ export async function processRecoveryJob(
 export async function runRecoveryBatch(
   db: RecoveryDb,
   limit: number,
-  origin: string
+  origin: string,
+  setId?: string
 ) {
+  const scopedSetId = setId?.trim();
+  if (setId !== undefined && !scopedSetId) {
+    throw new Error("Recovery set filter must be a nonempty set ID");
+  }
+
   const blocked = await cooldownUntil(db);
 
   if (blocked) {
@@ -577,7 +653,9 @@ export async function runRecoveryBatch(
 
   const { data, error } = await db.rpc(
     "claim_catalog_artwork_recovery_jobs",
-    { p_limit: limit }
+    scopedSetId
+      ? { p_limit: limit, p_set_id: scopedSetId }
+      : { p_limit: limit }
   );
 
   if (error) throw error;

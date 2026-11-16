@@ -6176,15 +6176,16 @@ export async function GET(request: NextRequest) {
       process.env.POKEMON_TCG_API_KEY;
 
     if (!apiKey) {
-      return NextResponse.json(
-        {
-          ok: false,
-          imageUrl: null,
-          error:
-            "Pokémon image fallback is not configured.",
-        },
-        { status: 503 }
-      );
+      // Earlier providers were already attempted. Missing an optional API key
+      // is not a provider outage and must not generate a retryable HTTP 503.
+      return NextResponse.json({
+        ok: false,
+        imageUrl: null,
+        provider: "pokemon-tcg-api",
+        reason: "optional-pokemon-tcg-api-not-configured",
+        tcgdexDiagnostics,
+        exactRegionalDiagnostics,
+      });
     }
 
     const safeName =
