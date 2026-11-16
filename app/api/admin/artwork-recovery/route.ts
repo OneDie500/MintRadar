@@ -1,26 +1,27 @@
-import { recoveryOrigin, runRecoveryBatch } from "@/lib/artwork-recovery-worker";
+
+import {
+  recoveryOrigin,
+  runRecoveryBatch,
+  processRecoveryJob,
+  type RecoveryJob,
+} from "@/lib/artwork-recovery-worker";
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const TABLE = "catalog_artwork_recovery_jobs";
 const MAX_ENQUEUE = 100;
 const MAX_RUN = 3;
 
-type Job = {
-  id: string;
-  category: string;
-  language: string;
-  data_source: string;
-  external_id: string;
-  set_id: string | null;
-  card_number: string | null;
-  card_name: string | null;
-  attempts: number;
-};
+const SINGLE_TEST_JOB_ID =
+  "d0f1cf9a-f8bd-41a3-8062-3a2f86007d1d";
+
+const SINGLE_TEST_EXTERNAL_ID = "M6-002";
+const SINGLE_TEST_BRANCH = "mobile-print-infrastructure";
 
 type CatalogCard = {
   external_id: string;
@@ -87,7 +88,6 @@ async function requireAdmin(
   }
 
   const supabase = getServerSupabase();
-
   const token = header.replace(/^Bearer\s+/i, "").trim();
 
   const { data, error } = await supabase.auth.getUser(token);
@@ -127,12 +127,6 @@ function integerWithin(
     : fallback;
 }
 
-function safeError(error: unknown): string {
-  return error instanceof Error
-    ? error.message.slice(0, 500)
-    : "Unknown recovery error";
-}
-
 function deriveSetId(card: CatalogCard): string | null {
   if (card.set_id) return card.set_id;
 
@@ -151,6 +145,35 @@ function deriveSetId(card: CatalogCard): string | null {
   return index > 0
     ? card.external_id.slice(0, index)
     : null;
+}
+
+function singleTestEnvironmentAllowed(): boolean {
+  return (
+    process.env.VERCEL_ENV === "preview" &&
+    process.env.VERCEL_GIT_COMMIT_REF ===
+      SINGLE_TEST_BRANCH &&
+    process.env.ARTWORK_RECOVERY_SINGLE_TEST_ENABLED ===
+      "true" &&
+    process.env.ARTWORK_RECOVERY_ENABLED !== "true"
+  );
+}
+
+function validSingleTestJob(job: RecoveryJob): boolean {
+  return (
+    job.id === SINGLE_TEST_JOB_ID &&
+    job.external_id === SINGLE_TEST_EXTERNAL_ID &&
+    job.category === "Pokemon" &&
+    job.language === "JP" &&
+    job.data_source === "tcgdex" &&
+    job.set_id === "M6" &&
+    job.card_number === "002" &&
+    job.card_name === "アメタマ" &&
+    typeof job.locked_at === "string" &&
+    job.locked_at.length > 0 &&
+    Number.isSafeInteger(job.attempts) &&
+    job.attempts >= 1 &&
+    job.attempts <= 5
+  );
 }
 
 export async function GET(request: NextRequest) {
@@ -187,7 +210,9 @@ export async function GET(request: NextRequest) {
 
     const { data, error } = await supabase
       .from(TABLE)
-      .select("id,external_id,language,set_id,card_number,card_name,status,attempts,discovered_image_url,discovered_source,identity_verified,rights_cleared,last_error,updated_at")
+      .select(
+        "id,external_id,language,set_id,card_number,card_name,status,attempts,discovered_image_url,discovered_source,identity_verified,rights_cleared,last_error,updated_at"
+      )
       .order("updated_at", { ascending: false })
       .limit(25);
 
@@ -247,17 +272,11 @@ async function enqueue(
     );
   }
 
-  // IMPORTANT:
-  // Missing artwork can be stored as NULL or an empty string.
-  // The original query only checked NULL, excluding thousands
-  // of valid recovery candidates.
-  //
-  // This query includes BOTH representations without changing
-  // existing catalog records.
-
   let query = supabase
     .from("cards")
-    .select("external_id,data_source,category,language,set_id,card_number,name,image_url")
+    .select(
+      "external_id,data_source,category,language,set_id,card_number,name,image_url"
+    )
     .eq("data_source", "tcgdex")
     .eq("category", "Pokemon")
     .eq("language", language)
@@ -300,7 +319,6 @@ async function enqueue(
     priority: 100,
   }));
 
-  // Existing jobs are preserved, including previous discoveries.
   const { error: insertError } = await supabase
     .from(TABLE)
     .upsert(jobs, {
@@ -326,7 +344,6 @@ async function run(
   supabase: AdminClient,
   body: Record<string, unknown>
 ) {
-  // Block admin-triggered processing until recovery is explicitly enabled.
   if (process.env.ARTWORK_RECOVERY_ENABLED !== "true") {
     return NextResponse.json({
       ok: true,
@@ -337,14 +354,195 @@ async function run(
   }
 
   const limit = integerWithin(body.limit, 3, MAX_RUN);
-  const configured = process.env.ARTWORK_RECOVERY_ORIGIN ?? "";
+  const configured =
+    process.env.ARTWORK_RECOVERY_ORIGIN ?? "";
+
   const origin = recoveryOrigin(configured);
-  const batch = await runRecoveryBatch(supabase, limit, origin);
-  return NextResponse.json({ ok: true, ...batch });
+  const batch = await runRecoveryBatch(
+    supabase,
+    limit,
+    origin
+  );
+
+  return NextResponse.json({
+    ok: true,
+    ...batch,
+  });
+}
+
+async function testSingle(
+  supabase: AdminClient,
+  body: Record<string, unknown>
+) {
+  if (!singleTestEnvironmentAllowed()) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Single-job recovery test is disabled.",
+      },
+      { status: 403 }
+    );
+  }
+
+  if (
+    body.jobId !== SINGLE_TEST_JOB_ID ||
+    Object.keys(body).some(
+      (key) => !["action", "jobId"].includes(key)
+    )
+  ) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Invalid single-job test request.",
+      },
+      { status: 400 }
+    );
+  }
+
+  // Read-only preflight: verify the exact job and catalog
+  // record before claiming anything.
+  const { data: existingJob, error: jobError } =
+    await supabase
+      .from(TABLE)
+      .select(
+        "id,external_id,status,attempts,data_source,category,language,set_id,card_number,card_name"
+      )
+      .eq("id", SINGLE_TEST_JOB_ID)
+      .maybeSingle();
+
+  if (jobError) throw jobError;
+
+  if (
+    !existingJob ||
+    existingJob.external_id !== SINGLE_TEST_EXTERNAL_ID ||
+    existingJob.status !== "pending" ||
+    existingJob.attempts !== 0 ||
+    existingJob.data_source !== "tcgdex" ||
+    existingJob.category !== "Pokemon" ||
+    existingJob.language !== "JP" ||
+    existingJob.set_id !== "M6" ||
+    existingJob.card_number !== "002" ||
+    existingJob.card_name !== "アメタマ"
+  ) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Test job is not in its expected initial state.",
+      },
+      { status: 409 }
+    );
+  }
+
+  const { data: card, error: cardError } =
+    await supabase
+      .from("cards")
+      .select("image_url")
+      .eq("data_source", "tcgdex")
+      .eq("category", "Pokemon")
+      .eq("language", "JP")
+      .eq("external_id", SINGLE_TEST_EXTERNAL_ID)
+      .maybeSingle();
+
+  if (cardError) throw cardError;
+
+  if (
+    !card ||
+    (typeof card.image_url === "string" &&
+      card.image_url.trim().length > 0)
+  ) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Test card is missing or already has artwork.",
+      },
+      { status: 409 }
+    );
+  }
+
+  const configured =
+    process.env.ARTWORK_RECOVERY_ORIGIN ?? "";
+
+  const origin = recoveryOrigin(configured);
+
+  // Require the resolver origin to be the exact known
+  // Preview alias, not Production or an arbitrary host.
+  const expectedOrigin =
+    "https://mint-radar-git-mobile-print-infrastructure-mint-radar.vercel.app";
+
+  if (origin !== expectedOrigin) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Recovery origin does not match the approved Preview.",
+      },
+      { status: 403 }
+    );
+  }
+
+  // This RPC claims only the explicitly supplied UUID.
+  const { data, error } = await supabase.rpc(
+    "claim_single_artwork_recovery_job",
+    {
+      p_job_id: SINGLE_TEST_JOB_ID,
+    }
+  );
+
+  if (error) throw error;
+
+  const jobs = (data ?? []) as RecoveryJob[];
+
+  if (jobs.length !== 1) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Target job was not eligible for claiming.",
+      },
+      { status: 409 }
+    );
+  }
+
+  const job = jobs[0];
+
+  if (!validSingleTestJob(job)) {
+    // Do not process an unexpected claimed record.
+    // An administrator must inspect/release the claim.
+    console.error(
+      "Unexpected claimed single-test job identity",
+      job.id
+    );
+
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "Claimed job failed identity validation. Manual review required.",
+      },
+      { status: 409 }
+    );
+  }
+
+  const result = await processRecoveryJob(
+    supabase,
+    job,
+    origin
+  );
+
+  return NextResponse.json({
+    ok: true,
+    mode: "single-job-test",
+    jobId: job.id,
+    externalId: job.external_id,
+    result,
+    note:
+      "Recovery discovery completed. Catalog artwork publication was not requested.",
+  });
 }
 
 export async function POST(request: NextRequest) {
   try {
+    // Reject targeted-test requests outside Preview before
+    // attempting privileged Supabase authentication.
+    // All actions still require administrator authentication.
     const auth = await requireAdmin(request);
 
     if (!auth.ok) return auth.response;
@@ -352,51 +550,42 @@ export async function POST(request: NextRequest) {
     let body: Record<string, unknown>;
 
     try {
-      const parsed: unknown =
-        await request.json();
+      const parsed: unknown = await request.json();
 
       if (
         !parsed ||
         typeof parsed !== "object" ||
         Array.isArray(parsed)
       ) {
-        throw new Error(
-          "Invalid JSON body"
-        );
+        throw new Error("Invalid JSON body");
       }
 
-      body = parsed as Record<
-        string,
-        unknown
-      >;
+      body = parsed as Record<string, unknown>;
     } catch {
       return NextResponse.json(
         {
-          error:
-            "A JSON object body is required.",
+          error: "A JSON object body is required.",
         },
         { status: 400 }
       );
     }
 
     if (body.action === "enqueue") {
-      return await enqueue(
-        auth.supabase,
-        body
-      );
+      return await enqueue(auth.supabase, body);
     }
 
     if (body.action === "run") {
-      return await run(
-        auth.supabase,
-        body
-      );
+      return await run(auth.supabase, body);
+    }
+
+    if (body.action === "test-single") {
+      return await testSingle(auth.supabase, body);
     }
 
     return NextResponse.json(
       {
         error:
-          "Use action 'enqueue' or 'run'.",
+          "Use action 'enqueue', 'run', or 'test-single'.",
       },
       { status: 400 }
     );
@@ -408,8 +597,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(
       {
-        error:
-          "Artwork recovery request failed.",
+        error: "Artwork recovery request failed.",
       },
       { status: 500 }
     );
