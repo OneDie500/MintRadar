@@ -1,4 +1,3 @@
-
 import {
   recoveryOrigin,
   runRecoveryBatch,
@@ -21,6 +20,13 @@ const SINGLE_TEST_JOB_ID =
   "d0f1cf9a-f8bd-41a3-8062-3a2f86007d1d";
 
 const SINGLE_TEST_EXTERNAL_ID = "M6-002";
+
+// Exact allowlist for a preview-only, two-job ME06 recovery test.
+const ME06_TEST_JOBS = [
+  { id: "5cd0f2fa-7755-4cf2-a96a-9a713d072254", externalId: "ME06-115/103", number: "115/103", name: "Azurill" },
+  { id: "8b9462b2-a353-4390-94cf-107aef632d1f", externalId: "ME06-138/103", number: "138/103", name: "Mega Rayquaza ex" },
+] as const;
+const ME06_TEST_ORIGIN = "https://mint-radar-git-mobile-print-infrastructure-mint-radar.vercel.app";
 const SINGLE_TEST_BRANCH = "mobile-print-infrastructure";
 
 type CatalogCard = {
@@ -122,12 +128,12 @@ function integerWithin(
 ): number {
   const number = Number(value);
 
-  return Number.isSafeInteger(number) && number >= 1
+  return Number.isSafeInteger(number) && number>= 1
     ? Math.min(number, max)
     : fallback;
 }
 
-function deriveSetId(card: CatalogCard): string | null {
+function deriveSetId(card: CatalogCard): string| null {
   if (card.set_id) return card.set_id;
 
   if (
@@ -161,7 +167,7 @@ function singleTestEnvironmentAllowed(): boolean {
 function validSingleTestJob(job: RecoveryJob): boolean {
   return (
     job.id === SINGLE_TEST_JOB_ID &&
-    job.external_id === SINGLE_TEST_EXTERNAL_ID &&
+    job.external_id === SINGLE_TEST_EXTERNAL_ID&&
     job.category === "Pokemon" &&
     job.language === "JP" &&
     job.data_source === "tcgdex" &&
@@ -176,7 +182,7 @@ function validSingleTestJob(job: RecoveryJob): boolean {
   );
 }
 
-export async function GET(request: NextRequest) {
+export async function GET(request: NextRequest){
   try {
     const auth = await requireAdmin(request);
 
@@ -227,7 +233,7 @@ export async function GET(request: NextRequest) {
     console.error("Artwork recovery GET:", error);
 
     return NextResponse.json(
-      { error: "Could not load artwork recovery status." },
+      { error: "Could not load artwork recoverystatus." },
       { status: 500 }
     );
   }
@@ -427,7 +433,7 @@ async function testSingle(
     return NextResponse.json(
       {
         ok: false,
-        error: "Test job is not in its expected initial state.",
+        error: "Test job is not in its expectedinitial state.",
       },
       { status: 409 }
     );
@@ -453,7 +459,7 @@ async function testSingle(
     return NextResponse.json(
       {
         ok: false,
-        error: "Test card is missing or already has artwork.",
+        error: "Test card is missing or alreadyhas artwork.",
       },
       { status: 409 }
     );
@@ -495,7 +501,7 @@ async function testSingle(
     return NextResponse.json(
       {
         ok: false,
-        error: "Target job was not eligible for claiming.",
+        error: "Target job was not eligible forclaiming.",
       },
       { status: 409 }
     );
@@ -535,6 +541,134 @@ async function testSingle(
     result,
     note:
       "Recovery discovery completed. Catalog artwork publication was not requested.",
+  });
+}
+
+// This test intentionally bypasses the general queue claim. The database RPC
+// atomically claims exactly the two allowlisted UUIDs, or neither of them.
+async function testMe06Pair(
+  supabase: AdminClient,
+  body: Record<string, unknown>
+) {
+  if (
+    process.env.VERCEL_ENV !== "preview" ||
+    process.env.VERCEL_GIT_COMMIT_REF !== SINGLE_TEST_BRANCH ||
+    process.env.ARTWORK_RECOVERY_ENABLED === "true" ||
+    process.env.ARTWORK_RECOVERY_ME06_TEST_ENABLED !== "true"
+  ) {
+    return NextResponse.json(
+      { ok: false, error: "ME06 pair test is disabled." },
+      { status: 403 }
+    );
+  }
+
+  if (
+    Object.keys(body).some((key) => key !== "action") ||
+    body.action !== "test-me06-pair"
+  ) {
+    return NextResponse.json(
+      { ok: false, error: "Invalid ME06 pair test request." },
+      { status: 400 }
+    );
+  }
+
+  const origin = recoveryOrigin(process.env.ARTWORK_RECOVERY_ORIGIN ?? "");
+  if (origin !== ME06_TEST_ORIGIN) {
+    return NextResponse.json(
+      { ok: false, error: "Recovery origin is not the approved preview." },
+      { status: 403 }
+    );
+  }
+
+  // Preflight is read-only. No attempt counters or locks change here.
+  const ids = ME06_TEST_JOBS.map((job) => job.id);
+  const { data: existing, error: preflightError } = await supabase
+    .from(TABLE)
+    .select("id,external_id,data_source,category,language,set_id,card_number,card_name,status,attempts,locked_at,identity_verified,rights_cleared,next_attempt_at")
+    .in("id", ids);
+  if (preflightError) throw preflightError;
+
+  const ready = ME06_TEST_JOBS.every((expected) => {
+    const job = (existing ?? []).find((item) => item.id === expected.id);
+    return job &&
+      job.external_id === expected.externalId &&
+      job.data_source === "tcgapi_verified" &&
+      job.category === "Pokemon" &&
+      job.language === "EN" &&
+      job.set_id === "ME06" &&
+      job.card_number === expected.number &&
+      job.card_name === expected.name &&
+      job.status === "pending" &&
+      job.attempts === 1 &&
+      job.locked_at === null &&
+      job.identity_verified === false &&
+      job.rights_cleared === false &&
+      (job.next_attempt_at === null || Date.parse(job.next_attempt_at) <= Date.now());
+  });
+  if (!ready || (existing ?? []).length !== 2) {
+    return NextResponse.json(
+      { ok: false, error: "ME06 test jobs no longer match their approved pending state." },
+      { status: 409 }
+    );
+  }
+
+  // Check the exact source catalog records before acquiring any claims.
+  for (const expected of ME06_TEST_JOBS) {
+    const { data: card, error: cardError } = await supabase
+      .from("cards")
+      .select("image_url,set_id,name")
+      .eq("data_source", "tcgapi_verified")
+      .eq("category", "Pokemon")
+      .eq("language", "EN")
+      .eq("external_id", expected.externalId)
+      .maybeSingle();
+    if (cardError) throw cardError;
+    if (!card || (card.set_id && card.set_id.toLowerCase() !== "me06") ||
+        card.name !== expected.name ||
+        (typeof card.image_url === "string" && card.image_url.trim())) {
+      return NextResponse.json(
+        { ok: false, error: `Catalog preflight failed for ${expected.externalId}.` },
+        { status: 409 }
+      );
+    }
+  }
+
+  // SQL enforces the same allowlist atomically to close preflight races.
+  const { data, error } = await supabase.rpc("claim_me06_artwork_recovery_test_pair");
+  if (error) throw error;
+  const jobs = (data ?? []) as Array<RecoveryJob & { status: string }>;
+  if (jobs.length !== 2 || !ME06_TEST_JOBS.every((expected) =>
+    jobs.some((job) => job.id === expected.id &&
+      job.external_id === expected.externalId &&
+      job.data_source === "tcgapi_verified" &&
+      job.category === "Pokemon" &&
+      job.language === "EN" &&
+      job.set_id === "ME06" &&
+      job.card_number === expected.number &&
+      job.card_name === expected.name &&
+      job.status === "processing" &&
+      job.attempts === 2 &&
+      typeof job.locked_at === "string" && !!job.locked_at)
+  )) {
+    // An unexpected claim must not be processed automatically.
+    console.error("ME06 test claim identity mismatch", jobs.map((job) => job.id));
+    return NextResponse.json(
+      { ok: false, error: "ME06 claim mismatch; inspect locks before retrying." },
+      { status: 409 }
+    );
+  }
+
+  const results = [];
+  for (const expected of ME06_TEST_JOBS) {
+    const job = jobs.find((item) => item.id === expected.id)!;
+    results.push(await processRecoveryJob(supabase, job, origin));
+  }
+  return NextResponse.json({
+    ok: true,
+    mode: "me06-exact-pair-test",
+    claimed: 2,
+    results,
+    note: "Discovery and identity verification only; no catalog publication or rights clearance.",
   });
 }
 
@@ -578,6 +712,10 @@ export async function POST(request: NextRequest) {
       return await run(auth.supabase, body);
     }
 
+    if (body.action === "test-me06-pair") {
+      return await testMe06Pair(auth.supabase, body);
+    }
+
     if (body.action === "test-single") {
       return await testSingle(auth.supabase, body);
     }
@@ -585,7 +723,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "Use action 'enqueue', 'run', or 'test-single'.",
+          "Use action 'enqueue', 'run', 'test-single', or 'test-me06-pair'.",
       },
       { status: 400 }
     );
