@@ -1396,6 +1396,7 @@ async function resolveJapaneseSetScopedImage({
     provider: "tcgdex-jp-set-scoped",
     match: {
       id: card.id,
+      setId,
       name:
         card.name ||
         matchedBrief.name ||
