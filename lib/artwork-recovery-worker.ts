@@ -182,49 +182,80 @@ function exactMatch(
 ): boolean {
   const match = payload.match;
 
-  if (
-    !match ||
-    typeof match !== "object" ||
-    Array.isArray(match)
-  ) {
+  if (!match || typeof match !== "object" || Array.isArray(match)) {
     return false;
   }
 
   const m = match as Record<string, unknown>;
-
   const name =
-    typeof m.name === "string"
-      ? m.name.normalize("NFKC").trim()
-      : "";
+    typeof m.name === "string" ? m.name.normalize("NFKC").trim() : "";
+  const wantedName = (job.card_name ?? "").normalize("NFKC").trim();
+  const wantedSet = (job.set_id ?? "").trim().toLowerCase();
+  const wantedNumber = (job.card_number ?? "").trim();
 
   const setIdValue =
-    typeof m.setId === "string"
-      ? m.setId
-      : typeof m.set_id === "string"
-        ? m.set_id
-        : "";
-
+    typeof m.setId === "string" ? m.setId :
+    typeof m.set_id === "string" ? m.set_id : "";
   const setId = setIdValue.trim().toLowerCase();
-
   const number =
-    typeof m.cardNumber === "string"
-      ? m.cardNumber.trim()
-      : typeof m.card_number === "string"
-        ? m.card_number.trim()
-        : typeof m.printedNumber === "string"
-          ? m.printedNumber.trim()
-          : typeof m.number === "string"
-            ? m.number.trim()
-            : "";
+    typeof m.cardNumber === "string" ? m.cardNumber.trim() :
+    typeof m.card_number === "string" ? m.card_number.trim() :
+    typeof m.printedNumber === "string" ? m.printedNumber.trim() :
+    typeof m.number === "string" ? m.number.trim() : "";
+
+  if (!name || !wantedName || !wantedSet || !wantedNumber ||
+      name !== wantedName || !number) {
+    return false;
+  }
+
+  // Preserve the original strict verification for all existing providers.
+  if (setId === wantedSet && number === wantedNumber) {
+    return true;
+  }
+
+  // TCGdex's exact regional card endpoint uses local IDs ("001") even when
+  // the marketplace catalog stores a printed number ("001/103"). The
+  // regional resolver reports its verified set in parsedIdentity rather than
+  // match.setId. Accept this representation ONLY for the exact-ID provider,
+  // after checking the resolver's independent card ID, set, and name evidence.
+  // This does not grant image rights or change JP/vintage matching rules.
+  if (job.language !== "EN" ||
+      payload.provider !== "tcgdex-regional-exact-id") {
+    return false;
+  }
+
+  const parsed = payload.parsedIdentity;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return false;
+  }
+  const identity = parsed as Record<string, unknown>;
+  const suppliedSet = typeof identity.suppliedSetId === "string"
+    ? identity.suppliedSetId.trim().toLowerCase() : "";
+  const resolvedSet = typeof identity.resolvedSetId === "string"
+    ? identity.resolvedSetId.trim().toLowerCase() : "";
+  const originalName = typeof identity.originalName === "string"
+    ? identity.originalName.normalize("NFKC").trim() : "";
+  const resolvedLanguage = typeof identity.language === "string"
+    ? identity.language.trim().toUpperCase() : "";
+  const providerCardId = typeof m.id === "string"
+    ? m.id.trim().toLowerCase() : "";
+
+  // Only compare a short local ID with the numerator of a complete printed
+  // number. Never accept loose partial matches, different sets, or a variant.
+  const printed = /^(\d+)\/(\d+)$/.exec(wantedNumber);
+  if (!printed || !/^\d+$/.test(number)) {
+    return false;
+  }
+  const sameLocalNumber = Number(printed[1]) === Number(number);
+  const exactProviderId = providerCardId === `${wantedSet}-${number.toLowerCase()}`;
 
   return Boolean(
-    name &&
-      setId &&
-      number &&
-      name ===
-        (job.card_name ?? "").normalize("NFKC").trim() &&
-      setId === (job.set_id ?? "").trim().toLowerCase() &&
-      number === (job.card_number ?? "").trim()
+    suppliedSet === wantedSet &&
+    resolvedSet === wantedSet &&
+    originalName === wantedName &&
+    resolvedLanguage === "EN" &&
+    sameLocalNumber &&
+    exactProviderId
   );
 }
 
@@ -254,7 +285,7 @@ export async function processRecoveryJob(
 
     const { data: card, error: cardError } = await db
       .from("cards")
-      .select("image_url")
+      .select("image_url,set_name,set_id,name")
       .eq("data_source", job.data_source)
       .eq("category", job.category)
       .eq("language", job.language)
@@ -265,6 +296,16 @@ export async function processRecoveryJob(
 
     if (!card) {
       return await fail("Catalog card no longer exists");
+    }
+
+    // Use the catalog's existing expansion identity. Never invent a set name
+    // from a set code or silently substitute a similarly named expansion.
+    const catalogSetName =
+      typeof card.set_name === "string" ? card.set_name.trim() : "";
+    const catalogSetId =
+      typeof card.set_id === "string" ? card.set_id.trim() : "";
+    if (catalogSetId && catalogSetId.toLowerCase() !== (job.set_id ?? "").trim().toLowerCase()) {
+      return await fail("Recovery job set ID no longer matches catalog");
     }
 
     if (
@@ -314,6 +355,7 @@ export async function processRecoveryJob(
     const params = new URLSearchParams({
       name: job.card_name,
       setId: job.set_id,
+      ...(catalogSetName ? { setName: catalogSetName } : {}),
       cardNumber: job.card_number,
       language: job.language,
     });
@@ -438,6 +480,7 @@ export async function processRecoveryJob(
       rights_cleared: false,
       diagnostics: {
         provider: result.provider ?? null,
+        catalog_set_name: catalogSetName || null,
         reason: result.reason ?? null,
         match: result.match ?? null,
         candidate_only: candidateOnly,

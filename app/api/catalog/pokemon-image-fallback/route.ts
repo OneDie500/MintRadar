@@ -1567,11 +1567,11 @@ function extractOfficialJapanDetailImage(
 
   const patterns = [
     new RegExp(
-      `https://www\\.pokemon-card\\.com/assets/images/card_images/large/${escapedSet}/[^"'<>\\\\s]+\\.(?:jpg|jpeg|png|webp)`,
+      `https://www\\.pokemon-card\\.com/assets/images/card_images/large/${escapedSet}/[^"'<>\\s]+\\.(?:jpg|jpeg|png|webp)`,
       "i"
     ),
     new RegExp(
-      `/assets/images/card_images/large/${escapedSet}/[^"'<>\\\\s]+\\.(?:jpg|jpeg|png|webp)`,
+      `/assets/images/card_images/large/${escapedSet}/[^"'<>\\s]+\\.(?:jpg|jpeg|png|webp)`,
       "i"
     ),
   ];
@@ -1700,6 +1700,334 @@ async function resolveOfficialJapanesePromoDetail({
   };
 }
 
+// Verified official Japanese print identity for the BW8a Spiral Force Glaceon.
+// This is a discovery identity, not an artwork override or rights grant.
+const VERIFIED_OFFICIAL_JP_PRINTS: Record<string, {
+  officialSetId: string;
+  officialCardId: string;
+  japaneseName: string;
+  printedNumber: string;
+}> = {
+  "BW8A:012": {
+    officialSetId: "BW8-Brf",
+    officialCardId: "28525",
+    japaneseName: "グレイシア",
+    printedNumber: "012/051",
+  },
+};
+
+async function resolveVerifiedOfficialJapanesePrint(
+  setId: string,
+  cardNumber: string,
+  name: string
+) {
+  const key = `${setId.trim().toUpperCase()}:${shortCardNumber(cardNumber).padStart(3, "0")}`;
+  const record = VERIFIED_OFFICIAL_JP_PRINTS[key];
+  if (!record) return null;
+  // Never return this artwork for a different requested card name.
+  if (name.normalize("NFKC").trim() !== record.japaneseName &&
+      normalize(name) !== "glaceon") return null;
+  const requestedFull = normalizePrintedCollectorNumber(cardNumber);
+  if (requestedFull.includes("/") && requestedFull !== record.printedNumber) return null;
+  const html = await fetchOfficialJapanDetail(record.officialCardId);
+  if (!html) return null;
+  if (!officialJapanDetailMatchesIdentity({
+    html, setId: record.officialSetId, cardNumber: record.printedNumber,
+  })) return null;
+  const heading = html.match(/<h1\b[^>]*class=["'][^"']*\bHeading1\b[^"']*["'][^>]*>([^<]*)<\/h1>/i);
+  if (!heading || heading[1].replace(/&nbsp;/g, " ").normalize("NFKC").trim() !== record.japaneseName) return null;
+  const imageUrl = extractOfficialJapanDetailImage(html, record.officialSetId);
+  if (!imageUrl) return null;
+  return {
+    imageUrl,
+    provider: "pokemon-japan-official-verified-print",
+    match: {
+      id: record.officialCardId, name: record.japaneseName,
+      setId, officialSetId: record.officialSetId,
+      cardNumber, printedNumber: record.printedNumber,
+    },
+    testingOnly: true,
+    rightsCleared: false,
+  };
+}
+
+
+// Set-scoped discovery: this alias is verified at the expansion level, not
+// a per-card artwork override. Add future aliases only after confirming the
+// official expansion identity independently.
+const VERIFIED_OFFICIAL_JP_SET_ALIASES: Record<string, string> = {
+  BW8A: "BW8-Brf",
+};
+
+async function discoverVerifiedOfficialJapaneseSetPrint({
+  setId,
+  cardNumber,
+  japaneseName,
+  diagnostics,
+}: {
+  setId: string;
+  cardNumber: string;
+  japaneseName: string | null;
+  diagnostics?: Record<string, unknown>;
+}) {
+  const officialSetId = VERIFIED_OFFICIAL_JP_SET_ALIASES[setId.trim().toUpperCase()];
+  if (!officialSetId || !japaneseName?.trim()) return null;
+
+  const normalizedNumber = normalizePrintedCollectorNumber(cardNumber);
+  const numberMatch = shortCardNumber(cardNumber).match(/^0*(\d+)$/);
+  if (!numberMatch) return null;
+
+  const expectedName = japaneseName.normalize("NFKC").trim();
+  // A Japanese source name is mandatory. Never accept a number-only match.
+  if (!/[\u3040-\u30ff\u3400-\u9fff]/u.test(expectedName)) return null;
+
+  if (diagnostics) {
+    diagnostics.officialAliasDiscovery = {
+      officialSetId,
+      expectedJapaneseName: expectedName,
+      attempted: true,
+      searched: 0,
+      checked: 0,
+      outcome: "searching",
+    };
+  }
+  const trace = diagnostics?.officialAliasDiscovery as Record<string, unknown> | undefined;
+
+  // Search by exact Japanese catalog name within the verified official set.
+  // Never trust the result title, thumbnail or order as proof of identity.
+  const seen = new Set<string>();
+  for (let page = 1; page <= 5; page++) {
+    const url = new URL("https://www.pokemon-card.com/card-search/resultAPI.php");
+    url.searchParams.set("keyword", expectedName);
+    url.searchParams.set("se_ta", "");
+    url.searchParams.set("regulation_sidebar_form", "all");
+    url.searchParams.set("illust", "");
+    url.searchParams.set("sm_and_keyword", "true");
+    url.searchParams.set("pg", officialSetId);
+    url.searchParams.set("page", String(page));
+
+    let payload: PokemonJapanSearchResponse | null = null;
+    // Retry only transient provider errors; no unbounded crawling.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 7000);
+      try {
+        const response = await fetch(url.toString(), {
+          headers: {
+            Accept: "application/json, text/javascript, */*; q=0.01",
+            "Accept-Language": "ja,en-US;q=0.9",
+            Referer: "https://www.pokemon-card.com/card-search/",
+            "X-Requested-With": "XMLHttpRequest",
+            "User-Agent": "Mozilla/5.0",
+          },
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (response.ok) {
+          payload = (await response.json()) as PokemonJapanSearchResponse;
+          break;
+        }
+        if (response.status !== 429 && response.status < 500) break;
+      } catch {
+        // A single retry is allowed for network timeouts.
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    if (trace) trace.searched = Number(trace.searched || 0) + 1;
+    if (!payload || !Array.isArray(payload.cardList)) {
+      if (trace) trace.outcome = "official-search-unavailable";
+      return null;
+    }
+    for (const candidate of payload.cardList.slice(0, 30)) {
+      if (candidate.cardID == null) continue;
+      const id = String(candidate.cardID);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const html = await fetchOfficialJapanDetail(id);
+      if (!html) continue;
+      if (trace) trace.checked = Number(trace.checked || 0) + 1;
+
+      if (!officialJapanDetailMatchesIdentity({
+        html, setId: officialSetId, cardNumber: normalizedNumber,
+      })) continue;
+
+      const heading = html.match(/<h1\b[^>]*class=["'][^"']*\bHeading1\b[^"']*["'][^>]*>([^<]*)<\/h1>/i);
+      if (!heading || heading[1].replace(/&nbsp;/g, " ").normalize("NFKC").trim() !== expectedName) continue;
+
+      // If the caller supplied a full number, the existing identity checker
+      // already requires the exact denominator; short numbers are not expanded.
+      const imageUrl = extractOfficialJapanDetailImage(html, officialSetId);
+      if (!imageUrl) continue;
+      if (trace) {
+        trace.outcome = "verified";
+        trace.cardId = id;
+      }
+      return {
+        imageUrl,
+        provider: "pokemon-japan-official-verified-set-discovery",
+        match: {
+          id,
+          name: expectedName,
+          setId,
+          officialSetId,
+          cardNumber,
+        },
+        testingOnly: true,
+        rightsCleared: false,
+      };
+    }
+    const maxPage = typeof payload.maxPage === "number" ? payload.maxPage : 1;
+    if (page >= maxPage || payload.cardList.length === 0) break;
+  }
+  if (trace) trace.outcome = "no-exact-name-set-number-image-match";
+  return null;
+}
+
+// Bounded official expansion browse for special prints omitted by keyword search.
+// This is intentionally generic for verified official JP set aliases. Search
+// results and image thumbnails are NEVER accepted as identity evidence.
+async function discoverOfficialJapaneseSpecialPrintBySetBrowse({
+  setId, cardNumber, japaneseName, diagnostics,
+}: {
+  setId: string;
+  cardNumber: string;
+  japaneseName: string | null;
+  diagnostics?: Record<string, unknown>;
+}) {
+  const officialSetId = VERIFIED_OFFICIAL_JP_SET_ALIASES[setId.trim().toUpperCase()];
+  const wantedName = japaneseName?.normalize("NFKC").trim() || "";
+  const wantedNumber = normalizePrintedCollectorNumber(cardNumber);
+  if (!officialSetId || !/^\d{1,3}(?:\/\d{1,3})?$/.test(wantedNumber) ||
+      !/[\u3040-\u30ff\u3400-\u9fff]/u.test(wantedName)) return null;
+  const trace: Record<string, unknown> = {
+    officialSetId, method: "bounded-official-set-browse", pages: 0,
+    candidates: 0, detailsChecked: 0, exactPrints: 0,
+    outcome: "searching",
+  };
+  if (diagnostics) diagnostics.officialSpecialPrintDiscovery = trace;
+  const seen = new Set<string>();
+  trace.searchModes = [];
+  trace.nameHintsSkipped = 0;
+  trace.detailFetchFailures = 0;
+  for (const mode of ["set-browse", "name-in-set", "printed-number-in-set"] as const) {
+  (trace.searchModes as string[]).push(mode);
+  for (let page = 1; page <= 4; page++) {
+    const url = new URL("https://www.pokemon-card.com/card-search/resultAPI.php");
+    url.searchParams.set("keyword", mode === "name-in-set" ? wantedName : mode === "printed-number-in-set" ? wantedNumber : "");
+    url.searchParams.set("se_ta", "");
+    url.searchParams.set("regulation_sidebar_form", "all");
+    url.searchParams.set("illust", "");
+    url.searchParams.set("sm_and_keyword", "true");
+    url.searchParams.set("pg", officialSetId);
+    url.searchParams.set("page", String(page));
+    const payload = await fetchJsonWithTimeout<PokemonJapanSearchResponse>(url.toString(), 7000);
+    trace.pages = Number(trace.pages) + 1;
+    if (!payload || !Array.isArray(payload.cardList)) {
+      trace.outcome = "official-search-mode-unavailable";
+      break;
+    }
+    for (const candidate of payload.cardList.slice(0, 30)) {
+      if (candidate.cardID == null) continue;
+      const id = String(candidate.cardID);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      trace.candidates = Number(trace.candidates) + 1;
+      // A name hint reduces requests; never use it as final verification.
+      const hint = candidate.cardNameAltText?.normalize("NFKC").trim();
+      if (hint && hint !== wantedName) {
+        trace.nameHintsSkipped = Number(trace.nameHintsSkipped) + 1;
+        continue;
+      }
+      const html = await fetchOfficialJapanDetail(id);
+      trace.detailsChecked = Number(trace.detailsChecked) + 1;
+      if (!html) trace.detailFetchFailures = Number(trace.detailFetchFailures) + 1;
+      if (!html || !officialJapanDetailMatchesIdentity({
+        html, setId: officialSetId, cardNumber: wantedNumber,
+      })) continue;
+      const heading = html.match(/<h1\b[^>]*class=["'][^"']*\bHeading1\b[^"']*["'][^>]*>([^<]*)<\/h1>/i);
+      if (!heading || heading[1].replace(/&nbsp;/g, " ").normalize("NFKC").trim() !== wantedName) continue;
+      trace.exactPrints = Number(trace.exactPrints) + 1;
+      const imageUrl = extractOfficialJapanDetailImage(html, officialSetId);
+      if (!imageUrl) continue;
+      trace.outcome = "verified";
+      trace.cardId = id;
+      return {
+        imageUrl,
+        provider: "pokemon-japan-official-special-print-set-browse-verified",
+        match: { id, name: wantedName, setId, officialSetId, cardNumber },
+        testingOnly: true,
+        rightsCleared: false,
+      };
+    }
+    if (!payload.cardList.length ||
+        (typeof payload.maxPage === "number" && page >= payload.maxPage)) break;
+  }
+  }
+  trace.outcome = "no-exact-special-print-in-bounded-official-search";
+  return null;
+}
+
+// Bounded historical-set detail discovery. A verified official set anchor is
+// only a search starting point, NEVER proof of a card identity or image URL.
+// Each candidate must independently pass official set, printed collector
+// number, Japanese heading and official image extraction checks.
+async function discoverOfficialJapanesePrintNearVerifiedSetAnchor({
+  setId, cardNumber, japaneseName, diagnostics,
+}: {
+  setId: string;
+  cardNumber: string;
+  japaneseName: string | null;
+  diagnostics?: Record<string, unknown>;
+}) {
+  const officialSetId = VERIFIED_OFFICIAL_JP_SET_ALIASES[setId.trim().toUpperCase()];
+  const anchor = setId.trim().toUpperCase() === "BW8A"
+    ? { firstNumber: 1, firstOfficialCardId: 28514, maxNumber: 58 }
+    : null;
+  const short = shortCardNumber(cardNumber);
+  const numberMatch = /^0*(\d+)$/.exec(short);
+  const name = japaneseName?.normalize("NFKC").trim() || "";
+  if (!officialSetId || !anchor || !numberMatch ||
+      !/[\u3040-\u30ff\u3400-\u9fff]/u.test(name)) return null;
+  const number = Number(numberMatch[1]);
+  if (number < anchor.firstNumber || number > anchor.maxNumber) return null;
+  const requested = normalizePrintedCollectorNumber(cardNumber);
+  const candidateCenter = anchor.firstOfficialCardId + number - anchor.firstNumber;
+  const candidates = [candidateCenter];
+  // Nearby official records may have gaps or variant-dependent ordering.
+  for (let delta = 1; delta <= 12; delta++) {
+    candidates.push(candidateCenter + delta, candidateCenter - delta);
+  }
+  const trace: Record<string, unknown> = {
+    method: "bounded-verified-set-anchor-candidates",
+    officialSetId, checked: 0, outcome: "searching",
+  };
+  if (diagnostics) diagnostics.officialAnchorDiscovery = trace;
+  for (const id of candidates) {
+    if (id <= 0) continue;
+    const html = await fetchOfficialJapanDetail(String(id));
+    trace.checked = Number(trace.checked) + 1;
+    if (!html || !officialJapanDetailMatchesIdentity({
+      html, setId: officialSetId, cardNumber: requested,
+    })) continue;
+    const heading = html.match(/<h1\b[^>]*class=["'][^"']*\bHeading1\b[^"']*["'][^>]*>([^<]*)<\/h1>/i);
+    if (!heading || heading[1].replace(/&nbsp;/g, " ").normalize("NFKC").trim() !== name) continue;
+    const imageUrl = extractOfficialJapanDetailImage(html, officialSetId);
+    if (!imageUrl) continue;
+    trace.outcome = "verified";
+    trace.cardId = String(id);
+    return {
+      imageUrl,
+      provider: "pokemon-japan-official-verified-anchor-discovery",
+      match: { id: String(id), name, setId, officialSetId, cardNumber },
+      testingOnly: true,
+      rightsCleared: false,
+    };
+  }
+  trace.outcome = "no-exact-official-print-found";
+  return null;
+}
+
 async function resolveOfficialPokemonJapanImage({
   setId,
   cardNumber,
@@ -1732,6 +2060,25 @@ async function resolveOfficialPokemonJapanImage({
     report("missing-set-id-number-or-name");
     return null;
   }
+
+  // Narrow verified-print bootstrap. No catalog writes or bulk discovery.
+  const verifiedPrint = await resolveVerifiedOfficialJapanesePrint(setId, cardNumber, name);
+  if (verifiedPrint) {
+    if (diagnostics) {
+      diagnostics.verifiedIdentities = 1;
+      diagnostics.imageCandidates = 1;
+      diagnostics.outcome = "verified-official-print-found";
+      diagnostics.officialSetId = verifiedPrint.match.officialSetId;
+    }
+    return verifiedPrint;
+  }
+
+  // Read-only fallback for missing historical prints. Candidate IDs are
+  // searched, never trusted without exact official page identity verification.
+  const anchorDiscovery = await discoverOfficialJapanesePrintNearVerifiedSetAnchor({
+    setId, cardNumber, japaneseName: name, diagnostics,
+  });
+  if (anchorDiscovery) return anchorDiscovery;
 
   const requestedShort =
     shortCardNumber(cardNumber)
@@ -1815,6 +2162,24 @@ async function resolveOfficialPokemonJapanImage({
     diagnostics.tcgdexSetCardCount = Array.isArray(setDetail?.cards) ? setDetail.cards.length : null;
     diagnostics.providerSourceName = sourceCard?.name || null;
   }
+
+  // Alias discovery uses a provider-confirmed Japanese name and an official
+  // set-code mapping. Failure is read-only and falls through to legacy paths.
+  const discoveredOfficialPrint = await discoverVerifiedOfficialJapaneseSetPrint({
+    setId,
+    cardNumber,
+    japaneseName: sourceCard?.name || (/[^\x00-\x7f]/.test(name) ? name : null),
+    diagnostics,
+  });
+  if (discoveredOfficialPrint) return discoveredOfficialPrint;
+
+  // The official keyword index can omit historical secret and full-art prints.
+  // Browse only the independently verified official expansion and accept an
+  // image only after exact set, printed number, and Japanese name verification.
+  const specialSetBrowse = await discoverOfficialJapaneseSpecialPrintBySetBrowse({
+    setId, cardNumber, japaneseName: sourceCard?.name || (/[^\x00-\x7f]/.test(name) ? name : null), diagnostics,
+  });
+  if (specialSetBrowse) return specialSetBrowse;
 
   // An official card can be absent from the name index while still being
   // searchable by its printed collector number. Search that number inside
@@ -4671,6 +5036,7 @@ async function resolveMintTcgApiMissingArtwork(input: {
   cardNumber: string | null;
   language: string;
   candidateOnly?: boolean;
+  setId?: string | null;
 }) {
   const apiKey = process.env.TCG_API_KEY;
   if (!apiKey || !input.name || !input.setName || !input.cardNumber) return null;
@@ -4693,6 +5059,16 @@ async function resolveMintTcgApiMissingArtwork(input: {
       next: { revalidate: 43200 },
       signal: controller.signal,
     });
+    if (response.status === 429) {
+      return {
+        ok: false,
+        imageUrl: null,
+        provider: "tcgapi",
+        upstreamStatus: 429,
+        reason: "tcgapi-rate-limited",
+        retryAfter: response.headers.get("retry-after"),
+      };
+    }
     if (!response.ok) return null;
     const payload = await response.json() as {
       data?: MintTcgApiCard[];
@@ -4733,6 +5109,7 @@ async function resolveMintTcgApiMissingArtwork(input: {
         id: match.id || null,
         name: match.name || null,
         setName: match.set_name || null,
+        setId: input.setId || null,
         cardNumber: match.number || null,
         printing: match.printing || null,
       },
@@ -4748,6 +5125,101 @@ async function resolveMintTcgApiMissingArtwork(input: {
   } finally {
     clearTimeout(timer);
   }
+}
+
+
+// BW8a independent image discovery. Development-only candidate evidence.
+// Source page supplies image URL + exact Japanese name + printed number.
+// HTTP validation proves an image was served, NOT that its art or rights are cleared.
+async function resolveBw8aIndependentCandidate(input: {
+  setId: string | null;
+  setName: string | null;
+  cardNumber: string | null;
+  name: string;
+}) {
+  const setId = (input.setId || "").trim().toLowerCase();
+  const setLabel = normalizeMetadataText(input.setName || "");
+  if (setId !== "bw8a" && !(setId === "" && ["spiral force", "bw8a spiral force"].includes(setLabel))) return null;
+  const printed = (input.cardNumber || "").trim();
+  const m = printed.match(/^(0?(?:5[2-8]))(?:\/051)?$/);
+  if (!m) return null;
+  const number = Number(m[1]);
+  const identities: Record<number, { jp: string; en: string }> = {
+    52: { jp: "ヒードランEX", en: "Heatran EX" },
+    53: { jp: "デオキシスEX", en: "Deoxys EX" },
+    54: { jp: "ラティオスEX", en: "Latios EX" },
+    55: { jp: "ゲーチス", en: "Ghetsis" },
+    56: { jp: "エンペルト", en: "Empoleon" },
+    57: { jp: "シンボラー", en: "Sigilyph" },
+    58: { jp: "ハイパーボール", en: "Ultra Ball" },
+  };
+  const identity = identities[number];
+  const normalizeIdentity = (value: string) => value.normalize("NFKC")
+    .toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  if (![identity.jp, identity.en].some((n) => normalizeIdentity(n) === normalizeIdentity(input.name))) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const source = await fetch("https://binderboss.io/sets/bw8s_ja", {
+      cache: "no-store", redirect: "error", signal: controller.signal,
+      headers: { Accept: "text/html" },
+    });
+    if (!source.ok) return null;
+    const html = await source.text();
+    // Read the image's OWN alt attribute, never text near a different card.
+    const matches = [...html.matchAll(/<img\b[^>]*>/gi)];
+    const exact = matches.flatMap(([tag]) => {
+      const attrs: Record<string, string> = {};
+      for (const attr of tag.matchAll(/([\w:-]+)\s*=\s*(["'])([\s\S]*?)\2/g)) {
+        attrs[attr[1].toLowerCase()] = attr[3].replace(/&amp;/g, "&");
+      }
+      const alt = (attrs.alt || "").normalize("NFKC");
+      const numberMatch = alt.match(/#\s*(\d{1,3})\s*\/\s*(\d{1,3})/);
+      if (!numberMatch || Number(numberMatch[1]) !== number || Number(numberMatch[2]) !== 51) return [];
+      if (!alt.includes(identity.jp) || !normalizeIdentity(alt).includes(normalizeIdentity(identity.en))) return [];
+      const raw = attrs.src || attrs["data-src"];
+      if (!raw) return [];
+      try {
+        const url = new URL(raw, "https://binderboss.io");
+        if (url.protocol !== "https:" || url.hostname !== "images.scrydex.com" ||
+            url.username || url.password || url.search || url.hash ||
+            !new RegExp(`^/pokemon/bw8s_ja-${number}/(?:small|large|high)$`, "i").test(url.pathname)) return [];
+        return [{ url: url.toString(), alt }];
+      } catch { return []; }
+    });
+    if (exact.length !== 1) return null;
+    const response = await fetch(exact[0].url, {
+      method: "GET", cache: "no-store", redirect: "error", signal: controller.signal,
+      headers: { Range: "bytes=0-65535", Accept: "image/*" },
+    });
+    if (!response.ok) return null;
+    const mime = (response.headers.get("content-type") || "").split(";")[0].toLowerCase();
+    if (!["image/jpeg", "image/png", "image/webp"].includes(mime)) {
+      await response.body?.cancel();
+      return null;
+    }
+    const reader = response.body?.getReader();
+    if (!reader) return null;
+    const chunk = await reader.read();
+    await reader.cancel();
+    if (!chunk.value?.length) return null;
+    return {
+      imageUrl: exact[0].url,
+      provider: "binderboss-scrydex-bw8a-independent-candidate",
+      match: { setId: "BW8a", setName: "Spiral Force", cardNumber: String(number).padStart(3, "0"),
+        printedNumber: `${String(number).padStart(3, "0")}/051`, name: identity.en, japaneseName: identity.jp },
+      sourceUrl: "https://binderboss.io/sets/bw8s_ja",
+      sourceAlt: exact[0].alt,
+      imageHttpVerified: true,
+      identityMetadataMatched: true,
+      identityVerified: false,
+      artworkVerified: false,
+      rightsCleared: false,
+      requiresManualReview: true,
+      testingOnly: true,
+    };
+  } catch { return null; }
+  finally { clearTimeout(timer); }
 }
 
 export async function GET(request: NextRequest) {
@@ -5360,6 +5832,23 @@ export async function GET(request: NextRequest) {
         }
       }
 
+      // Explicit research mode; does not change ordinary image resolution.
+      if (process.env.NODE_ENV === "development" &&
+          request.nextUrl.searchParams.get("independentCandidate") === "1") {
+        const independent = await resolveBw8aIndependentCandidate({
+          setId: suppliedSetId, setName: resolverSetName,
+          cardNumber, name: canonicalName,
+        });
+        if (independent) return NextResponse.json({ ok: true, ...independent }, {
+          headers: { "Cache-Control": "private, no-store" },
+        });
+        return NextResponse.json({ ok: false, imageUrl: null,
+          provider: "binderboss-scrydex-bw8a-independent-candidate",
+          reason: "no-exact-source-metadata-and-image-http-match",
+          testingOnly: true,
+        }, { headers: { "Cache-Control": "private, no-store" } });
+      }
+
       // Critical safety rule: an explicit JP provider setId is authoritative.
       // Never fall through to a global localId search when we know the set.
       const recognizedJpSet =
@@ -5426,7 +5915,7 @@ export async function GET(request: NextRequest) {
             language: tcgdexLanguage,
             candidateOnly: true,
           });
-          if (tcgApiCandidate) {
+          if (tcgApiCandidate?.ok === true) {
             return NextResponse.json(tcgApiCandidate, {
               headers: { "Cache-Control": "private, no-store" },
             });
@@ -5671,10 +6160,13 @@ export async function GET(request: NextRequest) {
     const tcgApiArtwork = await resolveMintTcgApiMissingArtwork({
       name: canonicalName,
       setName: resolverSetName,
+      setId: suppliedSetId,
       cardNumber,
       language: tcgdexLanguage,
     });
-    if (tcgApiArtwork) return NextResponse.json(tcgApiArtwork);
+    if (tcgApiArtwork) return NextResponse.json(tcgApiArtwork, {
+      status: tcgApiArtwork.ok === false && tcgApiArtwork.upstreamStatus === 429 ? 429 : 200,
+    });
 
     // -----------------------------------------
     // POKEMON TCG API FALLBACK
