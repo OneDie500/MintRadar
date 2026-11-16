@@ -637,8 +637,12 @@ export async function runRecoveryBatch(
   setId?: string
 ) {
   const scopedSetId = setId?.trim();
-  if (setId !== undefined && !scopedSetId) {
-    throw new Error("Recovery set filter must be a nonempty set ID");
+  // Fail closed for all callers, including older cron routes.
+  if (!scopedSetId || !/^[\w-]{1,80}$/.test(scopedSetId)) {
+    throw new Error("Recovery batch requires a valid explicit set ID");
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 3) {
+    throw new Error("Recovery batch limit must be between 1 and 3");
   }
 
   const blocked = await cooldownUntil(db);
@@ -653,9 +657,7 @@ export async function runRecoveryBatch(
 
   const { data, error } = await db.rpc(
     "claim_catalog_artwork_recovery_jobs",
-    scopedSetId
-      ? { p_limit: limit, p_set_id: scopedSetId }
-      : { p_limit: limit }
+    { p_limit: limit, p_set_id: scopedSetId }
   );
 
   if (error) throw error;

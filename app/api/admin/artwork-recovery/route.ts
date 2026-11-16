@@ -350,6 +350,16 @@ async function run(
   supabase: AdminClient,
   body: Record<string, unknown>
 ) {
+  // Validate scope before checking the global feature flag, so missing or
+  // malformed scope is never silently accepted as a valid run request.
+  const setId = typeof body.setId === "string" ? body.setId.trim() : "";
+  if (!/^[\w-]{1,80}$/.test(setId)) {
+    return NextResponse.json(
+      { ok: false, error: "A valid explicit setId is required for recovery runs." },
+      { status: 400 }
+    );
+  }
+
   if (process.env.ARTWORK_RECOVERY_ENABLED !== "true") {
     return NextResponse.json({
       ok: true,
@@ -367,7 +377,8 @@ async function run(
   const batch = await runRecoveryBatch(
     supabase,
     limit,
-    origin
+    origin,
+    setId
   );
 
   return NextResponse.json({
