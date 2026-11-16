@@ -1,40 +1,56 @@
+
 import { timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { recoveryDb, recoveryOrigin, runRecoveryBatch } from "@/lib/artwork-recovery-worker";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+/**
+ * Scheduled artwork recovery is intentionally paused.
+ *
+ * Artwork recovery must remain explicitly set-scoped.
+ * This endpoint must not enqueue or process jobs across
+ * the entire catalog.
+ *
+ * Controlled recovery remains available through the
+ * authenticated admin route.
+ */
 function authorized(request: NextRequest): boolean {
   const secret = process.env.CRON_SECRET;
   const header = request.headers.get("authorization") ?? "";
-  if (!secret || !header.startsWith("Bearer ")) return false;
+
+  if (!secret || !header.startsWith("Bearer ")) {
+    return false;
+  }
+
   const received = Buffer.from(header.slice(7), "utf8");
   const expected = Buffer.from(secret, "utf8");
-  return received.length === expected.length && timingSafeEqual(received, expected);
+
+  return (
+    received.length === expected.length &&
+    timingSafeEqual(received, expected)
+  );
 }
 
 async function handle(request: NextRequest) {
   if (!authorized(request)) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json(
+      { ok: false, error: "Unauthorized" },
+      { status: 401 }
+    );
   }
 
-  if (process.env.ARTWORK_RECOVERY_ENABLED !== "true") {
-    return NextResponse.json({ ok: true, enabled: false, enqueued: 0, claimed: 0 });
-  }
-
-  try {
-    const db = recoveryDb();
-    const origin = recoveryOrigin(process.env.ARTWORK_RECOVERY_ORIGIN ?? "");
-    const { data: enqueued, error } = await db.rpc("enqueue_catalog_artwork_recovery_jobs", { p_limit: 12 });
-    if (error) throw error;
-    const batch = await runRecoveryBatch(db, 2, origin);
-    return NextResponse.json({ ok: true, enabled: true, enqueued: enqueued ?? 0, ...batch });
-  } catch (error) {
-    console.error("Scheduled artwork recovery failed", error);
-    return NextResponse.json({ ok: false, error: "Scheduled artwork recovery failed" }, { status: 500 });
-  }
+  return NextResponse.json({
+    ok: true,
+    enabled: false,
+    scheduledRecovery: false,
+    reason:
+      "Scheduled artwork recovery is paused. Use authenticated, set-scoped admin recovery.",
+    enqueued: 0,
+    claimed: 0,
+    processed: 0,
+  });
 }
 
 export async function GET(request: NextRequest) {
