@@ -9,7 +9,6 @@ export const dynamic = "force-dynamic";
 const TABLE = "catalog_artwork_recovery_jobs";
 const MAX_ENQUEUE = 100;
 const MAX_RUN = 3;
-const RESOLVER_TIMEOUT_MS = 25000;
 
 type Job = {
   id: string;
@@ -224,7 +223,7 @@ async function enqueue(
       ? body.language.toUpperCase()
       : "JP";
 
-  if (!["JP", "EN", "CN", "CN-TW"].includes(language)) {
+  if (!["JP", "EN"].includes(language)) {
     return NextResponse.json(
       { error: "Unsupported language." },
       { status: 400 }
@@ -325,8 +324,7 @@ async function enqueue(
 
 async function run(
   supabase: AdminClient,
-  body: Record<string, unknown>,
-  request: NextRequest
+  body: Record<string, unknown>
 ) {
   // Block admin-triggered processing until recovery is explicitly enabled.
   if (process.env.ARTWORK_RECOVERY_ENABLED !== "true") {
@@ -339,10 +337,7 @@ async function run(
   }
 
   const limit = integerWithin(body.limit, 3, MAX_RUN);
-  const configured = process.env.ARTWORK_RECOVERY_ORIGIN ||
-    process.env.MINTRADAR_INTERNAL_ORIGIN ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : request.nextUrl.origin);
+  const configured = process.env.ARTWORK_RECOVERY_ORIGIN ?? "";
   const origin = recoveryOrigin(configured);
   const batch = await runRecoveryBatch(supabase, limit, origin);
   return NextResponse.json({ ok: true, ...batch });
@@ -394,8 +389,7 @@ export async function POST(request: NextRequest) {
     if (body.action === "run") {
       return await run(
         auth.supabase,
-        body,
-        request
+        body
       );
     }
 

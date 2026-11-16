@@ -16,15 +16,17 @@ function authorized(request: NextRequest): boolean {
 }
 
 async function handle(request: NextRequest) {
-  if (!authorized(request)) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  if (!authorized(request)) {
+    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+
   if (process.env.ARTWORK_RECOVERY_ENABLED !== "true") {
     return NextResponse.json({ ok: true, enabled: false, enqueued: 0, claimed: 0 });
   }
+
   try {
     const db = recoveryDb();
-    const configured = process.env.ARTWORK_RECOVERY_ORIGIN || process.env.NEXT_PUBLIC_APP_URL ||
-      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
-    const origin = recoveryOrigin(configured);
+    const origin = recoveryOrigin(process.env.ARTWORK_RECOVERY_ORIGIN ?? "");
     const { data: enqueued, error } = await db.rpc("enqueue_catalog_artwork_recovery_jobs", { p_limit: 12 });
     if (error) throw error;
     const batch = await runRecoveryBatch(db, 2, origin);
@@ -34,5 +36,11 @@ async function handle(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "Scheduled artwork recovery failed" }, { status: 500 });
   }
 }
-export async function GET(request: NextRequest) { return handle(request); }
-export async function POST(request: NextRequest) { return handle(request); }
+
+export async function GET(request: NextRequest) {
+  return handle(request);
+}
+
+export async function POST(request: NextRequest) {
+  return handle(request);
+}
