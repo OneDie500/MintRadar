@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
@@ -70,7 +69,7 @@ async function adminRequest(
       Authorization: `Bearer ${session.access_token}`,
       ...(body ? { "Content-Type": "application/json" } : {}),
     },
-    ...(body ? { body: JSON.stringify(body) } : {}),
+    ...(body ? { body: JSON.stringify(body) } :{}),
     cache: "no-store",
   });
 
@@ -187,9 +186,15 @@ export default function ArtworkRecoveryTestPage() {
           ...(cursor ? { after: cursor } : {}),
         };
       } else {
+        const scopedSetId = setId.trim();
+        if (!/^[\w-]{1,80}$/.test(scopedSetId)) {
+          throw new Error("Enter a valid set ID before running recovery.");
+        }
+
         body = {
           action: "run",
-          limit: 2,
+          setId: scopedSetId,
+          limit: 1,
         };
       }
 
@@ -286,7 +291,7 @@ export default function ArtworkRecoveryTestPage() {
               {[
                 ["Pending", counts.pending ?? 0],
                 ["Processing", counts.processing ?? 0],
-                ["Resolved", counts.resolved ?? 0],
+                ["Resolved", counts.resolved ??0],
                 ["Unresolved", counts.unresolved ?? 0],
                 ["Failed", counts.failed ?? 0],
               ].map(([label, count]) => (
@@ -348,7 +353,7 @@ export default function ArtworkRecoveryTestPage() {
                     htmlFor="recovery-set"
                     className="block text-sm text-zinc-300"
                   >
-                    Set ID (optional)
+                    Set ID (required for recovery runs; optional for enqueue)
                   </label>
 
                   <input
@@ -371,7 +376,7 @@ export default function ArtworkRecoveryTestPage() {
                   disabled={busy}
                   className="w-full rounded-lg bg-emerald-500 px-4 py-3 text-sm font-semibold text-black disabled:opacity-40"
                 >
-                  {busy ? "Working..." : "Queue 3 Cards"}
+                  {busy ? "Working..." : "Queue3 Cards"}
                 </button>
 
                 <p className="text-xs text-zinc-500">
@@ -397,7 +402,7 @@ export default function ArtworkRecoveryTestPage() {
                   </h2>
 
                   <p className="mt-1 text-sm text-zinc-400">
-                    Process up to two pending jobs using
+                    Process one pending job from the selected set using
                     the existing Pokémon image resolver.
                   </p>
                 </div>
@@ -411,10 +416,10 @@ export default function ArtworkRecoveryTestPage() {
                 <button
                   type="button"
                   onClick={() => void perform("run")}
-                  disabled={busy || (counts.pending ?? 0) === 0}
+                  disabled={busy || (counts.pending ?? 0) === 0 || !/^[\w-]{1,80}$/.test(setId.trim())}
                   className="w-full rounded-lg bg-white px-4 py-3 text-sm font-semibold text-black disabled:opacity-40"
                 >
-                  {busy ? "Processing..." : "Run 2 Recoveries"}
+                  {busy ? "Processing..." : "Run 1 Scoped Recovery"}
                 </button>
 
                 <button
@@ -459,7 +464,7 @@ export default function ArtworkRecoveryTestPage() {
                         >
                           <td className="py-3 pr-4">
                             <div className="font-medium">
-                              {job.card_name || job.external_id}
+                              {job.card_name ||job.external_id}
                             </div>
                             <div className="text-xs text-zinc-500">
                               {job.external_id}
@@ -493,7 +498,7 @@ export default function ArtworkRecoveryTestPage() {
                               </a>
                             ) : (
                               <span className="text-zinc-500">
-                                {job.last_error || "—"}
+                                {job.last_error|| "—"}
                               </span>
                             )}
 
@@ -531,7 +536,7 @@ export default function ArtworkRecoveryTestPage() {
 
           {lastResult && (
             <pre className="mt-4 max-h-80 overflow-auto rounded-lg bg-zinc-950 p-3 text-xs text-zinc-300">
-              {JSON.stringify(lastResult, null, 2)}
+              {JSON.stringify(lastResult, null,2)}
             </pre>
           )}
         </section>
