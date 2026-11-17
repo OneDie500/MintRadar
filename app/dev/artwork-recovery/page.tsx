@@ -194,7 +194,7 @@ export default function ArtworkRecoveryTestPage() {
         body = {
           action: "run",
           setId: scopedSetId,
-          limit: 1,
+          limit: 3,
         };
       }
 
