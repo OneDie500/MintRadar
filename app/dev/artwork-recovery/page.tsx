@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
@@ -41,10 +42,17 @@ type ApiResult = {
   nextCursor?: string | null;
   hasMorePotentially?: boolean;
   claimed?: number;
+  cooldownUntil?: string | null;
   results?: RecoveryResult[];
 };
 
 const ENDPOINT = "/api/admin/artwork-recovery";
+
+// Enqueue API already supports up to 100.
+const ENQUEUE_BATCH_SIZE = 100;
+
+// Keep recovery processing conservative.
+const RECOVERY_BATCH_SIZE = 3;
 
 async function adminRequest(
   method: "GET" | "POST",
@@ -69,7 +77,7 @@ async function adminRequest(
       Authorization: `Bearer ${session.access_token}`,
       ...(body ? { "Content-Type": "application/json" } : {}),
     },
-    ...(body ? { body: JSON.stringify(body) } :{}),
+    ...(body ? { body: JSON.stringify(body) } : {}),
     cache: "no-store",
   });
 
@@ -92,6 +100,7 @@ async function adminRequest(
 
 function formatDate(value: string): string {
   const date = new Date(value);
+
   return Number.isNaN(date.getTime())
     ? value
     : date.toLocaleString();
@@ -181,20 +190,23 @@ export default function ArtworkRecoveryTestPage() {
         body = {
           action: "enqueue",
           language,
-          limit: 3,
+          limit: ENQUEUE_BATCH_SIZE,
           ...(setId.trim() ? { setId: setId.trim() } : {}),
           ...(cursor ? { after: cursor } : {}),
         };
       } else {
         const scopedSetId = setId.trim();
+
         if (!/^[\w-]{1,80}$/.test(scopedSetId)) {
-          throw new Error("Enter a valid set ID before running recovery.");
+          throw new Error(
+            "Enter a valid set ID before running recovery."
+          );
         }
 
         body = {
           action: "run",
           setId: scopedSetId,
-          limit: 3,
+          limit: RECOVERY_BATCH_SIZE,
         };
       }
 
@@ -212,16 +224,24 @@ export default function ArtworkRecoveryTestPage() {
 
         setMessage(
           `Examined ${result.examined ?? 0} cards. ` +
-          `${result.queuedOrAlreadyPresent ?? 0} queued or already present.`
+          `${result.queuedOrAlreadyPresent ?? 0} queued or already present.` +
+          (result.hasMorePotentially
+            ? " More records may be available."
+            : " No additional records found in this scan.")
         );
       } else {
         const summary = (result.results ?? [])
-          .map((item) => `${item.external_id}: ${item.status}`)
+          .map(
+            (item) => `${item.external_id}: ${item.status}`
+          )
           .join(" | ");
 
         setMessage(
           `Claimed ${result.claimed ?? 0} recovery jobs.` +
-          (summary ? ` ${summary}` : "")
+          (summary ? ` ${summary}` : "") +
+          (result.cooldownUntil
+            ? ` Provider cooldown until ${formatDate(result.cooldownUntil)}.`
+            : "")
         );
       }
 
@@ -269,8 +289,8 @@ export default function ArtworkRecoveryTestPage() {
                 {checking
                   ? "Checking your MintRadar session..."
                   : authorized
-                  ? "Authenticated admin session verified."
-                  : "Admin access has not been verified."}
+                    ? "Authenticated admin session verified."
+                    : "Admin access has not been verified."}
               </p>
             </div>
 
@@ -291,7 +311,7 @@ export default function ArtworkRecoveryTestPage() {
               {[
                 ["Pending", counts.pending ?? 0],
                 ["Processing", counts.processing ?? 0],
-                ["Resolved", counts.resolved ??0],
+                ["Resolved", counts.resolved ?? 0],
                 ["Unresolved", counts.unresolved ?? 0],
                 ["Failed", counts.failed ?? 0],
               ].map(([label, count]) => (
@@ -318,8 +338,8 @@ export default function ArtworkRecoveryTestPage() {
                   </h2>
 
                   <p className="mt-1 text-sm text-zinc-400">
-                    Add up to three missing-image cards.
-                    Existing recovery jobs are preserved.
+                    Enqueue up to {ENQUEUE_BATCH_SIZE} missing-image cards
+                    per request. Existing recovery jobs are preserved.
                   </p>
                 </div>
 
@@ -376,7 +396,9 @@ export default function ArtworkRecoveryTestPage() {
                   disabled={busy}
                   className="w-full rounded-lg bg-emerald-500 px-4 py-3 text-sm font-semibold text-black disabled:opacity-40"
                 >
-                  {busy ? "Working..." : "Queue3 Cards"}
+                  {busy
+                    ? "Working..."
+                    : `Queue Up to ${ENQUEUE_BATCH_SIZE} Cards`}
                 </button>
 
                 <p className="text-xs text-zinc-500">
@@ -402,8 +424,9 @@ export default function ArtworkRecoveryTestPage() {
                   </h2>
 
                   <p className="mt-1 text-sm text-zinc-400">
-                    Process one pending job from the selected set using
-                    the existing Pokémon image resolver.
+                    Process up to {RECOVERY_BATCH_SIZE} pending jobs
+                    from the selected set using the existing Pokémon
+                    image resolver.
                   </p>
                 </div>
 
@@ -416,10 +439,16 @@ export default function ArtworkRecoveryTestPage() {
                 <button
                   type="button"
                   onClick={() => void perform("run")}
-                  disabled={busy || (counts.pending ?? 0) === 0 || !/^[\w-]{1,80}$/.test(setId.trim())}
+                  disabled={
+                    busy ||
+                    (counts.pending ?? 0) === 0 ||
+                    !/^[\w-]{1,80}$/.test(setId.trim())
+                  }
                   className="w-full rounded-lg bg-white px-4 py-3 text-sm font-semibold text-black disabled:opacity-40"
                 >
-                  {busy ? "Processing..." : "Run 1 Scoped Recovery"}
+                  {busy
+                    ? "Processing..."
+                    : `Run Up to ${RECOVERY_BATCH_SIZE} Scoped Recoveries`}
                 </button>
 
                 <button
@@ -464,8 +493,9 @@ export default function ArtworkRecoveryTestPage() {
                         >
                           <td className="py-3 pr-4">
                             <div className="font-medium">
-                              {job.card_name ||job.external_id}
+                              {job.card_name || job.external_id}
                             </div>
+
                             <div className="text-xs text-zinc-500">
                               {job.external_id}
                             </div>
@@ -498,7 +528,7 @@ export default function ArtworkRecoveryTestPage() {
                               </a>
                             ) : (
                               <span className="text-zinc-500">
-                                {job.last_error|| "—"}
+                                {job.last_error || "—"}
                               </span>
                             )}
 
@@ -536,7 +566,7 @@ export default function ArtworkRecoveryTestPage() {
 
           {lastResult && (
             <pre className="mt-4 max-h-80 overflow-auto rounded-lg bg-zinc-950 p-3 text-xs text-zinc-300">
-              {JSON.stringify(lastResult, null,2)}
+              {JSON.stringify(lastResult, null, 2)}
             </pre>
           )}
         </section>
