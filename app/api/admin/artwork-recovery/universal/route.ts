@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
@@ -25,6 +26,15 @@ function previewAllowed() {
     process.env.ARTWORK_RECOVERY_ENABLED === "true" &&
     process.env.ARTWORK_RECOVERY_COORDINATOR_ENABLED === "true"
   );
+}
+
+function schedulerAuthorized(request: NextRequest): boolean {
+  const secret = process.env.ARTWORK_UNIVERSAL_SCHEDULER_SECRET;
+  const supplied = request.headers.get("x-mintradar-universal-scheduler") ?? "";
+  if (!secret || secret.length < 32 || !supplied) return false;
+  const a = Buffer.from(supplied, "utf8");
+  const b = Buffer.from(secret, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 function getDb() {
@@ -61,29 +71,26 @@ export async function GET(request: NextRequest) {
         .filter(Boolean)
     );
 
-    const authorization =
-      request.headers.get("authorization") ?? "";
+    const internalScheduler = schedulerAuthorized(request) &&
+      process.env.ARTWORK_UNIVERSAL_SCHEDULER_ENABLED === "true";
+    const authorization = request.headers.get("authorization") ?? "";
 
-    if (!/^Bearer\s+\S+$/i.test(authorization) || !admins.size) {
+    if (!internalScheduler && (!/^Bearer\s+\S+$/i.test(authorization) || !admins.size)) {
       return NextResponse.json(
         { ok: false, error: "Unauthorized" },
         { status: 401 }
       );
     }
 
-    const token = authorization.replace(/^Bearer\s+/i, "").trim();
-    const { data: auth, error: authError } =
-      await db.auth.getUser(token);
-
-    if (
-      authError ||
-      !auth.user?.email ||
-      !admins.has(auth.user.email.toLowerCase())
-    ) {
+    if (!internalScheduler) {
+      const token = authorization.replace(/^Bearer\s+/i, "").trim();
+      const { data: auth, error: authError } = await db.auth.getUser(token);
+      if (authError || !auth.user?.email || !admins.has(auth.user.email.toLowerCase())) {
       return NextResponse.json(
         { ok: false, error: "Unauthorized" },
         { status: 401 }
       );
+      }
     }
 
     // Authenticated, read-only progress view. Excludes the protected MC pilot.
@@ -279,8 +286,11 @@ export async function POST(request: NextRequest) {
       { status: 415 }
     );
   }
+  const internalScheduler = schedulerAuthorized(request) &&
+    process.env.ARTWORK_UNIVERSAL_SCHEDULER_ENABLED === "true";
   const requestOrigin = request.headers.get("origin");
-  if (requestOrigin !== APPROVED_ORIGIN || request.nextUrl.origin !== APPROVED_ORIGIN) {
+  if (request.nextUrl.origin !== APPROVED_ORIGIN ||
+      (!internalScheduler && requestOrigin !== APPROVED_ORIGIN)) {
     return NextResponse.json(
       { ok: false, error: "Unapproved Preview request origin" },
       { status: 403 }
