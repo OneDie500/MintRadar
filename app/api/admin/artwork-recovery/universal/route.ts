@@ -86,6 +86,34 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // Authenticated, read-only progress view. Excludes the protected MC pilot.
+    if (request.nextUrl.searchParams.get("view") === "progress") {
+      const statuses = ["pending", "processing", "resolved", "unresolved", "failed"] as const;
+      const counts = await Promise.all(statuses.map(async (status) => {
+        const { count, error } = await db.from("catalog_artwork_recovery_jobs")
+          .select("external_id", { count: "exact", head: true })
+          .eq("category", "Pokemon")
+          .neq("set_id", EXCLUDED_SET)
+          .eq("status", status);
+        if (error) throw error;
+        return [status, count ?? 0] as const;
+      }));
+      const { data: control, error: controlError } = await db
+        .from("catalog_artwork_universal_controls")
+        .select("day_utc,reserved_today,lease_until")
+        .eq("control_key", "preview-universal")
+        .single();
+      if (controlError || !control) throw controlError ?? new Error("Missing universal controls");
+      return NextResponse.json({
+        ok: true, mode: "preview-universal-progress", excludedSet: EXCLUDED_SET,
+        statuses: Object.fromEntries(counts),
+        daily: { dayUtc: control.day_utc, reserved: control.reserved_today, limit: 30 },
+        batchInProgress: Boolean(control.lease_until && new Date(control.lease_until).getTime() > Date.now()),
+        leaseUntil: control.lease_until,
+        note: "Read-only counts; no jobs claimed or artwork published."
+      });
+    }
+
     const now = new Date().toISOString();
     const staleBefore = new Date(
       Date.now() - 15 * 60 * 1000
@@ -283,6 +311,25 @@ export async function POST(request: NextRequest) {
     }
 
     const db = getDb();
+    // Atomic database lease and daily reservation. The RPC uses a row lock,
+    // so concurrent Vercel instances cannot reserve the same capacity.
+    const { data: reservation, error: reservationError } = await db.rpc(
+      "begin_catalog_artwork_universal_batch", { p_slots: MAX_BATCH_JOBS }
+    );
+    if (reservationError) throw reservationError;
+    const guard = reservation as {
+      acquired?: boolean; token?: string; reason?: string;
+      reservedToday?: number; dailyLimit?: number; dayUtc?: string;
+      leaseUntil?: string;
+    } | null;
+    if (!guard?.acquired || !guard.token) {
+      return NextResponse.json({
+        ok: false, error: guard?.reason ?? "Batch reservation unavailable",
+        daily: { reserved: guard?.reservedToday ?? null, limit: guard?.dailyLimit ?? 30,
+          dayUtc: guard?.dayUtc ?? null }, leaseUntil: guard?.leaseUntil ?? null
+      }, { status: guard?.reason === "batch-in-progress" ? 409 : 429 });
+    }
+    try {
     const results: Array<{ external_id: string; status: string; error?: string }> = [];
     const selections: SelectedScope[] = [];
     let claimed = 0;
@@ -358,8 +405,19 @@ export async function POST(request: NextRequest) {
       cooldownUntil: cooldown,
       stopReason,
       results,
+      daily: { reserved: guard.reservedToday, limit: guard.dailyLimit,
+        dayUtc: guard.dayUtc },
       note: "Identity discovery only. No artwork publication or rights clearance.",
     });
+    } finally {
+      const { data: released, error: releaseError } = await db.rpc(
+        "end_catalog_artwork_universal_batch", { p_token: guard.token }
+      );
+      if (releaseError || released !== true) {
+        console.error("[universal-artwork-lease-release]", releaseError ?? "Lease not released");
+        // Lease expires after 10 minutes; a new batch will be blocked until then.
+      }
+    }
   } catch (error) {
     console.error("[universal-artwork-processing]", error);
     return NextResponse.json(
