@@ -1,0 +1,20 @@
+name: MintRadar Preview Artwork Recovery
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger Preview recovery
+        env:
+          SECRET: ${{ secrets.ARTWORK_UNIVERSAL_SCHEDULER_SECRET }}
+        run: |
+          set -euo pipefail
+          test "${#SECRET}" -ge 32
+          URL="https://mint-radar-git-mobile-print-infrastructure-mint-radar.vercel.app/api/cron/artwork-recovery-universal"
+          curl -fsS --retry 0 --max-time 240 -X POST "$URL" -H "Authorization: Bearer $SECRET" -H "Content-Type: application/json" -d '{"confirm":"PROCESS_THREE_UNIVERSAL_JOBS"}' -o response.json
+          jq -e '.ok == true and ((.enabled == false and .reason == "scheduler-disabled" and .processed == 0) or (.mode == "preview-universal-processing" and .batchLimit == 3 and (.processed | type == "number" and . >= 0 and . <= 3)))' response.json > /dev/null
+          echo "Preview scheduler responded successfully"
