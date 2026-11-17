@@ -211,9 +211,29 @@ export async function GET(request: NextRequest) {
 
 
 // Intentionally separate from the existing MC pilot coordinator.
-// A POST processes at most one job, and only on the approved Preview.
+// A POST processes at most three jobs, sequentially, on the approved Preview.
 const APPROVED_ORIGIN =
   "https://mint-radar-git-mobile-print-infrastructure-mint-radar.vercel.app";
+const MAX_BATCH_JOBS = 3;
+const CONFIRMATION = "PROCESS_THREE_UNIVERSAL_JOBS";
+
+type SelectedScope = {
+  setId: string;
+  language: "EN" | "JP";
+  dataSource: "tcgdex" | "tcgapi_verified";
+};
+
+function validScope(value: unknown): value is SelectedScope {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const selected = value as Record<string, unknown>;
+  return (
+    typeof selected.setId === "string" &&
+    /^[\w-]{1,80}$/.test(selected.setId) &&
+    selected.setId.toUpperCase() !== EXCLUDED_SET &&
+    (selected.language === "EN" || selected.language === "JP") &&
+    (selected.dataSource === "tcgdex" || selected.dataSource === "tcgapi_verified")
+  );
+}
 
 export async function POST(request: NextRequest) {
   if (!previewAllowed()) {
@@ -223,50 +243,38 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // An explicit confirmation prevents accidental batch execution.
+  // Authorization is still enforced by the GET discovery call below.
+  if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
+    return NextResponse.json(
+      { ok: false, error: "JSON content type required" },
+      { status: 415 }
+    );
+  }
+  const requestOrigin = request.headers.get("origin");
+  if (requestOrigin !== APPROVED_ORIGIN || request.nextUrl.origin !== APPROVED_ORIGIN) {
+    return NextResponse.json(
+      { ok: false, error: "Unapproved Preview request origin" },
+      { status: 403 }
+    );
+  }
+  const body: unknown = await request.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body) ||
+      (body as Record<string, unknown>).confirm !== CONFIRMATION) {
+    return NextResponse.json(
+      { ok: false, error: "Explicit three-job confirmation required" },
+      { status: 400 }
+    );
+  }
+
   try {
-    // Reuse the exact authenticated, read-only discovery path already tested.
-    // This fails closed when the candidate pool exceeds its current limit.
-    const discoveryResponse = await GET(request);
+    // Authenticate and discover BEFORE any mutation; GET fails closed on
+    // incomplete candidate pools. Repeat discovery after every processed job.
+    let discoveryResponse = await GET(request);
     if (!discoveryResponse.ok) return discoveryResponse;
 
-    const discovery = (await discoveryResponse.json()) as {
-      selected?: {
-        setId: string;
-        language: string;
-        dataSource: string;
-      } | null;
-    };
-
-    const selected = discovery.selected;
-    if (!selected) {
-      return NextResponse.json({
-        ok: true,
-        mode: "preview-universal-processing",
-        claimed: 0,
-        processed: 0,
-        selected: null,
-        results: [],
-        note: "No eligible jobs outside the MC pilot.",
-      });
-    }
-
-    // Validate discovery output independently before invoking a mutating RPC.
-    if (
-      !/^[\w-]{1,80}$/.test(selected.setId) ||
-      selected.setId.toUpperCase() === EXCLUDED_SET ||
-      !["EN", "JP"].includes(selected.language) ||
-      !["tcgdex", "tcgapi_verified"].includes(selected.dataSource)
-    ) {
-      return NextResponse.json(
-        { ok: false, error: "Discovery selected an unsupported scope" },
-        { status: 409 }
-      );
-    }
-
-    // The worker's fallback fetch must never be redirected to an arbitrary host.
-    const origin = recoveryOrigin(
-      process.env.ARTWORK_RECOVERY_ORIGIN ?? ""
-    );
+    // The worker's fallback fetch must never be redirected to another host.
+    const origin = recoveryOrigin(process.env.ARTWORK_RECOVERY_ORIGIN ?? "");
     if (origin !== APPROVED_ORIGIN) {
       return NextResponse.json(
         { ok: false, error: "Unapproved Preview recovery origin" },
@@ -275,42 +283,87 @@ export async function POST(request: NextRequest) {
     }
 
     const db = getDb();
-    const blocked = await cooldownUntil(db);
-    if (blocked) {
-      return NextResponse.json({
-        ok: true,
-        mode: "preview-universal-processing",
-        selected,
-        claimed: 0,
-        processed: 0,
-        cooldownUntil: blocked,
-        results: [],
-        note: "Provider cooldown active; no jobs claimed.",
-      });
+    const results: Array<{ external_id: string; status: string; error?: string }> = [];
+    const selections: SelectedScope[] = [];
+    let claimed = 0;
+    let cooldown: string | null = null;
+    let stopReason = "batch-limit-reached";
+
+    for (let index = 0; index < MAX_BATCH_JOBS; index++) {
+      // The first iteration uses the already-authenticated discovery response.
+      // Subsequent iterations re-evaluate eligibility and ordering.
+      if (index > 0) {
+        discoveryResponse = await GET(request);
+        if (!discoveryResponse.ok) {
+          stopReason = `discovery-failed-${discoveryResponse.status}`;
+          break;
+        }
+      }
+      const discovery = (await discoveryResponse.json()) as { selected?: unknown };
+      const selected = discovery.selected;
+      if (selected == null) {
+        stopReason = "queue-empty";
+        break;
+      }
+      if (!validScope(selected)) {
+        stopReason = "invalid-discovery-scope";
+        break;
+      }
+
+      cooldown = await cooldownUntil(db);
+      if (cooldown) {
+        stopReason = "provider-cooldown";
+        break;
+      }
+
+      const batch = await runScopedRecoveryBatch(db, origin, selected);
+      claimed += batch.claimed;
+      cooldown = batch.cooldownUntil;
+      selections.push(selected);
+      results.push(...batch.results);
+
+      if (batch.claimed === 0) {
+        stopReason = cooldown ? "provider-cooldown" : "claim-unavailable";
+        break;
+      }
+      const outcome = batch.results[0];
+      // Fail closed on errors and retry conditions. Never loop through a
+      // provider outage or continue after an ambiguous job outcome.
+      if (!outcome || ![
+        "resolved-identity-verified",
+        "resolved-existing-vintage-identity",
+        "candidate-review",
+        "skipped-existing-image",
+        "fallback-configuration-needed",
+        "unresolved-recheck-scheduled",
+        "unresolved-max-attempts"
+      ].includes(outcome.status)) {
+        stopReason = outcome?.status ?? "missing-result";
+        break;
+      }
+      if (cooldown) {
+        stopReason = "provider-cooldown";
+        break;
+      }
     }
-
-    const scope = {
-      setId: selected.setId,
-      language: selected.language as "EN" | "JP",
-      dataSource: selected.dataSource as "tcgdex" | "tcgapi_verified",
-    };
-
-    const batch = await runScopedRecoveryBatch(db, origin, scope);
 
     return NextResponse.json({
       ok: true,
       mode: "preview-universal-processing",
-      selected,
-      claimed: batch.claimed,
-      processed: batch.results.length,
-      cooldownUntil: batch.cooldownUntil,
-      results: batch.results,
+      batchLimit: MAX_BATCH_JOBS,
+      claimed,
+      processed: results.length,
+      selected: selections[0] ?? null,
+      selections,
+      cooldownUntil: cooldown,
+      stopReason,
+      results,
       note: "Identity discovery only. No artwork publication or rights clearance.",
     });
   } catch (error) {
     console.error("[universal-artwork-processing]", error);
     return NextResponse.json(
-      { ok: false, error: "Universal artwork processing failed" },
+      { ok: false, error: "Universal artwork processing failed; inspect job states before retrying" },
       { status: 500 }
     );
   }
