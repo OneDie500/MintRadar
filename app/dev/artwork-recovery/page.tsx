@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
 type RecoveryJob = {
@@ -33,6 +33,15 @@ type RecoveryResult = {
   error?: string;
 };
 
+type CoordinatorProgress = {
+  total: number;
+  pending: number;
+  processing: number;
+  resolved: number;
+  unresolved: number;
+  failed: number;
+};
+
 type ApiResult = {
   ok?: boolean;
   error?: string;
@@ -42,11 +51,19 @@ type ApiResult = {
   nextCursor?: string | null;
   hasMorePotentially?: boolean;
   claimed?: number;
+  processed?: number;
+  mode?: string;
+  setId?: string;
+  batchLimit?: number;
+  before?: CoordinatorProgress;
+  after?: CoordinatorProgress;
+  note?: string;
   cooldownUntil?: string | null;
   results?: RecoveryResult[];
 };
 
 const ENDPOINT = "/api/admin/artwork-recovery";
+const COORDINATOR_ENDPOINT = `${ENDPOINT}/coordinator`;
 
 // Enqueue API already supports up to 100.
 const ENQUEUE_BATCH_SIZE = 100;
@@ -56,7 +73,8 @@ const RECOVERY_BATCH_SIZE = 3;
 
 async function adminRequest(
   method: "GET" | "POST",
-  body?: Record<string, unknown>
+  body?: Record<string, unknown>,
+  endpoint = ENDPOINT
 ): Promise<unknown> {
   const {
     data: { session },
@@ -71,7 +89,7 @@ async function adminRequest(
     throw new Error("Please log into MintRadar first.");
   }
 
-  const response = await fetch(ENDPOINT, {
+  const response = await fetch(endpoint, {
     method,
     headers: {
       Authorization: `Bearer ${session.access_token}`,
@@ -110,12 +128,14 @@ export default function ArtworkRecoveryTestPage() {
   const [authorized, setAuthorized] = useState(false);
   const [checking, setChecking] = useState(true);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const [queue, setQueue] = useState<QueueStatus | null>(null);
   const [language, setLanguage] = useState("JP");
   const [setId, setSetId] = useState("");
   const [cursor, setCursor] = useState("");
   const [message, setMessage] = useState("");
   const [lastResult, setLastResult] = useState<ApiResult | null>(null);
+  const [coordinatorResult, setCoordinatorResult] = useState<ApiResult | null>(null);
 
   const refresh = useCallback(async () => {
     const result = (await adminRequest("GET")) as QueueStatus;
@@ -166,9 +186,10 @@ export default function ArtworkRecoveryTestPage() {
   }, []);
 
   async function perform(
-    action: "check" | "enqueue" | "run"
+    action: "check" | "enqueue" | "run" | "coordinator"
   ) {
-    if (busy) return;
+    if (busyRef.current) return;
+    busyRef.current = true;
 
     setBusy(true);
     setLastResult(null);
@@ -182,6 +203,32 @@ export default function ArtworkRecoveryTestPage() {
 
       if (!authorized) {
         throw new Error("Admin access must be verified first.");
+      }
+
+      if (action === "coordinator") {
+        const result = (await adminRequest(
+          "POST",
+          undefined,
+          COORDINATOR_ENDPOINT
+        )) as ApiResult;
+
+        setCoordinatorResult(result);
+        setLastResult(result);
+
+        const summary = (result.results ?? [])
+          .map((item) => `${item.external_id}: ${item.status}`)
+          .join(" | ");
+
+        setMessage(
+          `MC coordinator: claimed ${result.claimed ?? 0}, ` +
+          `processed ${result.processed ?? 0}.` +
+          (summary ? ` ${summary}` : "") +
+          (result.cooldownUntil
+            ? ` Provider cooldown until ${formatDate(result.cooldownUntil)}.`
+            : "")
+        );
+        await refresh();
+        return;
       }
 
       let body: Record<string, unknown>;
@@ -253,6 +300,7 @@ export default function ArtworkRecoveryTestPage() {
           : "An unexpected error occurred."
       );
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
@@ -460,6 +508,65 @@ export default function ArtworkRecoveryTestPage() {
                   Refresh Queue
                 </button>
               </div>
+            </section>
+
+            <section className="space-y-4 rounded-2xl border border-emerald-900/50 bg-zinc-900 p-5">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-400">
+                  Preview pilot / MC only
+                </p>
+                <h2 className="mt-2 text-lg font-semibold">MC Recovery Coordinator</h2>
+                <p className="mt-1 text-sm leading-6 text-zinc-400">
+                  Executes one authenticated, set-scoped batch of up to three MC jobs.
+                  It does not run automatically, enqueue cards, publish images, or clear rights.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => void perform("coordinator")}
+                disabled={busy || checking || !authorized}
+                className="w-full rounded-lg bg-emerald-500 px-4 py-3 text-sm font-semibold text-black disabled:opacity-40"
+              >
+                {busy ? "Working..." : "Run MC Coordinator — One Batch (Up to 3)"}
+              </button>
+
+              {coordinatorResult?.after && (
+                <div className="space-y-3" aria-live="polite">
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    {([
+                      ["Total", coordinatorResult.after.total],
+                      ["Pending", coordinatorResult.after.pending],
+                      ["Processing", coordinatorResult.after.processing],
+                      ["Resolved", coordinatorResult.after.resolved],
+                      ["Unresolved", coordinatorResult.after.unresolved],
+                      ["Failed", coordinatorResult.after.failed],
+                    ] as const).map(([label, value]) => (
+                      <div key={label} className="rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+                        <p className="text-xs text-zinc-400">{label}</p>
+                        <p className="mt-1 text-xl font-bold">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-xs text-zinc-400">
+                    MC only: {coordinatorResult.claimed ?? 0} claimed, {coordinatorResult.processed ?? 0} processed in the last coordinator request.
+                  </p>
+                  {coordinatorResult.cooldownUntil && (
+                    <p className="text-sm text-amber-300">
+                      Provider cooldown until {formatDate(coordinatorResult.cooldownUntil)}.
+                    </p>
+                  )}
+                  {!!coordinatorResult.results?.length && (
+                    <ul className="space-y-1 text-sm text-zinc-300">
+                      {coordinatorResult.results.map((item, index) => (
+                        <li key={`${item.external_id}-${index}`}>
+                          {item.external_id}: {item.status}{item.error ? ` — ${item.error}` : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </section>
 
             <section className="space-y-4 rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
