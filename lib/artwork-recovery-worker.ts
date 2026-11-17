@@ -176,13 +176,45 @@ async function saveJob(
   }
 }
 
-// Only the EN exact-ID resolver may use these two known name aliases.
-// All other providers and JP/vintage jobs retain literal name matching.
+// Name equivalence is allowed only for the English TCGdex regional exact-ID
+// provider. Other providers and JP/vintage retain literal name matching.
 function exactRegionalName(name: string): string {
   const normalized = name.normalize("NFKC").trim();
   if (normalized === "Nidoran F" || normalized === "Nidoran♀") return "Nidoran♀";
   if (normalized === "Nidoran M" || normalized === "Nidoran♂") return "Nidoran♂";
-  return normalized;
+  // A specific spelling equivalence, not general accent removal.
+  return normalized.replace(/Pokémon/g, "Pokemon");
+}
+
+// Catalog aliases are scoped to a complete printed identity, never to a
+// generic letter expansion. These do not confer image usage rights.
+const REGIONAL_EXACT_ID_ALIASES: Record<string, { catalog: string; provider: string }> = {
+  "me06:132/103": { catalog: "Bubbly W Energy", provider: "Bubbly Water Energy" },
+  "me06:133/103": { catalog: "Growing G Energy", provider: "Growing Grass Energy" },
+};
+
+function regionalNamesMatch(job: RecoveryJob, providerName: string, catalogName: string): boolean {
+  if (exactRegionalName(providerName) === exactRegionalName(catalogName)) return true;
+  const key = `${(job.set_id ?? "").trim().toLowerCase()}:${(job.card_number ?? "").trim()}`;
+  const alias = REGIONAL_EXACT_ID_ALIASES[key];
+  return Boolean(alias && catalogName === alias.catalog && providerName === alias.provider);
+}
+
+function verifiedIdentityRule(job: RecoveryJob, payload: Record<string, unknown>): string {
+  const match = payload.match;
+  if (!match || typeof match !== "object" || Array.isArray(match)) return "exact-name-set-number";
+  const m = match as Record<string, unknown>;
+  if (exactMe06LegendaryPiece(job, payload, m)) return "me06-legendary-piece-exact-id";
+  if (payload.provider !== "tcgdex-regional-exact-id" || typeof m.name !== "string") {
+    return "exact-name-set-number";
+  }
+  const providerName = m.name.normalize("NFKC").trim();
+  const catalogName = (job.card_name ?? "").normalize("NFKC").trim();
+  if (providerName === catalogName) return "regional-exact-id-name";
+  if (exactRegionalName(providerName) === exactRegionalName(catalogName)) {
+    return "regional-exact-id-normalized-name";
+  }
+  return "regional-exact-id-approved-alias";
 }
 
 // Only the six English ME06 two-piece printings have this catalog naming
@@ -261,12 +293,12 @@ function exactMatch(
   if (exactMe06LegendaryPiece(job, payload, m)) return true;
 
   const namesMatch = regionalExactId
-    ? exactRegionalName(name) === exactRegionalName(wantedName)
+    ? regionalNamesMatch(job, name, wantedName)
     : name === wantedName;
   if (!namesMatch) return false;
 
   // Preserve the original strict verification for all existing providers.
-  if (setId === wantedSet && number === wantedNumber &&
+  if (!regionalExactId && setId === wantedSet && number === wantedNumber &&
       name === wantedName) {
     return true;
   }
@@ -310,7 +342,7 @@ function exactMatch(
   return Boolean(
     suppliedSet === wantedSet &&
     resolvedSet === wantedSet &&
-    exactRegionalName(originalName) === exactRegionalName(wantedName) &&
+    originalName === wantedName &&
     resolvedLanguage === "EN" &&
     sameLocalNumber &&
     exactProviderId
@@ -555,7 +587,7 @@ export async function processRecoveryJob(
         parsed_identity: result.parsedIdentity ?? null,
         candidate_only: candidateOnly,
         identity_rule: verified
-          ? "exact-name-set-number"
+          ? verifiedIdentityRule(job, result)
           : "not-proven",
         recovered_at: now,
       },
