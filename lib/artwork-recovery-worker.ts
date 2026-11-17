@@ -191,6 +191,7 @@ function exactRegionalName(name: string): string {
 const REGIONAL_EXACT_ID_ALIASES: Record<string, { catalog: string; provider: string }> = {
   "me06:132/103": { catalog: "Bubbly W Energy", provider: "Bubbly Water Energy" },
   "me06:133/103": { catalog: "Growing G Energy", provider: "Growing Grass Energy" },
+  "me06:134/103": { catalog: "Nitro R Energy", provider: "Nitro Fire Energy" },
 };
 
 function regionalNamesMatch(job: RecoveryJob, providerName: string, catalogName: string): boolean {
