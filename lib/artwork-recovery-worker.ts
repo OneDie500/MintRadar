@@ -852,3 +852,82 @@ export async function runRecoveryBatch(
     results,
   };
 }
+
+// Universal recovery uses a separate, explicitly scoped claim RPC. Keep the
+// existing runRecoveryBatch() unchanged for the established MC pilot/cron.
+export async function runScopedRecoveryBatch(
+  db: RecoveryDb,
+  origin: string,
+  scope: {
+    setId: string;
+    language: "EN" | "JP";
+    dataSource: "tcgdex" | "tcgapi_verified";
+  }
+) {
+  const setId = scope.setId?.trim();
+  if (!setId || !/^[\w-]{1,80}$/.test(setId)) {
+    throw new Error("Scoped recovery requires a valid explicit set ID");
+  }
+  if (setId.toUpperCase() === "MC") {
+    throw new Error("MC remains reserved for the existing recovery pilot");
+  }
+  if (!["EN", "JP"].includes(scope.language)) {
+    throw new Error("Unsupported scoped recovery language");
+  }
+  if (!["tcgdex", "tcgapi_verified"].includes(scope.dataSource)) {
+    throw new Error("Unsupported scoped recovery data source");
+  }
+
+  const blocked = await cooldownUntil(db);
+  if (blocked) {
+    return {
+      claimed: 0,
+      cooldownUntil: blocked,
+      results: [] as RecoveryResult[],
+    };
+  }
+
+  // One claim only: there can be no unprocessed claimed jobs to release.
+  const { data, error } = await db.rpc(
+    "claim_catalog_artwork_recovery_jobs_scoped",
+    {
+      p_limit: 1,
+      p_set_id: setId,
+      p_language: scope.language,
+      p_data_source: scope.dataSource,
+      p_category: "Pokemon",
+    }
+  );
+  if (error) throw error;
+
+  const jobs = (data ?? []) as RecoveryJob[];
+  if (jobs.length > 1) {
+    throw new Error("Scoped claim unexpectedly returned multiple jobs");
+  }
+  const job = jobs[0];
+  if (!job) {
+    return {
+      claimed: 0,
+      cooldownUntil: await cooldownUntil(db),
+      results: [] as RecoveryResult[],
+    };
+  }
+
+  // Defense in depth: the database function must honor every scope field.
+  // If this check fails, do not call the resolver on the unexpected job.
+  if (
+    job.set_id?.trim().toLowerCase() !== setId.toLowerCase() ||
+    job.language !== scope.language ||
+    job.data_source !== scope.dataSource ||
+    job.category !== "Pokemon"
+  ) {
+    throw new Error("Scoped claim returned a job outside the requested scope");
+  }
+
+  const result = await processRecoveryJob(db, job, origin);
+  return {
+    claimed: 1,
+    cooldownUntil: await cooldownUntil(db),
+    results: [result],
+  };
+}

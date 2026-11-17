@@ -1,6 +1,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { cooldownUntil, recoveryOrigin, runScopedRecoveryBatch } from "@/lib/artwork-recovery-worker";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -203,6 +204,113 @@ export async function GET(request: NextRequest) {
         ok: false,
         error: "Universal artwork discovery failed",
       },
+      { status: 500 }
+    );
+  }
+}
+
+
+// Intentionally separate from the existing MC pilot coordinator.
+// A POST processes at most one job, and only on the approved Preview.
+const APPROVED_ORIGIN =
+  "https://mint-radar-git-mobile-print-infrastructure-mint-radar.vercel.app";
+
+export async function POST(request: NextRequest) {
+  if (!previewAllowed()) {
+    return NextResponse.json(
+      { ok: false, error: "Preview automation disabled" },
+      { status: 403 }
+    );
+  }
+
+  try {
+    // Reuse the exact authenticated, read-only discovery path already tested.
+    // This fails closed when the candidate pool exceeds its current limit.
+    const discoveryResponse = await GET(request);
+    if (!discoveryResponse.ok) return discoveryResponse;
+
+    const discovery = (await discoveryResponse.json()) as {
+      selected?: {
+        setId: string;
+        language: string;
+        dataSource: string;
+      } | null;
+    };
+
+    const selected = discovery.selected;
+    if (!selected) {
+      return NextResponse.json({
+        ok: true,
+        mode: "preview-universal-processing",
+        claimed: 0,
+        processed: 0,
+        selected: null,
+        results: [],
+        note: "No eligible jobs outside the MC pilot.",
+      });
+    }
+
+    // Validate discovery output independently before invoking a mutating RPC.
+    if (
+      !/^[\w-]{1,80}$/.test(selected.setId) ||
+      selected.setId.toUpperCase() === EXCLUDED_SET ||
+      !["EN", "JP"].includes(selected.language) ||
+      !["tcgdex", "tcgapi_verified"].includes(selected.dataSource)
+    ) {
+      return NextResponse.json(
+        { ok: false, error: "Discovery selected an unsupported scope" },
+        { status: 409 }
+      );
+    }
+
+    // The worker's fallback fetch must never be redirected to an arbitrary host.
+    const origin = recoveryOrigin(
+      process.env.ARTWORK_RECOVERY_ORIGIN ?? ""
+    );
+    if (origin !== APPROVED_ORIGIN) {
+      return NextResponse.json(
+        { ok: false, error: "Unapproved Preview recovery origin" },
+        { status: 403 }
+      );
+    }
+
+    const db = getDb();
+    const blocked = await cooldownUntil(db);
+    if (blocked) {
+      return NextResponse.json({
+        ok: true,
+        mode: "preview-universal-processing",
+        selected,
+        claimed: 0,
+        processed: 0,
+        cooldownUntil: blocked,
+        results: [],
+        note: "Provider cooldown active; no jobs claimed.",
+      });
+    }
+
+    const scope = {
+      setId: selected.setId,
+      language: selected.language as "EN" | "JP",
+      dataSource: selected.dataSource as "tcgdex" | "tcgapi_verified",
+    };
+
+    const batch = await runScopedRecoveryBatch(db, origin, scope);
+
+    return NextResponse.json({
+      ok: true,
+      mode: "preview-universal-processing",
+      selected,
+      claimed: batch.claimed,
+      processed: batch.results.length,
+      cooldownUntil: batch.cooldownUntil,
+      results: batch.results,
+      note: "Identity discovery only. No artwork publication or rights clearance.",
+    });
+  } catch (error) {
+    console.error("[universal-artwork-processing]", error);
+    return NextResponse.json(
+      { ok: false, error: "Universal artwork processing failed" },
       { status: 500 }
     );
   }
