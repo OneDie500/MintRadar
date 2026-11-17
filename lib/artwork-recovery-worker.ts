@@ -350,6 +350,54 @@ function exactMatch(
   );
 }
 
+// Reuse existing Japanese vintage research before making an external provider
+// request. Staging is a candidate source, not evidence of image usage rights.
+// The JP guard is essential: some Neo IDs also exist as EN catalog records.
+async function stagedVintageCandidate(db: RecoveryDb, job: RecoveryJob) {
+  if (job.category !== "Pokemon" || job.language !== "JP" || !job.set_id) {
+    return null;
+  }
+
+  const { data, error } = await db
+    .from("vintage_artwork_staging")
+    .select("catalog_id,set_id,card_name,image_url,visual_approved,identity_approved,rights_cleared,source")
+    .ilike("catalog_id", job.external_id.trim())
+    .ilike("set_id", job.set_id.trim())
+    .limit(2);
+
+  if (error) throw error;
+  // Ambiguous matches must not be silently selected.
+  if (!data?.length) return null;
+  if (data.length !== 1) {
+    throw new Error("Ambiguous vintage staging identity: multiple rows match");
+  }
+
+  const staged = data[0];
+  if (
+    String(staged.catalog_id ?? "").normalize("NFKC").trim().toLowerCase() !==
+      job.external_id.normalize("NFKC").trim().toLowerCase() ||
+    String(staged.set_id ?? "").normalize("NFKC").trim().toLowerCase() !==
+      job.set_id.normalize("NFKC").trim().toLowerCase()
+  ) return null;
+
+  const raw = typeof staged.image_url === "string" ? staged.image_url.trim() : "";
+  if (!raw || staged.visual_approved !== true) return null;
+
+  const url = new URL(raw);
+  if (url.protocol !== "https:" || !url.hostname || url.username || url.password) {
+    throw new Error("Vintage staging returned invalid HTTPS artwork URL");
+  }
+
+  return {
+    url: url.toString(),
+    identityApproved: staged.identity_approved === true,
+    // Read only for diagnostics. Never propagate this flag to the recovery job.
+    stagingRightsCleared: staged.rights_cleared === true,
+    source: typeof staged.source === "string" ? staged.source : null,
+    stagedName: typeof staged.card_name === "string" ? staged.card_name : null,
+  };
+}
+
 export async function processRecoveryJob(
   db: RecoveryDb,
   job: RecoveryJob,
@@ -427,6 +475,48 @@ export async function processRecoveryJob(
         "Unsupported or incomplete exact card identity"
       );
     }
+
+    // Reuse existing identity-approved vintage artwork immediately. A visually
+    // approved candidate without identity approval is retained as evidence,
+    // while independent resolver verification continues below.
+    const vintage = await stagedVintageCandidate(db, job);
+    if (vintage?.identityApproved) {
+      await saveJob(db, job, {
+        status: "resolved",
+        discovered_image_url: vintage.url,
+        discovered_source: "vintage_artwork_staging",
+        identity_verified: true,
+        rights_cleared: false,
+        next_attempt_at: null,
+        last_error: null,
+        diagnostics: {
+          provider: "vintage_artwork_staging",
+          catalog_set_name: catalogSetName || null,
+          staging_source: vintage.source,
+          staging_card_name: vintage.stagedName,
+          staging_identity_approved: true,
+          staging_rights_cleared: vintage.stagingRightsCleared,
+          candidate_only: false,
+          identity_rule: "preexisting-vintage-staging-identity-approval",
+          recovered_at: new Date().toISOString(),
+        },
+      });
+      return {
+        external_id: job.external_id,
+        status: "resolved-existing-vintage-identity",
+      };
+    }
+
+    // Preserve the original staged URL in diagnostics. A provider may verify
+    // the card identity using a DIFFERENT image URL: that never verifies the
+    // staged image itself or confers image usage rights.
+    const stagingEvidence = vintage ? {
+      staging_candidate_url: vintage.url,
+      staging_source: vintage.source,
+      staging_card_name: vintage.stagedName,
+      staging_identity_approved: false,
+      staging_rights_cleared: vintage.stagingRightsCleared,
+    } : {};
 
     const blocked = await cooldownUntil(db);
 
@@ -526,7 +616,14 @@ export async function processRecoveryJob(
       await saveJob(db, job, {
         status: "unresolved",
         next_attempt_at: null,
-        last_error: "Optional Pokémon TCG API fallback is not configured; requeue after configuration",
+        last_error: vintage
+          ? "Staged candidate exists; independent resolver not configured"
+          : "Optional Pokémon TCG API fallback is not configured; requeue after configuration",
+        ...(vintage ? {
+          discovered_image_url: vintage.url,
+          discovered_source: "vintage_artwork_staging",
+          diagnostics: { ...stagingEvidence, provider: "vintage_artwork_staging", candidate_only: true, identity_rule: "not-proven" },
+        } : {}),
         identity_verified: false,
         rights_cleared: false,
       });
@@ -573,16 +670,20 @@ export async function processRecoveryJob(
 
     await saveJob(db, job, {
       status,
-      discovered_image_url: imageUrl,
-      discovered_source:
-        typeof result.provider === "string"
-          ? result.provider.slice(0, 150)
-          : null,
+      discovered_image_url: imageUrl ?? vintage?.url ?? null,
+      discovered_source: imageUrl
+        ? (typeof result.provider === "string" ? result.provider.slice(0, 150) : null)
+        : (vintage ? "vintage_artwork_staging" : null),
       identity_verified: verified,
       rights_cleared: false,
       diagnostics: {
         provider: result.provider ?? null,
         catalog_set_name: catalogSetName || null,
+        ...stagingEvidence,
+        resolver_image_url: imageUrl,
+        staging_image_matches_resolver_url: vintage && imageUrl
+          ? vintage.url === imageUrl
+          : null,
         reason: result.reason ?? null,
         match: result.match ?? null,
         parsed_identity: result.parsedIdentity ?? null,
@@ -597,9 +698,11 @@ export async function processRecoveryJob(
         : (
             imageUrl
               ? "Artwork candidate discovered; exact identity not proven"
-              : reason || "No artwork currently available"
+              : vintage
+                ? "Staged artwork candidate retained; independent identity verification incomplete"
+                : reason || "No artwork currently available"
           ).slice(0, 500),
-      next_attempt_at: imageUrl
+      next_attempt_at: imageUrl || vintage
         ? null
         : job.attempts >= MAX_ATTEMPTS
           ? null
@@ -610,7 +713,7 @@ export async function processRecoveryJob(
       external_id: job.external_id,
       status: verified
         ? "resolved-identity-verified"
-        : imageUrl
+        : imageUrl || vintage
           ? "candidate-review"
           : job.attempts >= MAX_ATTEMPTS
             ? "unresolved-max-attempts"
