@@ -1,10 +1,11 @@
 name: MintRadar Preview Artwork Recovery
+
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 16 * * *'
+
 permissions:
   contents: read
+
 jobs:
   recover:
     runs-on: ubuntu-latest
